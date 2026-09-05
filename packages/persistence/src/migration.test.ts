@@ -54,6 +54,12 @@ describe("migrations — clean database", () => {
     await expect(db.select().from(schema.bills)).resolves.toEqual([]);
     await expect(db.select().from(schema.syncRuns)).resolves.toEqual([]);
     await expect(db.select().from(schema.webhookEvents)).resolves.toEqual([]);
+
+    // The Sprint 4 AI copilot tables exist and are queryable.
+    await expect(db.select().from(schema.conversations)).resolves.toEqual([]);
+    await expect(db.select().from(schema.conversationMessages)).resolves.toEqual([]);
+    await expect(db.select().from(schema.aiToolExecutions)).resolves.toEqual([]);
+    await expect(db.select().from(schema.aiRequests)).resolves.toEqual([]);
   });
 });
 
@@ -93,5 +99,48 @@ describe("migrations — Sprint 2 -> Sprint 3 forward migration", () => {
 
     // The brand new Sprint 3 tables are present and queryable too.
     await expect(db.select().from(schema.providerConnections)).resolves.toEqual([]);
+  });
+});
+
+describe("migrations — Sprint 3 -> Sprint 4 forward migration", () => {
+  it("migrates an existing Sprint 3 database forward without losing data", async () => {
+    const db = await createDatabase();
+
+    // 1. Apply everything up to and including the Sprint 3 migration
+    //    (0000 + 0001) — "the database as Sprint 3 left it."
+    const sprint3Folder = buildPartialMigrationsFolder(2);
+    await migrate(db, { migrationsFolder: sprint3Folder });
+
+    // 2. Insert Sprint-3-shaped data (no AI copilot tables exist yet).
+    await db.execute(
+      sql`insert into financial_profiles (id, label, created_at) values ('profile-1', 'Test', '2026-09-05')`,
+    );
+    await db.execute(
+      sql`insert into provider_connections (id, financial_profile_id, provider, external_connection_id, status, created_at, updated_at)
+          values ('conn-1', 'profile-1', 'pluggy', 'item-1', 'ACTIVE', '2026-09-05', '2026-09-05')`,
+    );
+
+    // 3. Apply the Sprint 4 migration on top — the forward migration.
+    const sprint4Folder = buildPartialMigrationsFolder(3);
+    await expect(migrate(db, { migrationsFolder: sprint4Folder })).resolves.not.toThrow();
+
+    // 4. The Sprint 3 data survived.
+    const [connection] = await db.select().from(schema.providerConnections);
+    expect(connection?.id).toBe("conn-1");
+    expect(connection?.provider).toBe("pluggy");
+
+    // 5. The brand new Sprint 4 AI copilot tables are present and queryable.
+    await expect(db.select().from(schema.conversations)).resolves.toEqual([]);
+    await expect(db.select().from(schema.conversationMessages)).resolves.toEqual([]);
+    await expect(db.select().from(schema.aiToolExecutions)).resolves.toEqual([]);
+    await expect(db.select().from(schema.aiRequests)).resolves.toEqual([]);
+
+    // 6. A conversation can now be inserted and linked back to the profile.
+    await db.execute(
+      sql`insert into conversations (id, financial_profile_id, status, created_at, updated_at)
+          values ('conv-1', 'profile-1', 'ACTIVE', '2026-09-05', '2026-09-05')`,
+    );
+    const [conversation] = await db.select().from(schema.conversations);
+    expect(conversation?.financialProfileId).toBe("profile-1");
   });
 });

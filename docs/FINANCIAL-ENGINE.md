@@ -292,6 +292,35 @@ explicitly temporary, configurable `SpendPolicy` default, reconfirmed, not made 
 - `compensationRequired == 0` → SAFE; `<= protectedSavings * cautionCompensationRatio` → CAUTION;
   otherwise → HIGH_IMPACT. Never blocks the user (RULE #7).
 
+## Spending envelope, daily guidance, replan, goal/category status (Sprint 4)
+
+`packages/financial-engine/src/simulation/envelope.ts`, `replan.ts`,
+`packages/financial-engine/src/reporting/status.ts`
+
+Added for the AI copilot (`docs/AI-COPILOT.md`) so the LLM never has to invent these numbers itself:
+
+- `getSpendingEnvelope(snapshot, policy?, categoryHeadroom?)` — the deterministic answer to "how much
+  can I spend?" with no specific amount in mind. Reuses `simulateExpense`'s exact
+  `DEFAULT_SPEND_POLICY`/`cautionCompensationRatio`, not a new threshold: `recommendedAmount =
+  floorAtZero(safeToSpend.total)`; `cautionAmount = highImpactThreshold =
+  floorAtZero(safeToSpend.total + protectedSavings * cautionCompensationRatio)`. Cross-validated in
+  `envelope.test.ts` against `simulateExpense`'s own classification at the exact boundary amounts.
+- `getDailyGuidance(snapshot)` — thin wrapper packaging `safeToSpend.recommendedForToday` with its
+  confidence/warnings; no new arithmetic.
+- `replanAfterExpense({ previousTarget, actualExpenseAmount, snapshotAfter })` — recalculates guidance
+  after the user reports spending more (or less) than a prior recommendation. Takes the ALREADY
+  rebuilt post-expense snapshot (the caller — `app-services` — records the transaction and rebuilds
+  the snapshot first); returns `newSafeToSpend`, `newProjectedSavings`, `goalGap`/
+  `compensationRequired` (`floorAtZero(protectedSavings - newProjectedSavings)`), and warnings. Never
+  invents cost-cutting suggestions (Sprint 5 territory) — only exposes the deterministic facts.
+- `getGoalStatus(goal, snapshot)` — monthly savings target vs. this month's projected savings and gap.
+  Deliberately does NOT compute a reserve-progress percentage or MET/IN_PROGRESS status for
+  `targetReserveAmount` — this codebase has no accumulated-reserve-balance data model, so that would be
+  invented, not deterministic.
+- `getCategoryBudgetStatus(variableBudgets, transactions, reconciliationLinks, asOfDate)` — pairs each
+  `VariableBudget` target with actual net spend from `monthlyCategoryTotals`, exposing `remaining`
+  (may be negative) and `overBudget`.
+
 ## Lifestyle simulation
 
 `packages/financial-engine/src/simulation/lifestyle-simulation.ts`,
@@ -342,6 +371,11 @@ without any snapshot/DB involvement:
 Real Open Finance import (Sprint 3) and the live database-backed web UI (Sprint 3, DEC-024,
 superseding DEC-019) are now implemented — see `docs/OPEN-FINANCE.md` and
 `packages/app-services/`.
+
+A conversational AI layer (Sprint 4) is now implemented (`docs/AI-COPILOT.md`) — it calls the exact
+functions on this page and never performs its own arithmetic. It still deliberately does NOT
+implement automatic cost-cutting recommendations (Sprint 5's Recommendation Engine) or real-world
+venue/product search (Sprint 6's concierge).
 
 ## Extending the engine safely
 

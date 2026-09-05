@@ -10,7 +10,14 @@ Traditional expense trackers look backward (what did I spend?). Money Copilot lo
 everything already committed this month — income, taxes, fixed bills, protected savings, planned
 events — how much can I spend on a new, spontaneous thing without materially hurting my plan?
 
-## Target interaction (future, not Sprint 1)
+## Conversational interaction (Sprint 4)
+
+The target interaction below is now real — a conversational AI copilot exists
+(`docs/AI-COPILOT.md`), backed entirely by the deterministic engine below. The LLM infers intent
+(e.g. "a date" implies dinner/drinks/entertainment categories) and calls a narrowly-scoped tool; it
+never computes a number. See `docs/AI-COPILOT.md` for the full architecture.
+
+## Target interaction
 
 ```
 User: "Tonight I'm going on a date. I'll probably pay for dinner, drinks and maybe a motel.
@@ -91,9 +98,12 @@ categories, sign conventions, and reported balances are all translated into the 
 canonical model before anything is calculated — the provider never invents a financial number any
 more than an LLM would.
 
-## Out of scope for Sprint 1–3
+## Out of scope for Sprint 1–4
 
-Real (non-sandbox) bank/credit card connections, WhatsApp, any LLM API (OpenAI, Anthropic, or
-otherwise), and a recommendation *discovery* engine. Sprints 1–3 prove the deterministic core, its
-persistence, and a real (sandboxed) provider integration all work together; these are future sprints
-— see [docs/ROADMAP.md](./ROADMAP.md).
+Real (non-sandbox) bank/credit card connections (live Pluggy sandbox validation itself remains
+pending — see `docs/PROJECT_STATE.md`), WhatsApp, a recommendation *discovery* engine (still model-
+only, Sprint 5), and a real-world venue/product/travel concierge (no restaurant/hotel/store search —
+Sprint 6). Sprint 4 adds conversational AI (OpenAI, via a provider-neutral abstraction that a future
+Anthropic provider could also implement) strictly as an interpretation/interface layer over the
+unchanged deterministic core — see [docs/AI-COPILOT.md](./AI-COPILOT.md) and
+[docs/ROADMAP.md](./ROADMAP.md).

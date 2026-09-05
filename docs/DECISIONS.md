@@ -705,3 +705,180 @@ engineering sprint blocked if only the external live validation requires credent
 **Consequences:** Reported as `ENGINEERING COMPLETE / LIVE SANDBOX VALIDATION PENDING`. The Founder
 must supply real Pluggy sandbox credentials (`.env.example` documents the exact variables) for a
 follow-up live validation pass — see docs/PROJECT_STATE.md, "Open questions."
+
+
+---
+
+### DEC-034
+
+**Date:** 2026-09-05
+**Context:** Sprint 4 introduces the project's first LLM integration. The brief is explicit that the
+LLM must never calculate financial values, and that the app must be able to change AI providers
+later without touching business logic.
+**Decision:** Introduced `@money-copilot/ai` with a provider-neutral `AIProvider` interface
+(`generate(options): Promise<AIGenerateResult>`) operating entirely on plain, vendor-neutral types
+(`AITurnItem`, `AIToolDefinition`, `AIGenerateResult`). `OpenAIProvider` is the only file in the
+repository permitted to import from the `openai` npm package; `MockAIProvider` is a fully
+deterministic, no-network implementation used by every automated test.
+**Rationale:** Mirrors the Sprint 3 precedent (`OpenFinanceProvider` isolating Pluggy) — the same
+"provider behind an interface, mock for tests, real adapter isolated" shape that has already proven
+itself once in this codebase.
+**Status:** Accepted.
+**Consequences:** A future `AnthropicProvider` (or any other) implements the same interface with zero
+changes required in `app-services` or `apps/web`. Code review for AI-touching changes should check
+that no new file outside `openai-provider.ts` imports the `openai` SDK.
+
+---
+
+### DEC-035
+
+**Date:** 2026-09-05
+**Context:** Sprint 4 requires choosing an initial production AI provider and a default model.
+**Decision:** OpenAI is the first `AIProvider` implementation, using the Responses API (not Chat
+Completions) via the official `openai` npm package (v7.10.0), with default model `gpt-5.6-terra`
+(GPT-5.6 family, mid tier), configurable via the `OPENAI_MODEL` environment variable through a single
+`resolveOpenAIModel()` function — no model name string is duplicated anywhere else in the codebase.
+**Rationale:** The brief specified OpenAI, the Responses API (confirmed via direct inspection of the
+`openai-node` SDK source and README as the actively developed primary interface, function calling and
+structured outputs included), and `gpt-5.6-terra` as the default model explicitly.
+**Status:** Accepted.
+**Consequences:** No auto-escalation to a different model exists yet — a future sprint that wants
+that must make it an explicit, separate, documented decision.
+
+---
+
+### DEC-036
+
+**Date:** 2026-09-05
+**Context:** The brief requires that Money Copilot, not any AI provider, own conversation history, so
+the application can switch providers later without losing continuity or depending on
+provider-hosted state.
+**Decision:** `Conversation`/`ConversationMessage` are persisted in `packages/persistence`
+(`conversations`/`conversation_messages` tables). Every turn reconstructs the FULL prior message
+history from these rows into `AITurnItem[]` and sends it to the provider on every call — OpenAI's
+`previous_response_id` continuation mechanism is deliberately NOT used as the primary conversation
+mechanism.
+**Rationale:** A provider-hosted "conversation" would make Money Copilot's chat history contingent on
+staying with that one provider forever, and would violate the "app-owned data" pattern already
+established for financial data.
+**Status:** Accepted.
+**Consequences:** Slightly larger request payloads as history grows (mitigated by only sending the
+persisted messages for one conversation, never all conversations or all financial data — see
+DEC-039). A future sprint may add summarization if a conversation grows very long; not needed yet.
+
+---
+
+### DEC-037
+
+**Date:** 2026-09-05
+**Context:** The LLM must never directly query the database or call `financial-engine` internals —
+its only capabilities must be explicit, named, and validated.
+**Decision:** Introduced a 16-entry tool allowlist (`packages/app-services/src/copilot/tools.ts`),
+each with a strict Zod argument schema (converted to JSON Schema via `z.toJSONSchema` for the
+provider), a `kind` (`READ` or `MUTATION`), and an `execute()` bound to an existing
+`queries.ts`/`mutations.ts` function. `findTool(name)` returns `undefined` for anything not on the
+list; the orchestrator records that as a rejected, audited call rather than silently ignoring or
+crashing.
+**Rationale:** The brief's explicit non-negotiable: "the LLM must never directly query Drizzle/DB
+tables or call financial-engine internals arbitrarily — only invoke allowlisted tools."
+**Status:** Accepted.
+**Consequences:** Adding a new AI capability always means adding a new tool definition with a
+schema and an `execute()`, never expanding what the model can do implicitly.
+
+---
+
+### DEC-038
+
+**Date:** 2026-09-05
+**Context:** The brief distinguishes READ/SIMULATION tools (safe to execute without confirmation)
+from STATE-CHANGING tools (must only execute on the user's own explicit, decided action — never a
+hypothetical question).
+**Decision:** Implemented `hasExplicitMutationIntent(text)` (`copilot/mutation-guard.ts`) as a
+deterministic, regex-based check applied to the ORIGINAL triggering user message, independent of
+whether the model itself decided to call a mutation tool. It returns `false` whenever a hypothetical
+marker is present ("what if", "could I", "should I", "would I", "how much should", ...) and `true`
+only when an explicit-action marker is also present ("I spent", "record", "reserve", "add it",
+"confirm", ...) with no hypothetical marker. Ambiguous text (neither pattern) is treated as NOT
+explicit.
+**Rationale:** Trusting only the LLM's own judgment about intent would make the mutation policy
+untestable and non-deterministic — a defense-in-depth, independently verifiable second check was
+explicitly requested by the brief.
+**Status:** Accepted.
+**Consequences:** A small set of English-language keyword patterns will not catch every possible
+phrasing of intent (see docs/AI-COPILOT.md, "Known limitations") — biased deliberately toward the
+safe failure mode (skip a legitimate action) over the unsafe one (persist an unintended one).
+
+---
+
+### DEC-039
+
+**Date:** 2026-09-05
+**Context:** The brief requires data minimization: never send the user's entire transaction history
+or entire financial dataset to the LLM by default.
+**Decision:** `getRecentSpendingSummary` is explicitly bounded (default 7 days, max 90 — enforced by
+its Zod schema). No tool or conversation-history reconstruction step ever sends more than the current
+conversation's own persisted messages plus whatever a specific tool call's result returns.
+**Rationale:** Matches the brief's explicit instruction and keeps both privacy exposure and token
+cost bounded and predictable.
+**Status:** Accepted.
+**Consequences:** A question requiring a long look-back (e.g. "what did I spend over the last year")
+is not yet well served — a future sprint could add a bounded, explicitly-requested longer window if
+a real need arises, without changing the default.
+
+---
+
+### DEC-040
+
+**Date:** 2026-09-05
+**Context:** The brief requires protection against the LLM stating a financial amount it invented
+rather than one produced by a tool.
+**Decision:** Implemented `groundResponseText()` (`copilot/grounding.ts`): every BRL-shaped amount
+found in the model's draft response text is checked against the set of amounts present in this
+turn's deterministic `FinancialFact[]` (extracted per-tool by `extractFinancialFacts`) union any
+amount the user themselves typed. Any amount not traceable to either causes grounding to fail, and
+the response is replaced by `buildFallbackResponseText()` — a deterministic, template-rendered list
+of the facts actually available.
+**Rationale:** The brief's explicit instruction, scoped deliberately narrow ("do not over-engineer
+general NL verification — protect only important monetary values") rather than building general
+natural-language fact verification.
+**Status:** Accepted.
+**Consequences:** Only BRL currency-shaped figures are checked — a non-monetary factual claim in the
+narrative is not verified. This was judged an acceptable, explicitly-scoped limitation.
+
+---
+
+### DEC-041
+
+**Date:** 2026-09-05
+**Context:** `REAL_PERSONAL_FINANCIAL_DATA_ALLOWED` was established in prior sprints as the gate on
+connecting the Founder's real bank accounts, pending live Pluggy sandbox validation.
+**Decision:** This gate remains `false` through Sprint 4. The AI copilot is engineered and tested
+exclusively against the seeded fixture / `MockProvider` data — no code path in Sprint 4 connects to
+or reads from a real Santander/Nubank account, regardless of the AI layer landing.
+**Rationale:** Sprint 4's brief explicitly reconfirms this gate is unrelated to AI engineering
+readiness — AI engineering may proceed fully while live bank data remains blocked on a separate,
+still-pending validation step (DEC-033).
+**Status:** Accepted (reconfirms DEC-033's gate, does not supersede it).
+**Consequences:** No behavior change; recorded so a future sprint doesn't mistake AI-layer completion
+for permission to connect real accounts.
+
+---
+
+### DEC-042
+
+**Date:** 2026-09-05
+**Context:** The brief requires normalized AI error handling and that the deterministic dashboard
+keep working even when AI is unavailable or unconfigured.
+**Decision:** Defined an `AIErrorCode` taxonomy (`AI_CONFIGURATION_ERROR`,
+`AI_AUTHENTICATION_ERROR`, `AI_RATE_LIMITED`, `AI_PROVIDER_UNAVAILABLE`, `AI_TIMEOUT`,
+`AI_INVALID_TOOL_ARGUMENTS`, `AI_TOOL_EXECUTION_FAILED`, `AI_GROUNDING_FAILED`, `AI_UNKNOWN_ERROR`)
+and mapped OpenAI SDK error classes onto it in `OpenAIProvider`. `/api/chat` returns
+`AI_CONFIGURATION_ERROR` (HTTP 503) when `OPENAI_API_KEY` is absent, rather than silently
+substituting `MockAIProvider` as an unannounced production fallback. The rest of the dashboard
+(`apps/web/app/page.tsx`) has no dependency on the AI layer and is unaffected either way.
+**Rationale:** Silently degrading to a mock assistant in production would make it unclear to the
+Founder whether AI responses are real; an explicit configuration error is more honest and matches the
+brief's "never expose... unnecessary request metadata" while still being clear about the failure.
+**Status:** Accepted.
+**Consequences:** `MockAIProvider` is understood repo-wide as a test utility only, never a disguised
+runtime fallback — a future sprint changing that must make it an explicit, separate decision.

@@ -39,21 +39,22 @@ Deferred to a later sprint: `Recommendation.VERIFIED`/`FAILED` (no recommendatio
 exists yet — that's Sprint 5's job); replacing the old credit-card debt's unknown installment
 schedule with a real one (no live sandbox data was available to populate it).
 
-## Sprint 4 — AI conversational copilot with deterministic financial tools
+## Sprint 4 — AI conversational copilot with deterministic financial tools ✅ (complete)
 
-- LLM integration (first time any LLM API is introduced in this project).
-- The LLM's role is strictly: parse user intent ("a date tonight, dinner + drinks + maybe a motel")
-  into a structured call to `simulateExpense`/category inference, and template the deterministic
-  result back into natural language. It must never compute a number itself — see
-  `docs/ARCHITECTURE.md`, "Enforcing 'the engine calculates, AI interprets' in code." Code review
-  for this sprint should specifically check for `Money` arithmetic leaking outside
-  `financial-engine`.
-- `@money-copilot/app-services` (Sprint 3) is exactly the boundary this sprint's tool layer should
-  call — it has no Next.js dependency, so an LLM tool-calling loop can import `getFinancialSnapshot`,
-  `simulateExpense` (via `financial-engine`), etc. directly.
-- WhatsApp or other conversational surface wiring is plausible here or Sprint 6 depending on scope.
-- First real Pluggy sandbox validation (Sprint 3's `DEC-033` pending item) should happen before or
-  alongside this sprint, once the Founder can supply sandbox credentials.
+`@money-copilot/ai` (provider-neutral `AIProvider`, `MockAIProvider`, `OpenAIProvider` using the
+OpenAI Responses API, default model `gpt-5.6-terra`); a 16-tool allowlist in
+`@money-copilot/app-services/copilot` (12 READ/SIMULATION + 4 MUTATION, the latter gated by a
+deterministic `hasExplicitMutationIntent` guard independent of the model's own judgment); app-owned
+conversation persistence (`conversations`/`conversation_messages`/`ai_tool_executions`/`ai_requests`,
+migration `0002`); financial fact grounding (`FinancialFact[]` + regex-based hallucination guard with
+a deterministic fallback template); a bounded tool-calling loop (`MAX_TOOL_ITERATIONS = 6`); a basic
+chat UI (`/api/chat` + `ChatPanel.tsx`) with quick actions and fact cards. See `docs/AI-COPILOT.md`
+for the full account and `docs/DECISIONS.md` DEC-034 onward.
+
+Live OpenAI validation and live Pluggy sandbox validation (Sprint 3's `DEC-033` pending item) were
+both **not executed** in this sprint — no credentials were available in this environment; engineering
+for both is complete and automated-test-covered regardless. WhatsApp (or another conversational
+surface) remains unscheduled — text chat via the web UI is the only surface built so far.
 
 ## Sprint 5 — Recommendation engine with ACCEPT / MODIFY / REJECT / VERIFY lifecycle
 

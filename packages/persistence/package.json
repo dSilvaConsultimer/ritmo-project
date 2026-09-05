@@ -15,6 +15,7 @@
     "db:seed": "tsx src/seed.ts"
   },
   "dependencies": {
+    "@money-copilot/ai": "workspace:*",
     "@money-copilot/financial-engine": "workspace:*",
     "@money-copilot/shared": "workspace:*",
     "@electric-sql/pglite": "^0.5.8",

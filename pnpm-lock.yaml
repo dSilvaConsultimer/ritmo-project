@@ -26,6 +26,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@money-copilot/ai':
+        specifier: workspace:*
+        version: link:../../packages/ai
       '@money-copilot/app-services':
         specifier: workspace:*
         version: link:../../packages/app-services
@@ -64,8 +67,30 @@ importers:
         specifier: ^6.0.3
         version: 6.0.3
 
+  packages/ai:
+    dependencies:
+      '@money-copilot/shared':
+        specifier: workspace:*
+        version: link:../shared
+      openai:
+        specifier: ^7.10.0
+        version: 7.10.0(zod@4.5.4)
+    devDependencies:
+      '@types/node':
+        specifier: ^26.4.1
+        version: 26.4.1
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^5.0.0
+        version: 5.0.0(@types/node@26.4.1)(vite@8.2.2(@types/node@26.4.1)(esbuild@0.28.2)(tsx@4.23.13))
+
   packages/app-services:
     dependencies:
+      '@money-copilot/ai':
+        specifier: workspace:*
+        version: link:../ai
       '@money-copilot/financial-engine':
         specifier: workspace:*
         version: link:../financial-engine
@@ -78,6 +103,9 @@ importers:
       '@money-copilot/shared':
         specifier: workspace:*
         version: link:../shared
+      zod:
+        specifier: ^4.5.4
+        version: 4.5.4
     devDependencies:
       '@types/node':
         specifier: ^26.4.1
@@ -129,6 +157,9 @@ importers:
       '@electric-sql/pglite':
         specifier: ^0.5.8
         version: 0.5.8
+      '@money-copilot/ai':
+        specifier: workspace:*
+        version: link:../ai
       '@money-copilot/financial-engine':
         specifier: workspace:*
         version: link:../financial-engine
@@ -1809,6 +1840,30 @@ packages:
   once@1.4.0:
     resolution: {integrity: sha512-lNaJgI+2Q5URQBkccEKHTQOPaXdUxnZZElQTZY0MFUAuaEqe1E+Nyvgdz/aIyNi6Z9MzO5dv1H8n58/GELp3+w==}
 
+  openai@7.10.0:
+    resolution: {integrity: sha512-sn9t2Kls7O52PwuF9BUTYNu4Gk/r0lXJyrgaNht4TNRlZFb3dJIGO0RciSgjARGCBRtWjySubAQFJttlzUvGQQ==}
+    engines: {node: '>=22.0.0'}
+    peerDependencies:
+      '@aws-sdk/credential-provider-node': '>=3.972.0 <4'
+      '@smithy/hash-node': '>=4.3.0 <5'
+      '@smithy/signature-v4': '>=5.4.0 <6'
+      undici: '>=5 <9'
+      ws: ^8.21.0
+      zod: ^3.25 || ^4.0
+    peerDependenciesMeta:
+      '@aws-sdk/credential-provider-node':
+        optional: true
+      '@smithy/hash-node':
+        optional: true
+      '@smithy/signature-v4':
+        optional: true
+      undici:
+        optional: true
+      ws:
+        optional: true
+      zod:
+        optional: true
+
   optionator@0.9.4:
     resolution: {integrity: sha512-6IpQ7mKUxRcZNLIObR0hz7lxsapSSIYNZJwXPGeF0mTVqGKFIXj1DQcMoT22S3ROcLyY/rz0PWaWZ9ayWmad9g==}
     engines: {node: '>= 0.8.0'}
@@ -2143,6 +2198,9 @@ packages:
 
   zalgo-promise@1.0.48:
     resolution: {integrity: sha512-LLHANmdm53+MucY9aOFIggzYtUdkSBFxUsy4glTTQYNyK6B3uCPWTbfiGvSrEvLojw0mSzyFJ1/RRLv+QMNdzQ==}
+
+  zod@4.5.4:
+    resolution: {integrity: sha512-sC95tT5iHHH9gtpj6A81kh+NEaRAUFN+qlUPDUbRfOMvNf5QCBqsb3WgvnpVtK5Y+4UfA6KqufotuTvMGiTlsA==}
 
   zoid@9.0.63:
     resolution: {integrity: sha512-c9OccNUlOV9KuTKJJRhCU3B5SRHObTTiPAUayKkBQ0/qZugfh59MDW+zkFDR8IZN+c7NB/R90FCIpAfBp8+U/g==}
@@ -3435,6 +3493,10 @@ snapshots:
     dependencies:
       wrappy: 1.0.2
 
+  openai@7.10.0(zod@4.5.4):
+    optionalDependencies:
+      zod: 4.5.4
+
   optionator@0.9.4:
     dependencies:
       deep-is: 0.1.4
@@ -3721,6 +3783,8 @@ snapshots:
   yocto-queue@0.1.0: {}
 
   zalgo-promise@1.0.48: {}
+
+  zod@4.5.4: {}
 
   zoid@9.0.63:
     dependencies:

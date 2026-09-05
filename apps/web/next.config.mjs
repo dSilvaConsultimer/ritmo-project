@@ -6,6 +6,7 @@ const nextConfig = {
     "@money-copilot/shared",
     "@money-copilot/persistence",
     "@money-copilot/open-finance",
+    "@money-copilot/ai",
     "@money-copilot/app-services",
   ],
   // PGlite ships compiled WASM, and pluggy-sdk pulls in Node-only HTTP/JWT

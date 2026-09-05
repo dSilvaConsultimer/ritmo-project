@@ -22,6 +22,7 @@ import type {
   TransactionStatus,
 } from "@money-copilot/financial-engine";
 import type { CategoryRuleMatchType } from "@money-copilot/financial-engine";
+import type { ConversationStatus, MessageRole, ToolExecutionStatus } from "@money-copilot/ai";
 
 /**
  * All monetary columns are integer cents (`*_cents`) — never floating
@@ -395,6 +396,82 @@ export const syncRuns = pgTable("sync_runs", {
  * webhook payload. See docs/OPEN-FINANCE.md, "Webhooks" and "raw payload
  * retention policy."
  */
+/**
+ * Sprint 4: the AI copilot's own conversation history. Money Copilot owns
+ * this — no AI provider's hosted state is ever the source of truth (see
+ * `docs/AI-COPILOT.md`, "No provider-locked conversation memory").
+ */
+export const conversations = pgTable("conversations", {
+  id: text("id").primaryKey(),
+  financialProfileId: text("financial_profile_id")
+    .notNull()
+    .references(() => financialProfiles.id),
+  title: text("title"),
+  status: text("status").$type<ConversationStatus>().notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const conversationMessages = pgTable("conversation_messages", {
+  id: text("id").primaryKey(),
+  conversationId: text("conversation_id")
+    .notNull()
+    .references(() => conversations.id),
+  role: text("role").$type<MessageRole>().notNull(),
+  content: text("content").notNull(),
+  createdAt: text("created_at").notNull(),
+});
+
+/**
+ * Audit trail of every tool the AI invoked. `argumentsJson` holds the
+ * ALREADY-VALIDATED arguments, never raw unchecked model output.
+ * `resultSummaryJson` is a small structured reference, never a full raw
+ * tool/provider payload — see NON-NEGOTIABLE (Sprint 4): "avoid storing
+ * massive raw tool responses where a structured audit reference
+ * suffices." Never stores provider secrets.
+ */
+export const aiToolExecutions = pgTable("ai_tool_executions", {
+  id: text("id").primaryKey(),
+  conversationId: text("conversation_id")
+    .notNull()
+    .references(() => conversations.id),
+  requestMessageId: text("request_message_id")
+    .notNull()
+    .references(() => conversationMessages.id),
+  toolName: text("tool_name").notNull(),
+  argumentsJson: text("arguments_json").notNull(),
+  status: text("status").$type<ToolExecutionStatus>().notNull(),
+  resultSummaryJson: text("result_summary_json"),
+  errorCategory: text("error_category"),
+  startedAt: text("started_at").notNull(),
+  finishedAt: text("finished_at"),
+});
+
+/**
+ * One AI provider call's observability record. Never logs the API key,
+ * full banking payloads, or unnecessary financial history — see
+ * NON-NEGOTIABLE (Sprint 4) "AI observability."
+ */
+export const aiRequests = pgTable("ai_requests", {
+  id: text("id").primaryKey(),
+  conversationId: text("conversation_id")
+    .notNull()
+    .references(() => conversations.id),
+  provider: text("provider").notNull(),
+  model: text("model").notNull(),
+  startedAt: text("started_at").notNull(),
+  finishedAt: text("finished_at"),
+  latencyMs: integer("latency_ms"),
+  toolCallCount: integer("tool_call_count").notNull().default(0),
+  toolNames: text("tool_names"), // JSON-encoded string[]
+  success: boolean("success").notNull(),
+  errorCode: text("error_code"),
+  inputTokens: integer("input_tokens"),
+  outputTokens: integer("output_tokens"),
+  groundingStatus: text("grounding_status").$type<"PASSED" | "FAILED" | "NOT_APPLICABLE">(),
+  providerResponseId: text("provider_response_id"),
+});
+
 export const webhookEvents = pgTable("webhook_events", {
   id: text("id").primaryKey(), // the provider's eventId
   provider: text("provider").notNull(),

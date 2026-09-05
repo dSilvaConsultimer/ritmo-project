@@ -10,7 +10,8 @@ money-copilot/
     financial-engine/       The priority package: deterministic domain + calculations
     persistence/            Drizzle ORM + PGlite: schema, migrations, seed (Sprint 2)
     open-finance/            Provider abstraction + Pluggy adapter + MockProvider (Sprint 3)
-    app-services/            Application/query service layer — the only thing apps/web calls (Sprint 3)
+    ai/                      Provider-neutral AIProvider abstraction + OpenAI adapter (Sprint 4)
+    app-services/            Application/query service layer + AI tool/orchestration layer (Sprint 3-4)
     shared/                 Generic, non-financial cross-cutting utilities (id generation)
   docs/                     Canonical project memory (read this before every sprint)
 ```
@@ -121,6 +122,41 @@ Next.js dependency, so a future LLM tool layer (Sprint 4) can call the exact sam
 (`getFinancialSnapshot`, `simulateExpense` via `financial-engine`, etc.) without depending on Next.js
 page/route components.
 
+## The ai package, internally (Sprint 4)
+
+```
+packages/ai/src/
+  domain/conversation.ts     Conversation, ConversationMessage, AIToolExecution, AIRequestLog
+  provider/types.ts          AIProvider interface, AITurnItem, AIErrorCode, AIError
+  provider/mock-provider.ts  MockAIProvider — every automated test uses this, no network
+  provider/openai-provider.ts  OpenAIProvider — the ONLY file allowed to import the `openai` SDK
+  model-config.ts            DEFAULT_OPENAI_MODEL + resolveOpenAIModel(env)
+```
+
+Depends only on `@money-copilot/shared` and the `openai` npm package (isolated to
+`openai-provider.ts`). Nothing in `financial-engine` or `app-services`'s query/mutation layer imports
+`openai` types directly — only `packages/app-services/src/copilot/*` depends on `@money-copilot/ai`,
+and only to call the neutral `AIProvider` interface. Full account: `docs/AI-COPILOT.md`.
+
+## The copilot tool/orchestration layer (Sprint 4)
+
+```
+packages/app-services/src/copilot/
+  tools.ts                  The allowlist: Zod schemas + execute() bound to queries.ts/mutations.ts
+  mutation-guard.ts          hasExplicitMutationIntent() — deterministic, independent of LLM judgment
+  facts.ts                   Deterministic FinancialFact extraction per tool
+  grounding.ts                Hallucination protection for monetary figures in assistant prose
+  system-instructions.ts     Version-controlled system prompt
+  conversation-service.ts    Persistence wrappers over @money-copilot/persistence
+  orchestrator.ts             runCopilotTurn() — the bounded tool-calling loop
+```
+
+This is the layer that turns "the engine calculates, AI interprets" from an aspiration (Sprint 1-3)
+into an enforced boundary: the model's only capability is calling a named, schema-validated tool that
+itself calls a `queries.ts`/`mutations.ts` function, which calls `financial-engine`. No path exists
+for the model to reach Drizzle or `financial-engine` internals directly. Full account:
+`docs/AI-COPILOT.md`.
+
 ## Module resolution note (important for future sprints)
 
 Relative imports inside `financial-engine` and `shared` use **extensionless paths**
@@ -143,6 +179,7 @@ transpilePackages: [
   "@money-copilot/shared",
   "@money-copilot/persistence",
   "@money-copilot/open-finance",
+  "@money-copilot/ai",
   "@money-copilot/app-services",
 ]
 serverExternalPackages: ["@electric-sql/pglite", "pluggy-sdk"]
@@ -162,8 +199,10 @@ freeze DB-backed content as of the build and never reflect a later sync.
 
 API routes (`apps/web/app/api/*/route.ts`) are the only other server-side surface:
 `/api/token` (Connect Token creation), `/api/connections` (list + complete a new connection),
-`/api/sync` (manual sync trigger), `/api/webhook` (Pluggy webhook ingestion). Each is a thin wrapper
-calling one `app-services` function — no business logic lives in a route handler.
+`/api/sync` (manual sync trigger), `/api/webhook` (Pluggy webhook ingestion), and (Sprint 4)
+`/api/chat` (send/receive AI copilot messages — the only route that reads `OPENAI_API_KEY` and
+constructs an `OpenAIProvider`). Each is a thin wrapper calling one `app-services` function — no
+business logic lives in a route handler.
 
 ## Persistence (Sprint 2, extended Sprint 3)
 
@@ -180,12 +219,17 @@ adds `provider_connections`, `sync_runs`, `webhook_events`, and `bills` tables, 
 The web app now reads from this database at request time via `@money-copilot/app-services` (DEC-024,
 superseding DEC-019's earlier caution) — see "Application service layer" above.
 
-## Enforcing "the engine calculates, AI interprets" in code
+## Enforcing "the engine calculates, AI interprets" in code (Sprint 4)
 
-There is currently no LLM integration to enforce this boundary against yet — but the architecture is
-already shaped for it: every user-facing number (Safe-to-Spend, recommended limit, projected
-savings, impact classification) is produced by a pure function in `financial-engine` that takes
-explicit typed input and returns explicit typed output. A future conversational layer (Sprint 4) must
-call these functions and template their output into natural language — it must never compute a
-number itself. Code review for that sprint should specifically check that no arithmetic on `Money`
-happens outside `packages/financial-engine`.
+Every user-facing number (Safe-to-Spend, recommended limit, projected savings, impact classification)
+is produced by a pure function in `financial-engine` that takes explicit typed input and returns
+explicit typed output. The Sprint 4 AI layer calls these functions (via the `copilot/tools.ts`
+allowlist) and templates their output into natural language — it never computes a number itself.
+Two independent mechanisms enforce this in practice, not just by convention: (1) the tool allowlist
+is the model's ONLY capability — it cannot reach `financial-engine` or Drizzle directly; (2)
+`copilot/grounding.ts` checks every monetary figure in the model's draft prose against the
+deterministic facts actually computed that turn, and replaces the response with a deterministic
+template if the model stated an amount that isn't traceable to a tool result or the user's own input.
+Code review for AI-touching changes should specifically check that no arithmetic on `Money` happens
+outside `packages/financial-engine`, and that no new tool bypasses Zod validation. Full account:
+`docs/AI-COPILOT.md`.

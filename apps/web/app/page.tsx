@@ -14,6 +14,7 @@ import {
   DEMO_PROFILE_ID,
 } from "@money-copilot/app-services";
 import { ConnectedAccountsPanel } from "./components/ConnectedAccountsPanel";
+import { ChatPanel } from "./components/ChatPanel";
 
 // This page reads live, DB-backed data (connections, synced transactions,
 // manual-sync results) — it must be server-rendered per request, never
@@ -244,6 +245,16 @@ export default async function HomePage() {
       >
         {isDemoMode ? "DEMO / FIXTURE DATA — no institution connected" : "PROVIDER DATA CONNECTED (SANDBOX)"}
       </div>
+
+      <section style={sectionStyle}>
+        <h2 style={sectionTitleStyle}>Ask Money Copilot</h2>
+        <p style={{ color: "#8b93a7", marginTop: 0, marginBottom: 12, fontSize: 14 }}>
+          The engine calculates, the assistant explains — every figure below comes from the same
+          deterministic financial engine as the rest of this dashboard. Requires{" "}
+          <code>OPENAI_API_KEY</code> to be configured on the server; see .env.example.
+        </p>
+        <ChatPanel />
+      </section>
 
       <section style={sectionStyle}>
         <h2 style={sectionTitleStyle}>0. Connected Accounts</h2>

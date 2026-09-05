@@ -22,6 +22,7 @@ import type {
   CreditCardBill,
 } from "@money-copilot/financial-engine";
 import { EMPTY_SYNC_RUN_METRICS } from "@money-copilot/financial-engine";
+import type { AIRequestLog, AIToolExecution, Conversation, ConversationMessage } from "@money-copilot/ai";
 import * as schema from "./schema";
 
 type PaymentSourceRow = typeof schema.paymentSources.$inferSelect;
@@ -673,5 +674,126 @@ export function rowToSyncRun(row: SyncRunRow): SyncRun {
     },
     errors: row.errors ? (JSON.parse(row.errors) as string[]) : [],
     ...(row.providerCursor ? { providerCursor: row.providerCursor } : {}),
+  };
+}
+
+// ---------- AI Copilot: Conversation / ConversationMessage / AIToolExecution / AIRequestLog ----------
+
+type ConversationRow = typeof schema.conversations.$inferSelect;
+type ConversationMessageRow = typeof schema.conversationMessages.$inferSelect;
+type AIToolExecutionRow = typeof schema.aiToolExecutions.$inferSelect;
+type AIRequestRow = typeof schema.aiRequests.$inferSelect;
+
+export function conversationToRow(c: Conversation): typeof schema.conversations.$inferInsert {
+  return {
+    id: c.id,
+    financialProfileId: c.financialProfileId,
+    title: c.title ?? null,
+    status: c.status,
+    createdAt: c.createdAt,
+    updatedAt: c.updatedAt,
+  };
+}
+
+export function rowToConversation(row: ConversationRow): Conversation {
+  return {
+    id: row.id as Id<"conversation">,
+    financialProfileId: row.financialProfileId as Id<"financial-profile">,
+    ...(row.title ? { title: row.title } : {}),
+    status: row.status,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+export function conversationMessageToRow(
+  m: ConversationMessage,
+): typeof schema.conversationMessages.$inferInsert {
+  return {
+    id: m.id,
+    conversationId: m.conversationId,
+    role: m.role,
+    content: m.content,
+    createdAt: m.createdAt,
+  };
+}
+
+export function rowToConversationMessage(row: ConversationMessageRow): ConversationMessage {
+  return {
+    id: row.id as Id<"conversation-message">,
+    conversationId: row.conversationId as Id<"conversation">,
+    role: row.role,
+    content: row.content,
+    createdAt: row.createdAt,
+  };
+}
+
+export function aiToolExecutionToRow(e: AIToolExecution): typeof schema.aiToolExecutions.$inferInsert {
+  return {
+    id: e.id,
+    conversationId: e.conversationId,
+    requestMessageId: e.requestMessageId,
+    toolName: e.toolName,
+    argumentsJson: e.argumentsJson,
+    status: e.status,
+    resultSummaryJson: e.resultSummaryJson ?? null,
+    errorCategory: e.errorCategory ?? null,
+    startedAt: e.startedAt,
+    finishedAt: e.finishedAt ?? null,
+  };
+}
+
+export function rowToAIToolExecution(row: AIToolExecutionRow): AIToolExecution {
+  return {
+    id: row.id as Id<"ai-tool-execution">,
+    conversationId: row.conversationId as Id<"conversation">,
+    requestMessageId: row.requestMessageId as Id<"conversation-message">,
+    toolName: row.toolName,
+    argumentsJson: row.argumentsJson,
+    status: row.status,
+    ...(row.resultSummaryJson ? { resultSummaryJson: row.resultSummaryJson } : {}),
+    ...(row.errorCategory ? { errorCategory: row.errorCategory } : {}),
+    startedAt: row.startedAt,
+    ...(row.finishedAt ? { finishedAt: row.finishedAt } : {}),
+  };
+}
+
+export function aiRequestToRow(r: AIRequestLog): typeof schema.aiRequests.$inferInsert {
+  return {
+    id: r.id,
+    conversationId: r.conversationId,
+    provider: r.provider,
+    model: r.model,
+    startedAt: r.startedAt,
+    finishedAt: r.finishedAt ?? null,
+    latencyMs: r.latencyMs ?? null,
+    toolCallCount: r.toolCallCount,
+    toolNames: r.toolNames.length > 0 ? JSON.stringify(r.toolNames) : null,
+    success: r.success,
+    errorCode: r.errorCode ?? null,
+    inputTokens: r.inputTokens ?? null,
+    outputTokens: r.outputTokens ?? null,
+    groundingStatus: r.groundingStatus ?? null,
+    providerResponseId: r.providerResponseId ?? null,
+  };
+}
+
+export function rowToAIRequest(row: AIRequestRow): AIRequestLog {
+  return {
+    id: row.id as Id<"ai-request">,
+    conversationId: row.conversationId as Id<"conversation">,
+    provider: row.provider,
+    model: row.model,
+    startedAt: row.startedAt,
+    ...(row.finishedAt ? { finishedAt: row.finishedAt } : {}),
+    ...(row.latencyMs !== null ? { latencyMs: row.latencyMs } : {}),
+    toolCallCount: row.toolCallCount,
+    toolNames: row.toolNames ? (JSON.parse(row.toolNames) as string[]) : [],
+    success: row.success,
+    ...(row.errorCode ? { errorCode: row.errorCode } : {}),
+    ...(row.inputTokens !== null ? { inputTokens: row.inputTokens } : {}),
+    ...(row.outputTokens !== null ? { outputTokens: row.outputTokens } : {}),
+    ...(row.groundingStatus ? { groundingStatus: row.groundingStatus } : {}),
+    ...(row.providerResponseId ? { providerResponseId: row.providerResponseId } : {}),
   };
 }

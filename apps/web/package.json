@@ -10,6 +10,7 @@
     "lint": "eslint app --max-warnings=0"
   },
   "dependencies": {
+    "@money-copilot/ai": "workspace:*",
     "@money-copilot/financial-engine": "workspace:*",
     "@money-copilot/app-services": "workspace:*",
     "@money-copilot/open-finance": "workspace:*",

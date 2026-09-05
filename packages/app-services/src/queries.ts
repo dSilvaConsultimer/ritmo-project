@@ -2,16 +2,36 @@ import type { Id } from "@money-copilot/shared";
 import {
   buildFinancialSnapshot,
   buildFinancialPositionFromAccounts,
+  breakdownEvent,
   compareLifestyles,
   detectRecurringCandidates,
+  getCategoryBudgetStatus,
+  getGoalStatus,
+  getSpendingEnvelope,
+  getDailyGuidance,
+  isConsumptionLike,
   monthlyCategoryTotals,
   monthlyTransactionList,
   reconciliationCandidates,
+  simulateExpense,
   uncategorizedTransactions,
   unknownFinancialPosition,
+  ZERO,
+  sum,
+  type CategoryBudgetStatus,
+  type CategoryHeadroom,
+  type DailyGuidance,
+  type EventReserveBreakdown,
+  type ExpenseSimulationInput,
+  type ExpenseSimulationResult,
+  type FinancialEvent,
   type FinancialSnapshot,
   type FinancialPosition,
+  type GoalStatus,
   type LifestyleComparisonResult,
+  type Money,
+  type SafeToSpend,
+  type SpendingEnvelope,
   type CategoryTotal,
   type FinancialTransaction,
   type ReconciliationLink,
@@ -161,4 +181,125 @@ export async function getLifestyleComparison(
     );
   }
   return compareLifestyles(input, current, independent);
+}
+
+// ---------- Sprint 4: AI copilot read/simulation tools ----------
+// Every function below is a pure READ or SIMULATION over already-committed
+// data — none of them mutate anything, so the copilot tool loop may call
+// them without requiring explicit user mutation intent. See
+// docs/AI-COPILOT.md, "Explicit mutation policy."
+
+export async function getSafeToSpend(
+  db: Database,
+  financialProfileId: string,
+  asOfDate: string,
+): Promise<SafeToSpend> {
+  const snapshot = await getFinancialSnapshot(db, financialProfileId, asOfDate);
+  return snapshot.safeToSpend;
+}
+
+export async function getGoalStatusForProfile(
+  db: Database,
+  financialProfileId: string,
+  asOfDate: string,
+): Promise<GoalStatus> {
+  const input = await repo.loadFinancialSnapshotInput(db, financialProfileId, asOfDate);
+  const snapshot = await getFinancialSnapshot(db, financialProfileId, asOfDate);
+  return getGoalStatus(input.goal, snapshot);
+}
+
+export async function getCategoryBudgetStatusForProfile(
+  db: Database,
+  financialProfileId: string,
+  asOfDate: string,
+): Promise<readonly CategoryBudgetStatus[]> {
+  const input = await repo.loadFinancialSnapshotInput(db, financialProfileId, asOfDate);
+  return getCategoryBudgetStatus(input.variableBudgets, input.transactions, input.reconciliationLinks, asOfDate);
+}
+
+export async function getSpendingEnvelopeForProfile(
+  db: Database,
+  financialProfileId: string,
+  asOfDate: string,
+  categoryHeadroom?: CategoryHeadroom,
+): Promise<SpendingEnvelope> {
+  const snapshot = await getFinancialSnapshot(db, financialProfileId, asOfDate);
+  return getSpendingEnvelope(snapshot, undefined, categoryHeadroom);
+}
+
+export async function getDailyGuidanceForProfile(
+  db: Database,
+  financialProfileId: string,
+  asOfDate: string,
+): Promise<DailyGuidance> {
+  const snapshot = await getFinancialSnapshot(db, financialProfileId, asOfDate);
+  return getDailyGuidance(snapshot);
+}
+
+export async function simulateExpenseForProfile(
+  db: Database,
+  financialProfileId: string,
+  asOfDate: string,
+  input: ExpenseSimulationInput,
+): Promise<ExpenseSimulationResult> {
+  const snapshot = await getFinancialSnapshot(db, financialProfileId, asOfDate);
+  return simulateExpense(snapshot, input);
+}
+
+export interface UpcomingFinancialEvent {
+  readonly event: FinancialEvent;
+  readonly breakdown: EventReserveBreakdown;
+}
+
+/** Events whose window has not fully ended as of `asOfDate` — never invents a budget for one with an UNKNOWN line item. */
+export async function getUpcomingFinancialEventsForProfile(
+  db: Database,
+  financialProfileId: string,
+  asOfDate: string,
+): Promise<readonly UpcomingFinancialEvent[]> {
+  const input = await repo.loadFinancialSnapshotInput(db, financialProfileId, asOfDate);
+  return input.events
+    .filter((event) => event.endDate >= asOfDate)
+    .map((event) => ({ event, breakdown: breakdownEvent(event) }));
+}
+
+export interface RecentSpendingSummary {
+  readonly fromDate: string;
+  readonly toDate: string;
+  readonly transactionCount: number;
+  readonly total: Money;
+  readonly byCategory: readonly CategoryTotal[];
+}
+
+function isoDateMinusDays(isoDate: string, days: number): string {
+  const date = new Date(`${isoDate}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() - days);
+  return date.toISOString().slice(0, 10);
+}
+
+/**
+ * A small, bounded window of recent spending — never the user's entire
+ * transaction history. See NON-NEGOTIABLE (Sprint 4) "data minimization":
+ * "never send the user's entire transaction history to the LLM by
+ * default."
+ */
+export async function getRecentSpendingSummaryForProfile(
+  db: Database,
+  financialProfileId: string,
+  asOfDate: string,
+  days = 7,
+): Promise<RecentSpendingSummary> {
+  const input = await repo.loadFinancialSnapshotInput(db, financialProfileId, asOfDate);
+  const fromDate = isoDateMinusDays(asOfDate, days);
+  const relevant = input.transactions.filter(
+    (t) => t.date >= fromDate && t.date <= asOfDate && isConsumptionLike(t.financialEffect),
+  );
+
+  return {
+    fromDate,
+    toDate: asOfDate,
+    transactionCount: relevant.length,
+    total: relevant.length > 0 ? sum(relevant.map((t) => t.amount)) : ZERO,
+    byCategory: monthlyCategoryTotals(relevant, input.reconciliationLinks, asOfDate),
+  };
 }

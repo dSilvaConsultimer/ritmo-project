@@ -20,6 +20,7 @@ import type {
   SyncRun,
   CreditCardBill,
 } from "@money-copilot/financial-engine";
+import type { AIRequestLog, AIToolExecution, Conversation, ConversationMessage } from "@money-copilot/ai";
 import type { Database } from "./db";
 import * as schema from "./schema";
 import * as mappers from "./mappers";
@@ -579,4 +580,87 @@ export async function markWebhookEventFailed(
     .update(schema.webhookEvents)
     .set({ status: "FAILED", processedAt, errorMessage })
     .where(eq(schema.webhookEvents.id, eventId));
+}
+
+// ---------- AI Copilot: Conversation / ConversationMessage / AIToolExecution / AIRequestLog ----------
+
+export async function upsertConversation(db: Database, conversation: Conversation): Promise<void> {
+  const row = mappers.conversationToRow(conversation);
+  await db
+    .insert(schema.conversations)
+    .values(row)
+    .onConflictDoUpdate({ target: schema.conversations.id, set: row });
+}
+
+export async function getConversationById(db: Database, id: string): Promise<Conversation | undefined> {
+  const [row] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, id));
+  return row ? mappers.rowToConversation(row) : undefined;
+}
+
+export async function listConversationsForProfile(
+  db: Database,
+  financialProfileId: string,
+): Promise<Conversation[]> {
+  const rows = await db
+    .select()
+    .from(schema.conversations)
+    .where(eq(schema.conversations.financialProfileId, financialProfileId))
+    .orderBy(desc(schema.conversations.updatedAt));
+  return rows.map(mappers.rowToConversation);
+}
+
+export async function insertConversationMessage(db: Database, message: ConversationMessage): Promise<void> {
+  const row = mappers.conversationMessageToRow(message);
+  await db
+    .insert(schema.conversationMessages)
+    .values(row)
+    .onConflictDoUpdate({ target: schema.conversationMessages.id, set: row });
+}
+
+/** Full message history for a conversation, oldest first — the exact input the tool loop reconstructs each turn from. */
+export async function listConversationMessages(
+  db: Database,
+  conversationId: string,
+): Promise<ConversationMessage[]> {
+  const rows = await db
+    .select()
+    .from(schema.conversationMessages)
+    .where(eq(schema.conversationMessages.conversationId, conversationId))
+    .orderBy(schema.conversationMessages.createdAt);
+  return rows.map(mappers.rowToConversationMessage);
+}
+
+export async function insertAIToolExecution(db: Database, execution: AIToolExecution): Promise<void> {
+  const row = mappers.aiToolExecutionToRow(execution);
+  await db
+    .insert(schema.aiToolExecutions)
+    .values(row)
+    .onConflictDoUpdate({ target: schema.aiToolExecutions.id, set: row });
+}
+
+export async function listAIToolExecutionsForConversation(
+  db: Database,
+  conversationId: string,
+): Promise<AIToolExecution[]> {
+  const rows = await db
+    .select()
+    .from(schema.aiToolExecutions)
+    .where(eq(schema.aiToolExecutions.conversationId, conversationId));
+  return rows.map(mappers.rowToAIToolExecution);
+}
+
+export async function insertAIRequestLog(db: Database, log: AIRequestLog): Promise<void> {
+  const row = mappers.aiRequestToRow(log);
+  await db.insert(schema.aiRequests).values(row).onConflictDoUpdate({ target: schema.aiRequests.id, set: row });
+}
+
+export async function listAIRequestLogsForConversation(
+  db: Database,
+  conversationId: string,
+): Promise<AIRequestLog[]> {
+  const rows = await db
+    .select()
+    .from(schema.aiRequests)
+    .where(eq(schema.aiRequests.conversationId, conversationId));
+  return rows.map(mappers.rowToAIRequest);
 }

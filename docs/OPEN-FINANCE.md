@@ -271,3 +271,8 @@ real user data (NON-NEGOTIABLE, Sprint 3).
   need a migration before real multi-profile support.
 - No automatic/scheduled sync exists (see DEC-031) — staleness is only resolved by a webhook or a
   manual "Refresh / sync" click.
+- **Still true as of Sprint 4**: live Pluggy sandbox validation has still not been executed (no
+  credentials available in this environment either). Sprint 4's AI copilot layer (`docs/AI-COPILOT.md`)
+  does not touch this package at all — it reads through `@money-copilot/app-services`'s existing
+  query functions, which already sit on top of whichever provider (`MockProvider` today) is
+  registered, so nothing here needs to change once real sandbox credentials arrive.

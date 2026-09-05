@@ -15,6 +15,13 @@
       "when": 1788613885646,
       "tag": "0001_jittery_overlord",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788618992909,
+      "tag": "0002_right_spirit",
+      "breakpoints": true
     }
   ]
 }
