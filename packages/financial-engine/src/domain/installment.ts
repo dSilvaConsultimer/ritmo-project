@@ -1,7 +1,8 @@
-import type { Id } from "@money-copilot/shared";
+import { createId, type Id } from "@money-copilot/shared";
 import * as M from "../money/index";
 import type { Money } from "../money/index";
 import type { Certainty } from "./certainty";
+import type { MatchConfidence, ReconciliationStatus } from "./reconciliation";
 
 export type InstallmentPlanStatus = "ACTIVE" | "COMPLETED" | "CANCELLED";
 
@@ -19,6 +20,10 @@ export interface InstallmentPlan {
   readonly financialProfileId: Id<"financial-profile">;
   readonly description: string;
   readonly originTransactionId?: Id<"transaction">;
+  /** The card/account this debt is on, when known — used to match a
+   * provider-derived plan against a manual estimate (see
+   * `matchInstallmentPlans` below). */
+  readonly paymentSourceId?: Id<"payment-source">;
   /** Total original purchase amount, if known. */
   readonly totalOriginalAmount: Money | null;
   /** The amount due per installment (this month's commitment when ACTIVE). */
@@ -119,5 +124,70 @@ export function summarizeFutureInstallmentCommitments(
     next90DaysCommitment: next90,
     hasIncompleteData,
     incompletePlanDescriptions,
+  };
+}
+
+/**
+ * A possible match between a manually-entered debt estimate and a
+ * provider-derived installment plan (e.g. the founder's ~BRL 1,400/month
+ * manual estimate vs. a real schedule Pluggy later reports). NEVER
+ * auto-applied in Sprint 3 — this only surfaces the possibility; a human
+ * (or a future, more confident sprint) decides whether to act on it. See
+ * NON-NEGOTIABLE: "prefer visible uncertainty over silent incorrect
+ * financial arithmetic."
+ */
+export interface InstallmentPlanMatchCandidate {
+  readonly id: Id<"installment-plan-match">;
+  readonly manualPlanId: Id<"installment-plan">;
+  readonly providerPlanId: Id<"installment-plan">;
+  readonly confidence: MatchConfidence;
+  readonly status: ReconciliationStatus;
+  readonly createdAt: string;
+}
+
+const AMOUNT_MATCH_TOLERANCE_HIGH = 0.05;
+const AMOUNT_MATCH_TOLERANCE_LOW = 0.15;
+
+/**
+ * Compares a manual (non-provider) plan against a provider-derived one.
+ * HIGH confidence requires both a shared `paymentSourceId` AND amounts
+ * within 5%; a same-ballpark amount (within 15%) without a shared payment
+ * source is only ever LOW/CANDIDATE — this sprint has no automatic
+ * replacement path regardless of confidence (see DEC for Sprint 3).
+ */
+export function matchInstallmentPlans(
+  manual: InstallmentPlan,
+  providerDerived: InstallmentPlan,
+  asOf: string,
+): InstallmentPlanMatchCandidate | null {
+  const a = manual.installmentAmount.cents;
+  const b = providerDerived.installmentAmount.cents;
+  const min = Math.min(a, b);
+  const max = Math.max(a, b);
+  if (min === 0) return null;
+  const delta = (max - min) / min;
+
+  const samePaymentSource =
+    manual.paymentSourceId !== undefined &&
+    manual.paymentSourceId === providerDerived.paymentSourceId;
+
+  let confidence: MatchConfidence;
+  if (delta <= AMOUNT_MATCH_TOLERANCE_HIGH && samePaymentSource) {
+    confidence = "HIGH";
+  } else if (delta <= AMOUNT_MATCH_TOLERANCE_LOW) {
+    confidence = "MEDIUM";
+  } else {
+    return null;
+  }
+
+  return {
+    id: createId("installment-plan-match"),
+    manualPlanId: manual.id,
+    providerPlanId: providerDerived.id,
+    confidence,
+    // Always a candidate for human review in Sprint 3 — never auto-CONFIRMED,
+    // regardless of confidence. See docs/DECISIONS.md.
+    status: "CANDIDATE",
+    createdAt: asOf,
   };
 }

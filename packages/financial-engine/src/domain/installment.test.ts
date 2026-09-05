@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 import { createId } from "@money-copilot/shared";
 import * as M from "../money/index";
 import type { InstallmentPlan } from "./installment";
-import { remainingInstallments, summarizeFutureInstallmentCommitments } from "./installment";
+import {
+  matchInstallmentPlans,
+  remainingInstallments,
+  summarizeFutureInstallmentCommitments,
+} from "./installment";
 
 function plan(overrides: Partial<InstallmentPlan> = {}): InstallmentPlan {
   return {
@@ -89,5 +93,58 @@ describe("summarizeFutureInstallmentCommitments", () => {
     const { remainingAmount } = remainingInstallments(p);
     // 11 installments still remain beyond this month = BRL 2,200 of future commitment.
     expect(remainingAmount?.cents).toBe(220_000);
+  });
+});
+
+describe("matchInstallmentPlans — old debt reconciliation (NEVER auto-replaces the manual estimate)", () => {
+  const cardId = createId("payment-source");
+
+  const manualEstimate = plan({
+    description: "Existing credit card bill installment",
+    installmentAmount: M.fromReais(1_400),
+    certainty: "ESTIMATED",
+    installmentNumber: null,
+    totalInstallments: null,
+  });
+
+  it("is a HIGH-confidence CANDIDATE (never CONFIRMED) when amounts are close and the payment source matches", () => {
+    const providerPlan = plan({
+      description: "Provider-derived installment",
+      installmentAmount: M.fromReais(1_420),
+      certainty: "ACTUAL",
+      installmentNumber: 3,
+      totalInstallments: 10,
+      paymentSourceId: cardId,
+    });
+    const withPaymentSource = { ...manualEstimate, paymentSourceId: cardId };
+
+    const match = matchInstallmentPlans(withPaymentSource, providerPlan, "2026-09-05");
+    expect(match?.confidence).toBe("HIGH");
+    // Even a HIGH-confidence match is only ever a candidate for human review.
+    expect(match?.status).toBe("CANDIDATE");
+  });
+
+  it("is only MEDIUM confidence when amounts are in the same ballpark but no shared payment source is known", () => {
+    const providerPlan = plan({
+      installmentAmount: M.fromReais(1_500),
+      certainty: "ACTUAL",
+      installmentNumber: 1,
+      totalInstallments: 6,
+    });
+
+    const match = matchInstallmentPlans(manualEstimate, providerPlan, "2026-09-05");
+    expect(match?.confidence).toBe("MEDIUM");
+    expect(match?.status).toBe("CANDIDATE");
+  });
+
+  it("finds no match when the amounts are too far apart to be plausibly the same debt", () => {
+    const unrelatedPlan = plan({
+      installmentAmount: M.fromReais(50),
+      certainty: "ACTUAL",
+      installmentNumber: 1,
+      totalInstallments: 3,
+    });
+
+    expect(matchInstallmentPlans(manualEstimate, unrelatedPlan, "2026-09-05")).toBeNull();
   });
 });

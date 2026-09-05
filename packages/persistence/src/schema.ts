@@ -1,19 +1,22 @@
-import { boolean, integer, pgTable, text } from "drizzle-orm/pg-core";
+import { boolean, integer, pgTable, text, unique } from "drizzle-orm/pg-core";
 import type {
   Certainty,
   EventLineItemStatus,
   FinancialEffect,
   InstallmentPlanStatus,
   LifestyleScenarioType,
+  LiquidityCoverage,
   MatchConfidence,
   MerchantMatchType,
   PaymentSourceType,
+  ProviderConnectionStatus,
   ReconciliationLinkType,
   ReconciliationMethod,
   ReconciliationStatus,
   RecommendationStatus,
   RecurringCandidateConfidence,
   RecurringCandidateStatus,
+  SyncRunStatus,
   TransactionDirection,
   TransactionOrigin,
   TransactionStatus,
@@ -37,6 +40,36 @@ export const financialProfiles = pgTable("financial_profiles", {
   createdAt: text("created_at").notNull(),
 });
 
+/**
+ * Metadata about an external financial-data connection (e.g. a Pluggy
+ * Item). Never stores banking login credentials — only provider-side
+ * identifiers and sync bookkeeping (DEC-023). The unique constraint on
+ * (financialProfileId, provider, externalConnectionId) is what prevents a
+ * duplicate connection from being created for the same real-world Item.
+ */
+export const providerConnections = pgTable(
+  "provider_connections",
+  {
+    id: text("id").primaryKey(),
+    financialProfileId: text("financial_profile_id")
+      .notNull()
+      .references(() => financialProfiles.id),
+    provider: text("provider").notNull(),
+    externalConnectionId: text("external_connection_id").notNull(),
+    status: text("status").$type<ProviderConnectionStatus>().notNull(),
+    connectorId: text("connector_id"),
+    connectorName: text("connector_name"),
+    lastSuccessfulSyncAt: text("last_successful_sync_at"),
+    lastAttemptedSyncAt: text("last_attempted_sync_at"),
+    errorCode: text("error_code"),
+    errorMessage: text("error_message"),
+    consentExpiresAt: text("consent_expires_at"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [unique().on(table.financialProfileId, table.provider, table.externalConnectionId)],
+);
+
 export const paymentSources = pgTable("payment_sources", {
   id: text("id").primaryKey(),
   financialProfileId: text("financial_profile_id")
@@ -44,6 +77,19 @@ export const paymentSources = pgTable("payment_sources", {
     .references(() => financialProfiles.id),
   label: text("label").notNull(),
   type: text("type").$type<PaymentSourceType>().notNull(),
+  subtype: text("subtype"),
+  provider: text("provider"),
+  externalAccountId: text("external_account_id"),
+  connectionId: text("connection_id").references(() => providerConnections.id),
+  currency: text("currency"),
+  balanceCertainty: text("balance_certainty").$type<Certainty>(),
+  balanceCents: integer("balance_cents"),
+  creditLimitCents: integer("credit_limit_cents"),
+  availableCreditLimitCents: integer("available_credit_limit_cents"),
+  creditClosingDate: text("credit_closing_date"),
+  creditDueDate: text("credit_due_date"),
+  minimumPaymentCents: integer("minimum_payment_cents"),
+  lastSyncedAt: text("last_synced_at"),
 });
 
 export const incomes = pgTable("incomes", {
@@ -151,6 +197,7 @@ export const installmentPlans = pgTable("installment_plans", {
     .references(() => financialProfiles.id),
   description: text("description").notNull(),
   originTransactionId: text("origin_transaction_id").references(() => financialTransactions.id),
+  paymentSourceId: text("payment_source_id").references(() => paymentSources.id),
   totalOriginalAmountCents: integer("total_original_amount_cents"),
   installmentAmountCents: integer("installment_amount_cents").notNull(),
   installmentNumber: integer("installment_number"),
@@ -249,6 +296,7 @@ export const financialPositions = pgTable("financial_positions", {
   otherLiabilitiesCertainty: text("other_liabilities_certainty").$type<Certainty>().notNull(),
   otherLiabilitiesCents: integer("other_liabilities_cents"),
   source: text("source").notNull(),
+  coverage: text("coverage").$type<LiquidityCoverage>().notNull(),
 });
 
 export const merchantNormalizationRules = pgTable("merchant_normalization_rules", {
@@ -286,4 +334,74 @@ export const recurringCandidates = pgTable("recurring_candidates", {
   confidence: text("confidence").$type<RecurringCandidateConfidence>().notNull(),
   status: text("status").$type<RecurringCandidateStatus>().notNull(),
   createdAt: text("created_at").notNull(),
+});
+
+/**
+ * A credit card bill/invoice. Never fed into snapshot math — see
+ * `@money-copilot/financial-engine`'s `domain/bill.ts` doc comment: "Bills
+ * are not a second copy of consumption."
+ */
+export const bills = pgTable("bills", {
+  id: text("id").primaryKey(),
+  financialProfileId: text("financial_profile_id")
+    .notNull()
+    .references(() => financialProfiles.id),
+  paymentSourceId: text("payment_source_id")
+    .notNull()
+    .references(() => paymentSources.id),
+  provider: text("provider"),
+  externalBillId: text("external_bill_id"),
+  dueDate: text("due_date").notNull(),
+  closingDate: text("closing_date"),
+  totalAmountCents: integer("total_amount_cents").notNull(),
+  minimumPaymentCents: integer("minimum_payment_cents"),
+  allowsInstallments: boolean("allows_installments"),
+  certainty: text("certainty").$type<Certainty>().notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+/**
+ * One observable synchronization attempt for a connection. Must never
+ * silently swallow a partial failure — `errors` always explains a
+ * `PARTIAL`/`FAILED` run. See docs/OPEN-FINANCE.md, "Sync model."
+ */
+export const syncRuns = pgTable("sync_runs", {
+  id: text("id").primaryKey(),
+  connectionId: text("connection_id")
+    .notNull()
+    .references(() => providerConnections.id),
+  status: text("status").$type<SyncRunStatus>().notNull(),
+  startedAt: text("started_at").notNull(),
+  finishedAt: text("finished_at"),
+  accountsDiscovered: integer("accounts_discovered").notNull().default(0),
+  transactionsReceived: integer("transactions_received").notNull().default(0),
+  transactionsCreated: integer("transactions_created").notNull().default(0),
+  transactionsUpdated: integer("transactions_updated").notNull().default(0),
+  transactionsReconciled: integer("transactions_reconciled").notNull().default(0),
+  transactionsIgnoredDuplicates: integer("transactions_ignored_duplicates").notNull().default(0),
+  billsReceived: integer("bills_received").notNull().default(0),
+  errors: text("errors"), // JSON-encoded string[]; never used in calculations.
+  providerCursor: text("provider_cursor"),
+});
+
+/**
+ * A processed (or in-flight) webhook delivery, keyed by the PROVIDER'S OWN
+ * event id — inserting a row with `id = eventId` before processing, and
+ * checking for a pre-existing row first, is the entire idempotency
+ * mechanism: a duplicate delivery of the same `eventId` is detected by a
+ * primary-key conflict rather than any extra bookkeeping. Only a narrow,
+ * sanitized summary is stored (`payloadSummary`) — never the full raw
+ * webhook payload. See docs/OPEN-FINANCE.md, "Webhooks" and "raw payload
+ * retention policy."
+ */
+export const webhookEvents = pgTable("webhook_events", {
+  id: text("id").primaryKey(), // the provider's eventId
+  provider: text("provider").notNull(),
+  event: text("event").notNull(),
+  receivedAt: text("received_at").notNull(),
+  processedAt: text("processed_at"),
+  status: text("status").$type<"RECEIVED" | "PROCESSED" | "FAILED">().notNull(),
+  payloadSummary: text("payload_summary"), // small JSON: event/itemId/accountId/counts only
+  errorMessage: text("error_message"),
 });

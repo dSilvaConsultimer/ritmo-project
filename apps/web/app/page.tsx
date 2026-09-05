@@ -1,20 +1,26 @@
 import type { CSSProperties, ReactNode } from "react";
+import { format, type FinancialSnapshot, type LifestyleComparisonResult } from "@money-copilot/financial-engine";
 import {
-  buildFinancialSnapshot,
-  compareLifestyles,
-  detectRecurringCandidates,
-  format,
-  initialUserSnapshotInput,
-  currentLifestyleScenario,
-  independentLivingScenario,
-  monthlyCategoryTotals,
-  monthlyTransactionList,
-  reconciliationCandidates,
-  reconciliationLinks,
-  transactions,
-  uncategorizedTransactions,
-  type FinancialSnapshot,
-} from "@money-copilot/financial-engine";
+  getDb,
+  getFinancialSnapshot,
+  getTransactions,
+  getCategoryTotals,
+  getUncategorizedTransactions,
+  getRecurringCandidates,
+  getReconciliationCandidates,
+  getLifestyleComparison,
+  getConnections,
+  getLatestSyncRunForConnection,
+  DEMO_PROFILE_ID,
+} from "@money-copilot/app-services";
+import { ConnectedAccountsPanel } from "./components/ConnectedAccountsPanel";
+
+// This page reads live, DB-backed data (connections, synced transactions,
+// manual-sync results) — it must be server-rendered per request, never
+// statically prerendered/cached at build time. See DEC-024.
+export const dynamic = "force-dynamic";
+
+const ASOF_DATE = "2026-09-05";
 
 const cardStyle: CSSProperties = {
   background: "#151821",
@@ -107,7 +113,7 @@ function SnapshotGrid({ snapshot }: { snapshot: FinancialSnapshot }) {
             ? format(snapshot.liquidity.liquidityAwareSafeToSpend)
             : "Unknown"
         }
-        sub={`Liquidity confidence: ${snapshot.liquidity.confidence}`}
+        sub={`Liquidity coverage: ${snapshot.liquidity.confidence}`}
       />
     </Grid>
   );
@@ -158,38 +164,122 @@ function Warnings({ warnings }: { warnings: readonly string[] }) {
   );
 }
 
-export default function HomePage() {
-  const currentSnapshot = buildFinancialSnapshot(initialUserSnapshotInput);
-  const comparison = compareLifestyles(
-    initialUserSnapshotInput,
-    currentLifestyleScenario,
-    independentLivingScenario,
+function LifestyleSection({ comparison }: { comparison: LifestyleComparisonResult }) {
+  return (
+    <section style={sectionStyle}>
+      <h2 style={sectionTitleStyle}>9. Current vs. Independent Living</h2>
+      <p style={{ color: "#8b93a7", marginTop: 0, marginBottom: 16, fontSize: 14 }}>
+        The independent-living scenario adds estimated household costs (dinner/food, cleaning,
+        supplies) without changing any real financial data.
+      </p>
+      <Grid>
+        <Stat
+          label="Independent living — Safe-to-Spend"
+          value={format(comparison.independent.safeToSpend.total)}
+          sub={`vs. current ${format(comparison.current.safeToSpend.total)} (Δ ${format(comparison.safeToSpendDelta)})`}
+        />
+        <Stat
+          label="Independent living — projected savings"
+          value={format(comparison.independent.projectedSavings)}
+          sub={`vs. current ${format(comparison.current.projectedSavings)} (Δ ${format(comparison.projectedSavingsDelta)})`}
+        />
+        <Stat label="Current lifestyle viability" value={comparison.currentViability} />
+        <Stat
+          label="Independent living viability"
+          value={comparison.independentViability}
+          sub="UNSUSTAINABLE / FRAGILE / SUSTAINABLE"
+        />
+      </Grid>
+    </section>
   );
+}
 
-  const monthlyTransactions = monthlyTransactionList(transactions, currentSnapshot.asOfDate);
-  const categoryTotals = monthlyCategoryTotals(transactions, reconciliationLinks, currentSnapshot.asOfDate);
-  const uncategorized = uncategorizedTransactions(transactions, reconciliationLinks, currentSnapshot.asOfDate);
-  const recurringCandidates = detectRecurringCandidates(transactions);
-  const pendingReconciliation = reconciliationCandidates(reconciliationLinks);
-  const future = currentSnapshot.futureInstallmentCommitments;
+export default async function HomePage() {
+  const db = await getDb();
+
+  const [
+    snapshot,
+    monthlyTransactions,
+    categoryTotals,
+    uncategorized,
+    recurringCandidates,
+    pendingReconciliation,
+    comparison,
+    connections,
+  ] = await Promise.all([
+    getFinancialSnapshot(db, DEMO_PROFILE_ID, ASOF_DATE),
+    getTransactions(db, DEMO_PROFILE_ID, ASOF_DATE),
+    getCategoryTotals(db, DEMO_PROFILE_ID, ASOF_DATE),
+    getUncategorizedTransactions(db, DEMO_PROFILE_ID, ASOF_DATE),
+    getRecurringCandidates(db, DEMO_PROFILE_ID, ASOF_DATE),
+    getReconciliationCandidates(db, DEMO_PROFILE_ID, ASOF_DATE),
+    getLifestyleComparison(db, DEMO_PROFILE_ID, ASOF_DATE),
+    getConnections(db, DEMO_PROFILE_ID),
+  ]);
+
+  const latestSync = connections[0] ? await getLatestSyncRunForConnection(db, connections[0].id) : undefined;
+  const future = snapshot.futureInstallmentCommitments;
+  const isDemoMode = connections.length === 0;
 
   return (
     <main style={{ maxWidth: 1040, margin: "0 auto", padding: "32px 20px 64px" }}>
       <h1 style={{ fontSize: 28, marginBottom: 4 }}>Money Copilot</h1>
-      <p style={{ color: "#8b93a7", marginTop: 0, marginBottom: 28 }}>
-        &ldquo;Can I afford to do this without damaging the rest of my financial plan?&rdquo; — Sprint 2
-        transactions, persistence &amp; normalization, fixture data as of {currentSnapshot.asOfDate}. This
-        view exists to inspect and debug the system, not as final product design.
+      <p style={{ color: "#8b93a7", marginTop: 0, marginBottom: 12 }}>
+        &ldquo;Can I afford to do this without damaging the rest of my financial plan?&rdquo; — Sprint 3
+        Open Finance sandbox integration, DB-backed dashboard as of {ASOF_DATE}. This view exists to
+        inspect and debug the system, not as final product design.
       </p>
+      <div
+        style={{
+          display: "inline-block",
+          padding: "4px 10px",
+          borderRadius: 6,
+          fontSize: 12,
+          fontWeight: 700,
+          letterSpacing: 0.4,
+          marginBottom: 28,
+          background: isDemoMode ? "#3a2f12" : "#0f3a24",
+          color: isDemoMode ? "#e0b64f" : "#4fd18f",
+        }}
+      >
+        {isDemoMode ? "DEMO / FIXTURE DATA — no institution connected" : "PROVIDER DATA CONNECTED (SANDBOX)"}
+      </div>
+
+      <section style={sectionStyle}>
+        <h2 style={sectionTitleStyle}>0. Connected Accounts</h2>
+        <ConnectedAccountsPanel
+          connections={connections.map((c) => ({
+            id: c.id,
+            provider: c.provider,
+            ...(c.connectorName ? { connectorName: c.connectorName } : {}),
+            status: c.status,
+            ...(c.lastSuccessfulSyncAt ? { lastSuccessfulSyncAt: c.lastSuccessfulSyncAt } : {}),
+          }))}
+          {...(latestSync
+            ? {
+                latestSync: {
+                  status: latestSync.status,
+                  startedAt: latestSync.startedAt,
+                  ...(latestSync.finishedAt ? { finishedAt: latestSync.finishedAt } : {}),
+                  accountsDiscovered: latestSync.metrics.accountsDiscovered,
+                  transactionsCreated: latestSync.metrics.transactionsCreated,
+                  transactionsUpdated: latestSync.metrics.transactionsUpdated,
+                  transactionsReconciled: latestSync.metrics.transactionsReconciled,
+                  errors: latestSync.errors,
+                },
+              }
+            : {})}
+        />
+      </section>
 
       <section style={sectionStyle}>
         <h2 style={sectionTitleStyle}>1. Financial Snapshot</h2>
-        <SnapshotGrid snapshot={currentSnapshot} />
+        <SnapshotGrid snapshot={snapshot} />
       </section>
 
       <section style={sectionStyle}>
         <h2 style={sectionTitleStyle}>2. Safe-to-Spend Breakdown</h2>
-        <SafeToSpendBreakdownTable snapshot={currentSnapshot} />
+        <SafeToSpendBreakdownTable snapshot={snapshot} />
       </section>
 
       <section style={sectionStyle}>
@@ -298,7 +388,7 @@ export default function HomePage() {
         <h2 style={sectionTitleStyle}>7. Recurring Candidates</h2>
         {recurringCandidates.length === 0 ? (
           <p style={{ color: "#8b93a7" }}>
-            No recurring pattern detected yet — the fixture only spans a couple of days of transactions.
+            No recurring pattern detected yet — the data only spans a couple of days of transactions.
           </p>
         ) : (
           <table style={tableStyle}>
@@ -326,10 +416,6 @@ export default function HomePage() {
 
       <section style={sectionStyle}>
         <h2 style={sectionTitleStyle}>8. Reconciliation / Possible Duplicates</h2>
-        <p style={{ fontSize: 13, color: "#8b93a7", marginTop: 0 }}>
-          {reconciliationLinks.length} link(s) total ({reconciliationLinks.filter((l) => l.status === "CONFIRMED").length}{" "}
-          confirmed, {pendingReconciliation.length} awaiting review).
-        </p>
         {pendingReconciliation.length === 0 ? (
           <p style={{ color: "#8b93a7" }}>No unresolved possible duplicates.</p>
         ) : (
@@ -354,38 +440,11 @@ export default function HomePage() {
         )}
       </section>
 
-      <section style={sectionStyle}>
-        <h2 style={sectionTitleStyle}>9. Current vs. Independent Living</h2>
-        <p style={{ color: "#8b93a7", marginTop: 0, marginBottom: 16, fontSize: 14 }}>
-          The independent-living scenario adds estimated household costs (dinner/food, cleaning,
-          supplies) without changing any real financial data.
-        </p>
-        <Grid>
-          <Stat
-            label="Independent living — Safe-to-Spend"
-            value={format(comparison.independent.safeToSpend.total)}
-            sub={`vs. current ${format(comparison.current.safeToSpend.total)} (Δ ${format(comparison.safeToSpendDelta)})`}
-          />
-          <Stat
-            label="Independent living — projected savings"
-            value={format(comparison.independent.projectedSavings)}
-            sub={`vs. current ${format(comparison.current.projectedSavings)} (Δ ${format(comparison.projectedSavingsDelta)})`}
-          />
-          <Stat
-            label="Current lifestyle viability"
-            value={comparison.currentViability}
-          />
-          <Stat
-            label="Independent living viability"
-            value={comparison.independentViability}
-            sub="UNSUSTAINABLE / FRAGILE / SUSTAINABLE"
-          />
-        </Grid>
-      </section>
+      <LifestyleSection comparison={comparison} />
 
       <section>
         <h2 style={sectionTitleStyle}>10. Data Confidence / Warnings</h2>
-        <Warnings warnings={currentSnapshot.warnings} />
+        <Warnings warnings={snapshot.warnings} />
       </section>
     </main>
   );

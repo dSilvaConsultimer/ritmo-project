@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import { createId } from "@money-copilot/shared";
 import * as M from "../money/index";
 import { actual, unknownAmount } from "./certainty";
+import type { PaymentSource } from "./transaction";
 import {
+  buildFinancialPositionFromAccounts,
   computeLiquidityAwareSafeToSpend,
   unknownFinancialPosition,
   type FinancialPosition,
@@ -31,6 +33,7 @@ describe("FinancialPosition — known cash", () => {
     cardOutstandingBalance: actual(M.fromReais(200)),
     otherLiabilities: actual(M.ZERO),
     source: "manual entry",
+    coverage: "COMPLETE",
   };
 
   it("narrows Safe-to-Spend to the lower of plan vs. actual liquidity (low cash, healthy plan)", () => {
@@ -60,5 +63,63 @@ describe("FinancialPosition — known cash", () => {
     expect(result.confidence).toBe("PARTIAL");
     expect(result.liquidityAwareSafeToSpend).not.toBeNull();
     expect(result.warnings.some((w) => w.toLowerCase().includes("card"))).toBe(true);
+  });
+});
+
+function account(overrides: Partial<PaymentSource>): PaymentSource {
+  return {
+    id: createId("payment-source"),
+    label: "Test Account",
+    type: "DEBIT",
+    ...overrides,
+  };
+}
+
+describe("buildFinancialPositionFromAccounts", () => {
+  it("returns UNKNOWN coverage when no accounts are connected", () => {
+    const position = buildFinancialPositionFromAccounts([], profileId, "2026-09-05", "pluggy");
+    expect(position.coverage).toBe("UNKNOWN");
+    expect(position.cashBalance.certainty).toBe("UNKNOWN");
+  });
+
+  it("returns COMPLETE coverage and sums balances when every account is known", () => {
+    const accounts: PaymentSource[] = [
+      account({ type: "DEBIT", balance: actual(M.fromReais(1_000)) }),
+      account({ type: "DEBIT", balance: actual(M.fromReais(500)) }),
+      account({ type: "CREDIT_CARD", balance: actual(M.fromReais(300)) }),
+    ];
+    const position = buildFinancialPositionFromAccounts(accounts, profileId, "2026-09-05", "pluggy");
+    expect(position.coverage).toBe("COMPLETE");
+    expect(position.cashBalance.amount?.cents).toBe(M.fromReais(1_500).cents);
+    expect(position.cashBalance.certainty).toBe("ACTUAL");
+    expect(position.cardOutstandingBalance.amount?.cents).toBe(M.fromReais(300).cents);
+  });
+
+  it("returns PARTIAL coverage and an ESTIMATED certainty when some accounts have no known balance", () => {
+    const accounts: PaymentSource[] = [
+      account({ type: "DEBIT", balance: actual(M.fromReais(1_000)) }),
+      account({ type: "DEBIT", balance: unknownAmount() }),
+    ];
+    const position = buildFinancialPositionFromAccounts(accounts, profileId, "2026-09-05", "pluggy");
+    expect(position.coverage).toBe("PARTIAL");
+    expect(position.cashBalance.certainty).toBe("ESTIMATED");
+    expect(position.cashBalance.amount?.cents).toBe(M.fromReais(1_000).cents);
+  });
+
+  it("never invents otherLiabilities from connected accounts alone", () => {
+    const accounts: PaymentSource[] = [account({ type: "DEBIT", balance: actual(M.fromReais(1_000)) })];
+    const position = buildFinancialPositionFromAccounts(accounts, profileId, "2026-09-05", "pluggy");
+    expect(position.otherLiabilities.certainty).toBe("UNKNOWN");
+  });
+
+  it("degrades liquidity-aware confidence to PARTIAL when coverage is incomplete, even if known amounts compute cleanly", () => {
+    const accounts: PaymentSource[] = [
+      account({ type: "DEBIT", balance: actual(M.fromReais(1_000)) }),
+      account({ type: "CREDIT_CARD", balance: unknownAmount() }),
+    ];
+    const position = buildFinancialPositionFromAccounts(accounts, profileId, "2026-09-05", "pluggy");
+    expect(position.coverage).toBe("PARTIAL");
+    const result = computeLiquidityAwareSafeToSpend(planSafeToSpend, position);
+    expect(result.confidence).toBe("PARTIAL");
   });
 });

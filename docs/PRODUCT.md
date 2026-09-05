@@ -82,9 +82,18 @@ own accounts is not consumption; a refund reduces net spend rather than sitting 
 original purchase as if both were real. See `docs/FINANCIAL-ENGINE.md`, "Financial effect
 classification."
 
-## Out of scope for Sprint 1 and Sprint 2
+## Open Finance sandbox integration (Sprint 3)
 
-Open Finance/Pluggy/Belvo integration, real bank/credit card connections, WhatsApp, any LLM API
-(OpenAI, Anthropic, or otherwise), and a recommendation *discovery* engine. Sprints 1–2 prove the
-deterministic core and its persistence work; these are future sprints — see
-[docs/ROADMAP.md](./ROADMAP.md).
+Money Copilot connects to real financial institutions via Pluggy (sandbox only — no real Santander/
+Nubank account has been connected yet; see [docs/OPEN-FINANCE.md](./OPEN-FINANCE.md)). The same
+"engine calculates, provider data is just an input" philosophy applies: a bank's own transaction
+categories, sign conventions, and reported balances are all translated into the deterministic
+canonical model before anything is calculated — the provider never invents a financial number any
+more than an LLM would.
+
+## Out of scope for Sprint 1–3
+
+Real (non-sandbox) bank/credit card connections, WhatsApp, any LLM API (OpenAI, Anthropic, or
+otherwise), and a recommendation *discovery* engine. Sprints 1–3 prove the deterministic core, its
+persistence, and a real (sandboxed) provider integration all work together; these are future sprints
+— see [docs/ROADMAP.md](./ROADMAP.md).

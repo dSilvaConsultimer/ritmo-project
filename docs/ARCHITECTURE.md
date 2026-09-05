@@ -5,17 +5,18 @@
 ```
 money-copilot/
   apps/
-    web/                    Next.js App Router UI (thin display layer)
+    web/                    Next.js App Router UI + API routes (thin — no direct DB/provider access)
   packages/
     financial-engine/       The priority package: deterministic domain + calculations
     persistence/            Drizzle ORM + PGlite: schema, migrations, seed (Sprint 2)
+    open-finance/            Provider abstraction + Pluggy adapter + MockProvider (Sprint 3)
+    app-services/            Application/query service layer — the only thing apps/web calls (Sprint 3)
     shared/                 Generic, non-financial cross-cutting utilities (id generation)
   docs/                     Canonical project memory (read this before every sprint)
 ```
 
-Package manager: **pnpm workspaces**. Test runner: **Vitest** (financial-engine and persistence —
-the two packages with logic/behavior worth testing). Language: **TypeScript**, strict mode, ESM
-throughout.
+Package manager: **pnpm workspaces**. Test runner: **Vitest** (every package except `shared`, which
+has no logic of its own). Language: **TypeScript**, strict mode, ESM throughout.
 
 ## Why this split
 
@@ -78,7 +79,47 @@ roundtrip: it reconstructs a `FinancialSnapshotInput` from persisted rows that, 
 `buildFinancialSnapshot`, reproduces the exact same Safe-to-Spend as the in-memory fixture — see
 `packages/persistence/src/persistence.test.ts` and DEC-013/DEC-017 in `docs/DECISIONS.md`.
 
-Why Drizzle + PGlite, and why the web UI doesn't read from it yet: see DEC-017 and DEC-019.
+Why Drizzle + PGlite: see DEC-017. The web UI now DOES read from it, via `app-services` — see
+"Application service layer (Sprint 3)" below and DEC-024 (which supersedes DEC-019).
+
+## The open-finance package, internally (Sprint 3)
+
+```
+packages/open-finance/src/
+  provider.ts       OpenFinanceProvider interface (provider-neutral — no Pluggy types here)
+  mock-provider.ts  MockProvider — deterministic, no network, no credentials
+  pluggy/
+    client.ts       getPluggyClient() — cached PluggyClient singleton, server-only
+    provider.ts     PluggyProvider implements OpenFinanceProvider, wraps pluggy-sdk
+    mappers.ts      Pluggy payload -> canonical DTO (account/transaction/bill), incl. sign mapping
+    status.ts       Pluggy ItemStatus -> generic ProviderConnectionStatus
+    errors.ts       Pluggy SDK errors -> ProviderError taxonomy
+    webhook.ts      Webhook payload types + idempotency-key extraction
+    fixtures/       Sanitized, synthetic Pluggy-shaped test fixtures
+```
+
+Depends on `@money-copilot/financial-engine` (canonical DTOs) and `@money-copilot/shared`; the real
+runtime dependency is the official `pluggy-sdk` npm package. **Nothing in `financial-engine` imports
+from this package or knows Pluggy exists** — see NON-NEGOTIABLE (Sprint 3): "Pluggy must not leak
+into the financial engine." Full account: `docs/OPEN-FINANCE.md`.
+
+## Application service layer (Sprint 3)
+
+```
+packages/app-services/src/
+  db.ts                Singleton getDb() — creates/migrates/seeds one PGlite instance per process
+  queries.ts           getFinancialSnapshot, getCategoryTotals, getConnections, etc. — plain reads
+  sync.ts              createConnectToken, completeConnection, syncConnection, refetchTransactionsByExternalId
+  webhook.ts           handleWebhookEvent — idempotent webhook dispatch
+  provider-registry.ts getProvider(name) — resolves "pluggy" | "mock" lazily
+```
+
+This is the boundary the Sprint 3 brief calls for: `UI -> application/query service ->
+repositories/read models -> financial engine`. `apps/web` never imports `@money-copilot/persistence`
+or `@money-copilot/open-finance` directly — only `@money-copilot/app-services`. This package has zero
+Next.js dependency, so a future LLM tool layer (Sprint 4) can call the exact same functions
+(`getFinancialSnapshot`, `simulateExpense` via `financial-engine`, etc.) without depending on Next.js
+page/route components.
 
 ## Module resolution note (important for future sprints)
 
@@ -92,42 +133,52 @@ their `.ts` files ("Module not found"). Extensionless relative imports resolve c
 three toolchains (tsc, Vitest, Turpoback via Next). See DEC-006 in `docs/DECISIONS.md`. If a future
 sprint reintroduces a bundler or changes this convention, re-verify all three toolchains.
 
-## How the web app consumes the engine
+## How the web app consumes the engine (updated, Sprint 3)
 
 `apps/web/next.config.mjs` declares:
 
 ```js
-transpilePackages: ["@money-copilot/financial-engine", "@money-copilot/shared"]
+transpilePackages: [
+  "@money-copilot/financial-engine",
+  "@money-copilot/shared",
+  "@money-copilot/persistence",
+  "@money-copilot/open-finance",
+  "@money-copilot/app-services",
+]
+serverExternalPackages: ["@electric-sql/pglite", "pluggy-sdk"]
 ```
 
-This tells Next.js to run these workspace packages' TypeScript source through its own build
-pipeline (rather than treating them as pre-built `node_modules`), since Sprint 1 ships the packages
-as source only — see "No persistence, no build output" below.
+The first list tells Next.js to run these workspace packages' TypeScript source through its own
+build pipeline (they ship as source only, no compiled output). The second keeps `@electric-sql/pglite`
+(compiled WASM) and `pluggy-sdk` (Node-only HTTP/JWT internals) as real, unbundled `node_modules` at
+runtime — bundling either was judged riskier than treating them as external.
 
-`apps/web/app/page.tsx` is a **React Server Component** (the App Router default). It imports the
-fixture (`initialUserSnapshotInput`), calls `buildFinancialSnapshot` and `compareLifestyles`
-directly at render time, and renders the results. There is no API route, no client-side data
-fetching, and no state management in Sprint 1 — the "backend" is a pure function call executed
-during server rendering. This is intentionally the simplest architecture that satisfies the sprint:
-display a computed snapshot. A future sprint introducing persistence or a conversational interface
-will need to introduce an API boundary (see `docs/ROADMAP.md`, Sprint 3+).
+`apps/web/app/page.tsx` is an **async React Server Component** that calls `@money-copilot/app-services`
+functions (`getFinancialSnapshot`, `getConnections`, etc.) directly at render time — never
+`@money-copilot/persistence` or Drizzle directly (see "Application service layer" above). It sets
+`export const dynamic = "force-dynamic"` — without this, Next.js statically prerenders the page at
+build time (observed directly: the built route showed `○ Static` before this was added), which would
+freeze DB-backed content as of the build and never reflect a later sync.
 
-## Persistence (Sprint 2)
+API routes (`apps/web/app/api/*/route.ts`) are the only other server-side surface:
+`/api/token` (Connect Token creation), `/api/connections` (list + complete a new connection),
+`/api/sync` (manual sync trigger), `/api/webhook` (Pluggy webhook ingestion). Each is a thin wrapper
+calling one `app-services` function — no business logic lives in a route handler.
 
-`@money-copilot/persistence` provides the first persistence layer: Drizzle ORM schema + versioned
-SQL migrations + an idempotent seed script, running against PGlite (an embedded, WASM-compiled
-Postgres) — no hosted database or credentials required for local dev or automated tests. Every
-persisted table carries a `financial_profile_id` (see DEC-014) even though Sprint 2 has exactly one
-local profile and no authentication, so introducing real auth later doesn't require redesigning the
-schema.
+## Persistence (Sprint 2, extended Sprint 3)
 
-The web app (`apps/web`) still renders from the in-memory fixture, exactly as in Sprint 1 — it does
-not read from the database at request time (see DEC-019 for why: PGlite's compiled WASM and
-migration-file path resolution interact with Next.js/Turbopack production bundling in ways not worth
-risking in the demo UI, when the persistence layer is already fully proven by its own dedicated test
-suite). This is a clean, explicit boundary: `financial-engine` remains framework- and
-database-free (see below); `persistence` depends on it, never the reverse; `apps/web` currently
-depends only on `financial-engine`, not `persistence`.
+`@money-copilot/persistence` provides the persistence layer: Drizzle ORM schema + versioned SQL
+migrations + an idempotent seed script, running against PGlite (an embedded, WASM-compiled Postgres)
+— no hosted database or credentials required for local dev or automated tests. Every persisted table
+carries a `financial_profile_id` (see DEC-014) even though there is exactly one local profile and no
+authentication yet, so introducing real auth later doesn't require redesigning the schema. Sprint 3
+adds `provider_connections`, `sync_runs`, `webhook_events`, and `bills` tables, plus new columns on
+`payment_sources`/`financial_positions`/`installment_plans` — all via a second migration
+(`migrations/0001_...sql`), verified to apply forward onto an existing Sprint-2-shaped database (see
+`packages/persistence/src/migration.test.ts`).
+
+The web app now reads from this database at request time via `@money-copilot/app-services` (DEC-024,
+superseding DEC-019's earlier caution) — see "Application service layer" above.
 
 ## Enforcing "the engine calculates, AI interprets" in code
 

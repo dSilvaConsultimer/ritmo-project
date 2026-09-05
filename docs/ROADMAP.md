@@ -21,23 +21,23 @@ Safe-to-Spend alongside the plan figure; tri-state lifestyle viability
 (Drizzle + PGlite, no hosted credentials needed) with idempotent seed; extended debug/validation UI.
 See `docs/DECISIONS.md` DEC-009 through DEC-020 and `docs/PROJECT_STATE.md` for the full account.
 
-## Sprint 3 — Open Finance provider abstraction + sandbox integration
+## Sprint 3 — Open Finance provider abstraction + sandbox integration ✅ (complete)
 
-- Define a provider-agnostic interface (`OpenFinanceProvider`) that maps a real provider's payload
-  into Sprint 2's `ExternalTransactionInput` DTO (`domain/external-transaction.ts`) so Pluggy/Belvo/
-  others are swappable.
-- Sandbox-only integration first; no real bank credentials.
-- Real transaction import feeding into Sprint 2's normalization, categorization, and reconciliation
-  pipeline (`findTransactionDuplicates`, `matchTransactions`) — this is where `PROVIDER_ID`/
-  `STABLE_SOURCE_ID` matching finally has real provider ids to work with, not just the fallback
-  fingerprint.
-- `Recommendation.VERIFIED`/`FAILED` become reachable for the first time (RULE #10) — imported data
-  can finally confirm or refute whether an accepted recommendation's savings materialized.
-- Likely also the sprint to wire the web UI to read live from `@money-copilot/persistence` instead
-  of the in-memory fixture (deferred in Sprint 2 — see DEC-019) — a real provider needs a live-data
-  UI anyway, so bundling the two makes sense.
-- Replace the old credit-card debt `InstallmentPlan`'s unknown schedule (Sprint 2:
-  `installmentNumber`/`totalInstallments` both `null`) with the real schedule, once available.
+`OpenFinanceProvider` interface + `PluggyProvider` (real Pluggy sandbox REST contract, verified
+against Pluggy's own SDK/reference source) + `MockProvider` (credential-free demo/testing);
+provider-independent DTOs (`ExternalAccountInput`/`ExternalTransactionInput`/`ExternalBillInput`);
+a documented, tested amount-sign/effect mapping (`docs/OPEN-FINANCE.md`); the full connect → sync →
+snapshot pipeline (`@money-copilot/app-services`) reusing Sprint 2's normalization/categorization/
+reconciliation unchanged; idempotent webhook processing; `ProviderConnection`/`SyncRun` observability;
+liquidity coverage (`COMPLETE`/`PARTIAL`/`UNKNOWN`); old-debt reconciliation candidates (never
+auto-applied); the web UI now reads live from the database via `app-services` (DEC-024, superseding
+DEC-019). Live Pluggy sandbox validation was **not executed** (no credentials available in this
+environment) — engineering is complete and contract-tested via `MockProvider`/fixtures regardless.
+See `docs/DECISIONS.md` DEC-022 through DEC-033 and `docs/PROJECT_STATE.md` for the full account.
+
+Deferred to a later sprint: `Recommendation.VERIFIED`/`FAILED` (no recommendation discovery engine
+exists yet — that's Sprint 5's job); replacing the old credit-card debt's unknown installment
+schedule with a real one (no live sandbox data was available to populate it).
 
 ## Sprint 4 — AI conversational copilot with deterministic financial tools
 
@@ -48,7 +48,12 @@ See `docs/DECISIONS.md` DEC-009 through DEC-020 and `docs/PROJECT_STATE.md` for 
   `docs/ARCHITECTURE.md`, "Enforcing 'the engine calculates, AI interprets' in code." Code review
   for this sprint should specifically check for `Money` arithmetic leaking outside
   `financial-engine`.
+- `@money-copilot/app-services` (Sprint 3) is exactly the boundary this sprint's tool layer should
+  call — it has no Next.js dependency, so an LLM tool-calling loop can import `getFinancialSnapshot`,
+  `simulateExpense` (via `financial-engine`), etc. directly.
 - WhatsApp or other conversational surface wiring is plausible here or Sprint 6 depending on scope.
+- First real Pluggy sandbox validation (Sprint 3's `DEC-033` pending item) should happen before or
+  alongside this sprint, once the Founder can supply sandbox credentials.
 
 ## Sprint 5 — Recommendation engine with ACCEPT / MODIFY / REJECT / VERIFY lifecycle
 
@@ -57,6 +62,8 @@ See `docs/DECISIONS.md` DEC-009 through DEC-020 and `docs/PROJECT_STATE.md` for 
 - Must respect `ProtectedPreference` (RULE #5, #11) and must not resurface `REJECTED`
   recommendations absent material context change.
 - Verification against Sprint 3's imported transaction data.
+- Likely also where the Sprint 3 old-debt installment-match candidates (`DEC-032`, never
+  auto-applied) get an actual accept/reject UI flow, using the same lifecycle machinery.
 
 ## Sprint 6 — Financial concierge
 

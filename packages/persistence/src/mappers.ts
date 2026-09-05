@@ -17,7 +17,11 @@ import type {
   FinancialPosition,
   MerchantNormalizationRule,
   CategoryRule,
+  ProviderConnection,
+  SyncRun,
+  CreditCardBill,
 } from "@money-copilot/financial-engine";
+import { EMPTY_SYNC_RUN_METRICS } from "@money-copilot/financial-engine";
 import * as schema from "./schema";
 
 type PaymentSourceRow = typeof schema.paymentSources.$inferSelect;
@@ -43,11 +47,70 @@ export function paymentSourceToRow(
   p: PaymentSource,
   financialProfileId: string,
 ): typeof schema.paymentSources.$inferInsert {
-  return { id: p.id, financialProfileId, label: p.label, type: p.type };
+  return {
+    id: p.id,
+    financialProfileId,
+    label: p.label,
+    type: p.type,
+    subtype: p.subtype ?? null,
+    provider: p.provider ?? null,
+    externalAccountId: p.externalAccountId ?? null,
+    connectionId: p.connectionId ?? null,
+    currency: p.currency ?? null,
+    balanceCertainty: p.balance?.certainty ?? null,
+    balanceCents: p.balance?.amount?.cents ?? null,
+    creditLimitCents: p.creditCard?.creditLimit?.cents ?? null,
+    availableCreditLimitCents: p.creditCard?.availableCreditLimit?.cents ?? null,
+    creditClosingDate: p.creditCard?.closingDate ?? null,
+    creditDueDate: p.creditCard?.dueDate ?? null,
+    minimumPaymentCents: p.creditCard?.minimumPayment?.cents ?? null,
+    lastSyncedAt: p.lastSyncedAt ?? null,
+  };
 }
 
 export function rowToPaymentSource(row: PaymentSourceRow): PaymentSource {
-  return { id: row.id as Id<"payment-source">, label: row.label, type: row.type };
+  const hasCreditCardInfo =
+    row.creditLimitCents !== null ||
+    row.availableCreditLimitCents !== null ||
+    row.creditClosingDate !== null ||
+    row.creditDueDate !== null ||
+    row.minimumPaymentCents !== null;
+
+  return {
+    id: row.id as Id<"payment-source">,
+    label: row.label,
+    type: row.type,
+    ...(row.subtype ? { subtype: row.subtype } : {}),
+    ...(row.provider ? { provider: row.provider } : {}),
+    ...(row.externalAccountId ? { externalAccountId: row.externalAccountId } : {}),
+    ...(row.connectionId ? { connectionId: row.connectionId as Id<"provider-connection"> } : {}),
+    ...(row.currency ? { currency: row.currency } : {}),
+    ...(row.balanceCertainty
+      ? {
+          balance: {
+            certainty: row.balanceCertainty,
+            amount: row.balanceCents === null ? null : M.fromCents(row.balanceCents),
+          },
+        }
+      : {}),
+    ...(hasCreditCardInfo
+      ? {
+          creditCard: {
+            ...(row.creditLimitCents !== null ? { creditLimit: M.fromCents(row.creditLimitCents) } : {}),
+            ...(row.availableCreditLimitCents !== null
+              ? { availableCreditLimit: M.fromCents(row.availableCreditLimitCents) }
+              : {}),
+            ...(row.creditClosingDate ? { closingDate: row.creditClosingDate } : {}),
+            ...(row.creditDueDate ? { dueDate: row.creditDueDate } : {}),
+            ...(row.minimumPaymentCents !== null
+              ? { minimumPayment: M.fromCents(row.minimumPaymentCents) }
+              : {}),
+          },
+        }
+      : {}),
+    ...(row.balanceCertainty ? { certainty: row.balanceCertainty } : {}),
+    ...(row.lastSyncedAt ? { lastSyncedAt: row.lastSyncedAt } : {}),
+  };
 }
 
 // ---------- Income ----------
@@ -236,6 +299,7 @@ export function installmentPlanToRow(p: InstallmentPlan): typeof schema.installm
     financialProfileId: p.financialProfileId,
     description: p.description,
     originTransactionId: p.originTransactionId ?? null,
+    paymentSourceId: p.paymentSourceId ?? null,
     totalOriginalAmountCents: p.totalOriginalAmount?.cents ?? null,
     installmentAmountCents: p.installmentAmount.cents,
     installmentNumber: p.installmentNumber,
@@ -254,6 +318,7 @@ export function rowToInstallmentPlan(row: InstallmentPlanRow): InstallmentPlan {
     ...(row.originTransactionId
       ? { originTransactionId: row.originTransactionId as Id<"transaction"> }
       : {}),
+    ...(row.paymentSourceId ? { paymentSourceId: row.paymentSourceId as Id<"payment-source"> } : {}),
     totalOriginalAmount:
       row.totalOriginalAmountCents === null ? null : M.fromCents(row.totalOriginalAmountCents),
     installmentAmount: M.fromCents(row.installmentAmountCents),
@@ -408,6 +473,7 @@ export function positionToRow(p: FinancialPosition): typeof schema.financialPosi
     otherLiabilitiesCertainty: p.otherLiabilities.certainty,
     otherLiabilitiesCents: p.otherLiabilities.amount?.cents ?? null,
     source: p.source,
+    coverage: p.coverage,
   };
 }
 
@@ -429,6 +495,7 @@ export function rowToPosition(row: PositionRow): FinancialPosition {
       amount: row.otherLiabilitiesCents === null ? null : M.fromCents(row.otherLiabilitiesCents),
     },
     source: row.source,
+    coverage: row.coverage,
   };
 }
 
@@ -475,5 +542,136 @@ export function rowToCategoryRule(row: CategoryRuleRow): CategoryRule {
     category: row.category,
     ...(row.subcategory ? { subcategory: row.subcategory } : {}),
     priority: row.priority,
+  };
+}
+
+// ---------- ProviderConnection ----------
+
+type ProviderConnectionRow = typeof schema.providerConnections.$inferSelect;
+
+export function providerConnectionToRow(
+  c: ProviderConnection,
+): typeof schema.providerConnections.$inferInsert {
+  return {
+    id: c.id,
+    financialProfileId: c.financialProfileId,
+    provider: c.provider,
+    externalConnectionId: c.externalConnectionId,
+    status: c.status,
+    connectorId: c.connectorId ?? null,
+    connectorName: c.connectorName ?? null,
+    lastSuccessfulSyncAt: c.lastSuccessfulSyncAt ?? null,
+    lastAttemptedSyncAt: c.lastAttemptedSyncAt ?? null,
+    errorCode: c.errorCode ?? null,
+    errorMessage: c.errorMessage ?? null,
+    consentExpiresAt: c.consentExpiresAt ?? null,
+    createdAt: c.createdAt,
+    updatedAt: c.updatedAt,
+  };
+}
+
+export function rowToProviderConnection(row: ProviderConnectionRow): ProviderConnection {
+  return {
+    id: row.id as Id<"provider-connection">,
+    financialProfileId: row.financialProfileId as Id<"financial-profile">,
+    provider: row.provider,
+    externalConnectionId: row.externalConnectionId,
+    status: row.status,
+    ...(row.connectorId ? { connectorId: row.connectorId } : {}),
+    ...(row.connectorName ? { connectorName: row.connectorName } : {}),
+    ...(row.lastSuccessfulSyncAt ? { lastSuccessfulSyncAt: row.lastSuccessfulSyncAt } : {}),
+    ...(row.lastAttemptedSyncAt ? { lastAttemptedSyncAt: row.lastAttemptedSyncAt } : {}),
+    ...(row.errorCode ? { errorCode: row.errorCode } : {}),
+    ...(row.errorMessage ? { errorMessage: row.errorMessage } : {}),
+    ...(row.consentExpiresAt ? { consentExpiresAt: row.consentExpiresAt } : {}),
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+// ---------- CreditCardBill ----------
+
+type BillRow = typeof schema.bills.$inferSelect;
+
+export function billToRow(b: CreditCardBill): typeof schema.bills.$inferInsert {
+  return {
+    id: b.id,
+    financialProfileId: b.financialProfileId,
+    paymentSourceId: b.paymentSourceId,
+    provider: b.provider ?? null,
+    externalBillId: b.externalBillId ?? null,
+    dueDate: b.dueDate,
+    closingDate: b.closingDate ?? null,
+    totalAmountCents: b.totalAmount.cents,
+    minimumPaymentCents: b.minimumPayment?.cents ?? null,
+    allowsInstallments: b.allowsInstallments ?? null,
+    certainty: b.certainty,
+    createdAt: b.createdAt,
+    updatedAt: b.updatedAt,
+  };
+}
+
+export function rowToBill(row: BillRow): CreditCardBill {
+  return {
+    id: row.id as Id<"credit-card-bill">,
+    financialProfileId: row.financialProfileId as Id<"financial-profile">,
+    paymentSourceId: row.paymentSourceId as Id<"payment-source">,
+    ...(row.provider ? { provider: row.provider } : {}),
+    ...(row.externalBillId ? { externalBillId: row.externalBillId } : {}),
+    dueDate: row.dueDate,
+    ...(row.closingDate ? { closingDate: row.closingDate } : {}),
+    totalAmount: M.fromCents(row.totalAmountCents),
+    ...(row.minimumPaymentCents !== null
+      ? { minimumPayment: M.fromCents(row.minimumPaymentCents) }
+      : {}),
+    ...(row.allowsInstallments !== null ? { allowsInstallments: row.allowsInstallments } : {}),
+    certainty: row.certainty,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+// ---------- SyncRun ----------
+
+type SyncRunRow = typeof schema.syncRuns.$inferSelect;
+
+export function syncRunToRow(s: SyncRun): typeof schema.syncRuns.$inferInsert {
+  return {
+    id: s.id,
+    connectionId: s.connectionId,
+    status: s.status,
+    startedAt: s.startedAt,
+    finishedAt: s.finishedAt ?? null,
+    accountsDiscovered: s.metrics.accountsDiscovered,
+    transactionsReceived: s.metrics.transactionsReceived,
+    transactionsCreated: s.metrics.transactionsCreated,
+    transactionsUpdated: s.metrics.transactionsUpdated,
+    transactionsReconciled: s.metrics.transactionsReconciled,
+    transactionsIgnoredDuplicates: s.metrics.transactionsIgnoredDuplicates,
+    billsReceived: s.metrics.billsReceived,
+    errors: s.errors.length > 0 ? JSON.stringify(s.errors) : null,
+    providerCursor: s.providerCursor ?? null,
+  };
+}
+
+export function rowToSyncRun(row: SyncRunRow): SyncRun {
+  return {
+    id: row.id as Id<"sync-run">,
+    connectionId: row.connectionId as Id<"provider-connection">,
+    status: row.status,
+    startedAt: row.startedAt,
+    ...(row.finishedAt ? { finishedAt: row.finishedAt } : {}),
+    metrics: {
+      ...EMPTY_SYNC_RUN_METRICS,
+      accountsDiscovered: row.accountsDiscovered,
+      transactionsReceived: row.transactionsReceived,
+      transactionsCreated: row.transactionsCreated,
+      transactionsUpdated: row.transactionsUpdated,
+      transactionsReconciled: row.transactionsReconciled,
+      transactionsIgnoredDuplicates: row.transactionsIgnoredDuplicates,
+      billsReceived: row.billsReceived,
+    },
+    errors: row.errors ? (JSON.parse(row.errors) as string[]) : [],
+    ...(row.providerCursor ? { providerCursor: row.providerCursor } : {}),
   };
 }

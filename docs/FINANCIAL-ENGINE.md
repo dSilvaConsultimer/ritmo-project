@@ -47,7 +47,7 @@ keeps `TRANSFER`/`CARD_PAYMENT`/`DEBT_PAYMENT`/`INCOME` out of both the snapshot
 and the `monthlyCategoryTotals` read model. `REFUND` is handled separately: it's subtracted, not
 just excluded, so a purchase that comes back nets to zero rather than vanishing from the record.
 
-## FinancialTransaction (Sprint 2 canonical shape)
+## FinancialTransaction (Sprint 2 canonical shape, extended Sprint 3)
 
 `packages/financial-engine/src/domain/transaction.ts`
 
@@ -60,10 +60,33 @@ optional `authorizationDate`/`postingDate`, `amount` (always non-negative) + `di
 see Merchant normalization below), `status` (`PENDING`/`POSTED`/`REVERSED`), `certainty`,
 `financialEffect`, `category`/`subcategory` (nullable until categorized), `origin`
 (`MANUAL`/`IMPORTED`), free-form `metadata` (never used in calculations), `createdAt`/`updatedAt`.
+Sprint 3 adds `providerCategory` (the provider's own category, preserved but never authoritative —
+see DEC-026) and `installmentMetadata` (installment number/total/original amount/bill id, when a
+provider reports it).
 
-`ExternalTransactionInput` (`domain/external-transaction.ts`) is the DTO a future Open Finance
-provider (Sprint 3) will map its own payload into before it becomes a `FinancialTransaction` — no
-provider-specific logic exists anywhere yet.
+`ExternalTransactionInput` (`domain/external-transaction.ts`) is the DTO a real Open Finance
+provider maps its own payload into before it becomes a `FinancialTransaction`; it now includes
+`financialEffect`/`certainty` directly (the provider adapter is responsible for that interpretation
+— see `docs/OPEN-FINANCE.md`, "Amount / sign mapping"), so `financial-engine` never has to guess.
+`draftTransactionFromExternalInput` builds the pre-categorization draft — generic, never inspects
+`input.provider`.
+
+`PaymentSource` (same file) is extended with optional Sprint 3 fields: `subtype`, `provider`,
+`externalAccountId`, `connectionId`, `currency`, `balance` (a `CertainAmount`), `creditCard`
+(limit/available/closing/due-date/minimum-payment), `certainty`, `lastSyncedAt` — see DEC-022. All
+optional; a manual Sprint 1/2 payment source is still valid with none of them set.
+`ExternalAccountInput`/`paymentSourceFromExternalAccount` (`domain/external-account.ts`) is the
+provider-agnostic account DTO and its mapping into `PaymentSource`.
+
+`CreditCardBill`/`ExternalBillInput` (`domain/bill.ts`) represents a card's payment cycle (due
+date, closing date, total, minimum payment). **Never fed into `FinancialSnapshot`** —
+`FinancialSnapshotInput` has no `bills` field, so there is no code path for a bill total to be
+summed alongside the individual `CONSUMPTION` transactions that make it up. See
+`docs/OPEN-FINANCE.md`, "Credit card bills."
+
+`ProviderConnection`/`SyncRun`/`ProviderError` (`domain/provider.ts`) are the generic (provider-
+agnostic) connection lifecycle, sync-run observability, and error taxonomy — see
+`docs/OPEN-FINANCE.md` for the full account of how a real provider adapter populates them.
 
 ## Merchant normalization
 
@@ -134,12 +157,21 @@ ever auto-declared `CONFIRMED` — a human decides.
 
 `packages/financial-engine/src/domain/installment.ts`
 
-`InstallmentPlan { description, originTransactionId?, totalOriginalAmount?, installmentAmount,
-installmentNumber?, totalInstallments?, firstDueDate?, certainty, status: ACTIVE|COMPLETED|
-CANCELLED }`. `installmentNumber`/`totalInstallments` are `null` when the schedule is genuinely
-unknown (the founder's real ~BRL 1,400/month old card debt has no known installment count) — never
-guessed. `remainingInstallments(plan)` computes what's left *after* the current one (3/10 at BRL 200
-→ 7 remain, BRL 1,400) — it never re-derives or multiplies the original purchase total.
+`InstallmentPlan { description, originTransactionId?, paymentSourceId?, totalOriginalAmount?,
+installmentAmount, installmentNumber?, totalInstallments?, firstDueDate?, certainty, status:
+ACTIVE|COMPLETED|CANCELLED }`. `installmentNumber`/`totalInstallments` are `null` when the schedule
+is genuinely unknown (the founder's real ~BRL 1,400/month old card debt has no known installment
+count) — never guessed. `remainingInstallments(plan)` computes what's left *after* the current one
+(3/10 at BRL 200 → 7 remain, BRL 1,400) — it never re-derives or multiplies the original purchase
+total. `paymentSourceId` (Sprint 3) ties a plan to the card it's on, used by `matchInstallmentPlans`
+below.
+
+`matchInstallmentPlans(manual, providerDerived, asOf)` (Sprint 3) compares a manually-entered plan
+(no `originTransactionId`) against a provider-derived one (has one): HIGH confidence requires a
+shared `paymentSourceId` AND amounts within 5%; MEDIUM is amounts within 15% alone; otherwise no
+match. **Every match is a `CANDIDATE` — never auto-`CONFIRMED`, regardless of confidence** (see
+DEC-032) — the founder's manual old-debt estimate is never silently replaced by a provider's
+schedule. `getInstallmentPlanMatchCandidates` (`app-services/src/sync.ts`) surfaces these.
 
 `summarizeFutureInstallmentCommitments(plans)` is the read model: `currentPeriodAmount` (this
 month's due total across `ACTIVE` plans — this feeds the snapshot's `debtCommitments`),
@@ -151,21 +183,34 @@ deduction: a BRL 2,400 purchase in 12x is not "BRL 200 this month and nothing el
 2,200 is real future commitment, exposed here, without forcing it all out of this month's
 Safe-to-Spend.
 
-## FinancialPosition / Liquidity (Sprint 2)
+## FinancialPosition / Liquidity (Sprint 2, coverage added Sprint 3)
 
 `packages/financial-engine/src/domain/position.ts`
 
 Separates the **Financial Plan** (monthly income/commitments — `FinancialSnapshot`) from **Financial
 Position** (actual liquidity at a point in time): `FinancialPosition { asOf, cashBalance,
-cardOutstandingBalance, otherLiabilities: each a CertainAmount, source }`.
+cardOutstandingBalance, otherLiabilities: each a CertainAmount, source, coverage }`.
 `computeLiquidityAwareSafeToSpend(planSafeToSpend, position)` returns the more conservative of the
 plan figure and `cashBalance − cardOutstanding − otherLiabilities` — covering both "healthy plan, low
 cash" and "large balance, already committed" with one `min()`. When `cashBalance` itself is
 `UNKNOWN`, `liquidityAwareSafeToSpend` is `null` (never a fabricated stand-in for real cash) and a
 warning explains why; partial data (e.g. unknown card balance) still computes a number but degrades
 `confidence` to `PARTIAL` and warns that it may overstate what's really available.
-`unknownFinancialPosition(profileId, asOf)` is the honest default the Sprint 2 fixture uses (no real
-balance data exists yet) — `FinancialSnapshotInput.position` is optional for exactly this reason.
+`unknownFinancialPosition(profileId, asOf)` is the honest default when no real balance data exists —
+`FinancialSnapshotInput.position` is optional for exactly this reason.
+
+**`coverage: "COMPLETE" | "PARTIAL" | "UNKNOWN"`** (Sprint 3) answers "how much of the accounts we
+know about do we actually have balance data for" — COMPLETE only when every discovered account
+reports a known balance, PARTIAL when some do and some don't, UNKNOWN when there are none at all.
+`buildFinancialPositionFromAccounts(accounts, profileId, asOf, source)` derives a `FinancialPosition`
+from a list of `PaymentSource`s (summing `BANK`-kind balances into `cashBalance`, `CREDIT_CARD`-kind
+into `cardOutstandingBalance`) — `otherLiabilities` is never inferred from accounts (no account type
+represents e.g. a personal loan). `computeLiquidityAwareSafeToSpend` downgrades its own `confidence`
+to at most `PARTIAL` whenever `coverage !== "COMPLETE"`, even when the arithmetic itself resolves
+cleanly — see DEC-028. Only **provider-synced** payment sources (`provider` field set) are considered
+by `buildFinancialPositionFromAccounts`'s caller (`app-services/queries.ts`, `resolvePosition`) — a
+manual, categorization-only payment source was never expected to carry balance data and must not
+depress coverage artificially (found via a failing test during Sprint 3 — see DEC-022).
 
 ## FinancialSnapshot
 
@@ -281,16 +326,22 @@ without any snapshot/DB involvement:
 
 - **Recommendation discovery** (`domain/recommendation.ts` model exists; no discovery engine).
   Sprint 5.
-- **Real Open Finance import** — `ExternalTransactionInput` defines the target shape; no
-  provider-specific mapping exists. Sprint 3.
 - **Multi-month projections / a real starting balance beyond the current snapshot** —
   `FinancialPosition` gives a point-in-time liquidity read; a running multi-month balance projection
   is still future work.
 - **Per-installment due-date rows** (see DEC-016) and **transaction classification history** (see
   DEC-015) — both documented simplifications, not gaps waiting to be "fixed," just deferred until a
   concrete need exists.
-- **Live database-backed web UI** (see DEC-019) — the UI renders from the in-memory fixture; the
-  persistence layer is proven independently by its own test suite.
+- **Automatic old-debt reconciliation** (see DEC-032) — `matchInstallmentPlans` only ever produces a
+  human-reviewable candidate, never auto-replaces the manual estimate.
+- **Real Pluggy sandbox validation** — the provider integration (Sprint 3) is fully implemented and
+  contract-tested (`MockProvider`, injected fake client, sanitized fixtures), but was not exercised
+  against a live Pluggy sandbox account in this sprint (no credentials available) — see
+  `docs/OPEN-FINANCE.md`, "Known provider limitations."
+
+Real Open Finance import (Sprint 3) and the live database-backed web UI (Sprint 3, DEC-024,
+superseding DEC-019) are now implemented — see `docs/OPEN-FINANCE.md` and
+`packages/app-services/`.
 
 ## Extending the engine safely
 

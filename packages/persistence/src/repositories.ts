@@ -1,4 +1,4 @@
-import { eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import type {
   FinancialEvent,
   FinancialGoal,
@@ -16,6 +16,9 @@ import type {
   MerchantNormalizationRule,
   FinancialTransaction,
   FinancialPosition,
+  ProviderConnection,
+  SyncRun,
+  CreditCardBill,
 } from "@money-copilot/financial-engine";
 import type { Database } from "./db";
 import * as schema from "./schema";
@@ -34,6 +37,31 @@ export async function upsertProfile(db: Database, profile: FinancialProfile): Pr
     .onConflictDoUpdate({ target: schema.financialProfiles.id, set: profile });
 }
 
+/**
+ * Finds a previously-synced payment source by its provider + external
+ * account id — used by the sync pipeline to decide whether to update an
+ * existing `PaymentSource` row or create a new one (provider accounts have
+ * no stable *internal* id until the first sync creates one).
+ */
+export async function findPaymentSourceByExternalId(
+  db: Database,
+  financialProfileId: string,
+  provider: string,
+  externalAccountId: string,
+): Promise<PaymentSource | undefined> {
+  const [row] = await db
+    .select()
+    .from(schema.paymentSources)
+    .where(
+      and(
+        eq(schema.paymentSources.financialProfileId, financialProfileId),
+        eq(schema.paymentSources.provider, provider),
+        eq(schema.paymentSources.externalAccountId, externalAccountId),
+      ),
+    );
+  return row ? mappers.rowToPaymentSource(row) : undefined;
+}
+
 export async function upsertPaymentSource(
   db: Database,
   paymentSource: PaymentSource,
@@ -44,6 +72,17 @@ export async function upsertPaymentSource(
     target: schema.paymentSources.id,
     set: row,
   });
+}
+
+export async function listPaymentSourcesForProfile(
+  db: Database,
+  financialProfileId: string,
+): Promise<PaymentSource[]> {
+  const rows = await db
+    .select()
+    .from(schema.paymentSources)
+    .where(eq(schema.paymentSources.financialProfileId, financialProfileId));
+  return rows.map(mappers.rowToPaymentSource);
 }
 
 export async function upsertIncome(db: Database, income: Income, financialProfileId: string): Promise<void> {
@@ -83,6 +122,39 @@ export async function upsertTransaction(db: Database, transaction: FinancialTran
     .onConflictDoUpdate({ target: schema.financialTransactions.id, set: row });
 }
 
+/** Finds a previously-imported transaction by provider + external transaction id. */
+export async function findTransactionByExternalId(
+  db: Database,
+  financialProfileId: string,
+  provider: string,
+  externalTransactionId: string,
+): Promise<FinancialTransaction | undefined> {
+  const [row] = await db
+    .select()
+    .from(schema.financialTransactions)
+    .where(
+      and(
+        eq(schema.financialTransactions.financialProfileId, financialProfileId),
+        eq(schema.financialTransactions.externalProviderId, provider),
+        eq(schema.financialTransactions.externalTransactionId, externalTransactionId),
+      ),
+    );
+  if (!row) return undefined;
+  const [paymentSourceRow] = await db
+    .select()
+    .from(schema.paymentSources)
+    .where(eq(schema.paymentSources.id, row.paymentSourceId));
+  if (!paymentSourceRow) return undefined;
+  return mappers.rowToTransaction(row, mappers.rowToPaymentSource(paymentSourceRow));
+}
+
+export async function markTransactionReversed(db: Database, transactionId: string, updatedAt: string): Promise<void> {
+  await db
+    .update(schema.financialTransactions)
+    .set({ status: "REVERSED", updatedAt })
+    .where(eq(schema.financialTransactions.id, transactionId));
+}
+
 export async function upsertEvent(db: Database, event: FinancialEvent, financialProfileId: string): Promise<void> {
   const row = mappers.eventToRow(event, financialProfileId);
   await db
@@ -112,6 +184,40 @@ export async function upsertReconciliationLink(db: Database, link: Reconciliatio
     .insert(schema.reconciliationLinks)
     .values(row)
     .onConflictDoUpdate({ target: schema.reconciliationLinks.id, set: row });
+}
+
+/**
+ * All reconciliation links currently persisted. NOTE: `reconciliation_links`
+ * has no `financialProfileId` column of its own (Sprint 2 schema) — this
+ * is global across every profile. Harmless with today's single demo
+ * profile; revisit if/when multi-profile support is added. See
+ * docs/PROJECT_STATE.md, "Technical debt."
+ */
+export async function listAllReconciliationLinks(db: Database): Promise<ReconciliationLink[]> {
+  const rows = await db.select().from(schema.reconciliationLinks);
+  return rows.map(mappers.rowToReconciliationLink);
+}
+
+export async function listInstallmentPlansForProfile(
+  db: Database,
+  financialProfileId: string,
+): Promise<InstallmentPlan[]> {
+  const rows = await db
+    .select()
+    .from(schema.installmentPlans)
+    .where(eq(schema.installmentPlans.financialProfileId, financialProfileId));
+  return rows.map(mappers.rowToInstallmentPlan);
+}
+
+export async function findInstallmentPlanByOriginTransactionId(
+  db: Database,
+  originTransactionId: string,
+): Promise<InstallmentPlan | undefined> {
+  const [row] = await db
+    .select()
+    .from(schema.installmentPlans)
+    .where(eq(schema.installmentPlans.originTransactionId, originTransactionId));
+  return row ? mappers.rowToInstallmentPlan(row) : undefined;
 }
 
 export async function upsertGoal(db: Database, goal: FinancialGoal, financialProfileId: string): Promise<void> {
@@ -301,4 +407,176 @@ export async function loadRules(
     merchantRules: merchantRuleRows.map(mappers.rowToMerchantRule),
     categoryRules: categoryRuleRows.map(mappers.rowToCategoryRule),
   };
+}
+
+// ---------- ProviderConnection ----------
+
+export async function upsertProviderConnection(db: Database, connection: ProviderConnection): Promise<void> {
+  const row = mappers.providerConnectionToRow(connection);
+  await db
+    .insert(schema.providerConnections)
+    .values(row)
+    .onConflictDoUpdate({ target: schema.providerConnections.id, set: row });
+}
+
+/**
+ * Finds an existing connection for this (profile, provider, external id)
+ * triple — the check that avoids creating a duplicate connection when the
+ * same real-world Item is connected more than once. See RULE (Sprint 3):
+ * "avoid duplicate provider connections where possible."
+ */
+export async function findProviderConnection(
+  db: Database,
+  financialProfileId: string,
+  provider: string,
+  externalConnectionId: string,
+): Promise<ProviderConnection | undefined> {
+  const [row] = await db
+    .select()
+    .from(schema.providerConnections)
+    .where(
+      and(
+        eq(schema.providerConnections.financialProfileId, financialProfileId),
+        eq(schema.providerConnections.provider, provider),
+        eq(schema.providerConnections.externalConnectionId, externalConnectionId),
+      ),
+    );
+  return row ? mappers.rowToProviderConnection(row) : undefined;
+}
+
+export async function listProviderConnections(
+  db: Database,
+  financialProfileId: string,
+): Promise<ProviderConnection[]> {
+  const rows = await db
+    .select()
+    .from(schema.providerConnections)
+    .where(eq(schema.providerConnections.financialProfileId, financialProfileId));
+  return rows.map(mappers.rowToProviderConnection);
+}
+
+export async function getProviderConnectionById(
+  db: Database,
+  id: string,
+): Promise<ProviderConnection | undefined> {
+  const [row] = await db.select().from(schema.providerConnections).where(eq(schema.providerConnections.id, id));
+  return row ? mappers.rowToProviderConnection(row) : undefined;
+}
+
+/**
+ * Finds a connection by provider + external id ALONE (no profile filter) —
+ * used by webhook processing, which only knows the provider's own
+ * `itemId`, not which internal profile it belongs to.
+ */
+export async function findProviderConnectionByExternalId(
+  db: Database,
+  provider: string,
+  externalConnectionId: string,
+): Promise<ProviderConnection | undefined> {
+  const [row] = await db
+    .select()
+    .from(schema.providerConnections)
+    .where(
+      and(
+        eq(schema.providerConnections.provider, provider),
+        eq(schema.providerConnections.externalConnectionId, externalConnectionId),
+      ),
+    );
+  return row ? mappers.rowToProviderConnection(row) : undefined;
+}
+
+// ---------- Bills ----------
+
+export async function upsertBill(db: Database, bill: CreditCardBill): Promise<void> {
+  const row = mappers.billToRow(bill);
+  await db.insert(schema.bills).values(row).onConflictDoUpdate({ target: schema.bills.id, set: row });
+}
+
+export async function listBillsForPaymentSource(
+  db: Database,
+  paymentSourceId: string,
+): Promise<CreditCardBill[]> {
+  const rows = await db.select().from(schema.bills).where(eq(schema.bills.paymentSourceId, paymentSourceId));
+  return rows.map(mappers.rowToBill);
+}
+
+export async function listBillsForProfile(db: Database, financialProfileId: string): Promise<CreditCardBill[]> {
+  const rows = await db.select().from(schema.bills).where(eq(schema.bills.financialProfileId, financialProfileId));
+  return rows.map(mappers.rowToBill);
+}
+
+// ---------- SyncRun ----------
+
+export async function upsertSyncRun(db: Database, run: SyncRun): Promise<void> {
+  const row = mappers.syncRunToRow(run);
+  await db.insert(schema.syncRuns).values(row).onConflictDoUpdate({ target: schema.syncRuns.id, set: row });
+}
+
+export async function getLatestSyncRun(db: Database, connectionId: string): Promise<SyncRun | undefined> {
+  const [row] = await db
+    .select()
+    .from(schema.syncRuns)
+    .where(eq(schema.syncRuns.connectionId, connectionId))
+    .orderBy(desc(schema.syncRuns.startedAt))
+    .limit(1);
+  return row ? mappers.rowToSyncRun(row) : undefined;
+}
+
+// ---------- Webhook idempotency ----------
+
+export type WebhookInsertResult = "INSERTED" | "ALREADY_PROCESSED";
+
+/**
+ * Attempts to claim a webhook event id for processing. Returns
+ * `ALREADY_PROCESSED` (without throwing) when a row for this `eventId`
+ * already exists — the `INSERT ... ON CONFLICT DO NOTHING` + row-count
+ * check IS the entire idempotency mechanism (see schema.ts,
+ * `webhookEvents`). Callers must skip processing when this returns
+ * `ALREADY_PROCESSED`.
+ */
+export async function claimWebhookEvent(
+  db: Database,
+  eventId: string,
+  provider: string,
+  event: string,
+  receivedAt: string,
+  payloadSummary: Record<string, unknown>,
+): Promise<WebhookInsertResult> {
+  const result = await db
+    .insert(schema.webhookEvents)
+    .values({
+      id: eventId,
+      provider,
+      event,
+      receivedAt,
+      status: "RECEIVED",
+      payloadSummary: JSON.stringify(payloadSummary),
+    })
+    .onConflictDoNothing({ target: schema.webhookEvents.id })
+    .returning({ id: schema.webhookEvents.id });
+
+  return result.length > 0 ? "INSERTED" : "ALREADY_PROCESSED";
+}
+
+export async function markWebhookEventProcessed(
+  db: Database,
+  eventId: string,
+  processedAt: string,
+): Promise<void> {
+  await db
+    .update(schema.webhookEvents)
+    .set({ status: "PROCESSED", processedAt })
+    .where(eq(schema.webhookEvents.id, eventId));
+}
+
+export async function markWebhookEventFailed(
+  db: Database,
+  eventId: string,
+  processedAt: string,
+  errorMessage: string,
+): Promise<void> {
+  await db
+    .update(schema.webhookEvents)
+    .set({ status: "FAILED", processedAt, errorMessage })
+    .where(eq(schema.webhookEvents.id, eventId));
 }

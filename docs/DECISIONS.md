@@ -435,3 +435,273 @@ after this fix).
 future sprint sees this recur elsewhere (e.g. a long-running server process using file-backed PGlite
 directly), investigate whether PGlite exposes an explicit `.close()`/shutdown API rather than relying
 on `process.exit`.
+
+---
+
+## Sprint 3 decisions
+
+### DEC-022
+
+**Date:** 2026-09-05
+**Context:** Sprint 3 needs richer account data (balance, credit-card metadata, external provider
+identifiers, sync timestamps) than Sprint 2's minimal `PaymentSource { id, label, type }`. DEC-009
+had already rejected a separate `Account` entity as unneeded ceremony.
+**Decision:** `PaymentSource` is extended in place with optional fields (`subtype`, `provider`,
+`externalAccountId`, `connectionId`, `currency`, `balance`, `creditCard`, `certainty`,
+`lastSyncedAt`) rather than introducing a parallel `Account` entity. A manually-entered Sprint 1/2
+payment source remains valid with none of these set.
+**Rationale:** This is additive and backward-compatible (every new field is optional), keeps DEC-009's
+reasoning intact (still one entity, not two), and avoids a migration that would need to reconcile two
+overlapping concepts. `PaymentSource` genuinely doubles as "the account/financial container" now,
+which is exactly what DEC-009 anticipated a real provider would eventually require.
+**Status:** Accepted. Extends DEC-009 (does not supersede it — no separate Account entity exists).
+**Consequences:** Liquidity/coverage computations (`buildFinancialPositionFromAccounts`) must only
+consider payment sources with `provider` set — a manual, non-synced payment source was never
+expected to carry balance data and must not depress coverage to `PARTIAL` when zero real accounts are
+actually connected (discovered via a failing test during this sprint; see `app-services/queries.ts`,
+`resolvePosition`).
+
+---
+
+### DEC-023
+
+**Date:** 2026-09-05
+**Context:** Sprint 3 requires avoiding duplicate provider connections for the same real-world
+institution Item (RULE: "avoid duplicate provider connections where possible").
+**Decision:** `provider_connections` has a database-level unique constraint on
+(`financialProfileId`, `provider`, `externalConnectionId`). The application layer additionally checks
+via `findProviderConnection` before creating a new row (`completeConnection`), so the common case
+never even reaches the constraint — the constraint is the last-resort guarantee, not the primary
+mechanism.
+**Rationale:** Belt-and-suspenders: the app-level check handles the expected case cheaply and
+idempotently; the DB constraint prevents a duplicate even under a race or a future code path that
+forgets to check first.
+**Status:** Accepted.
+**Consequences:** Tested directly (`provider-repositories.test.ts`): a genuine duplicate insert
+attempt rejects at the database level.
+
+---
+
+### DEC-024
+
+**Date:** 2026-09-05
+**Context:** DEC-019 (Sprint 2) deliberately kept the web UI reading from the in-memory fixture,
+citing risk in bundling PGlite/WASM and migration-file path resolution inside Next.js's production
+build. Sprint 3 explicitly requires "the web application must no longer depend on the Sprint 1
+in-memory fixture for its main financial dashboard."
+**Decision:** The dashboard now reads from the database via `@money-copilot/app-services` (an
+application/query-service layer — see docs/ARCHITECTURE.md). `next.config.mjs` adds
+`@money-copilot/persistence`, `@money-copilot/open-finance`, and `@money-copilot/app-services` to
+`transpilePackages`, and marks `@electric-sql/pglite` and `pluggy-sdk` as `serverExternalPackages`
+(kept as real `node_modules` at runtime rather than bundled). The homepage additionally sets
+`export const dynamic = "force-dynamic"` — without it, Next.js statically prerendered the page at
+build time (verified: the built output showed `○` static for `/` before this was added), which would
+have frozen the dashboard's DB-backed content as of the build, never reflecting a later sync.
+**Rationale:** The risk DEC-019 flagged did not materialize once actually attempted — build and
+production-server smoke tests both succeeded (verified via `next build` + `next start` + curl,
+including a real GET/POST round trip against `/api/connections`, `/api/token`, and `/api/webhook`).
+Sprint 3's real provider integration also needs a live-data UI regardless (per DEC-019's own note that
+this was "likely bundled into Sprint 3").
+**Status:** Accepted. Supersedes DEC-019.
+**Consequences:** `apps/web` now depends on `@money-copilot/persistence`/`@money-copilot/open-finance`
+transitively through `@money-copilot/app-services`. Fixtures remain for tests and as the seed source
+(`packages/persistence/src/seed.ts` still seeds from the same `@money-copilot/financial-engine`
+fixture data) — see docs/PROJECT_STATE.md, "remaining fixture dependencies."
+
+---
+
+### DEC-025
+
+**Date:** 2026-09-05
+**Context:** Sprint 3 required choosing and integrating a first real Open Finance provider, while
+keeping the financial engine provider-independent (NON-NEGOTIABLE: "Pluggy must not leak into the
+financial engine").
+**Decision:** Pluggy is the first provider, implemented as `PluggyProvider` in the new
+`@money-copilot/open-finance` package, behind an `OpenFinanceProvider` interface
+(`createConnectionToken`, `getConnection`, `listAccounts`, `listTransactions`, `listBills`,
+`syncConnection`, `deleteConnection`). A `MockProvider` implementing the same interface ships
+alongside it — fully deterministic, no network, no credentials — enabling the entire
+connect→sync→snapshot pipeline to be exercised in tests and local demos without a real Pluggy
+sandbox account. The real Pluggy REST API contract (auth flow, endpoint shapes, pagination, webhook
+payloads) was verified against Pluggy's own `pluggy-sdk`/`pluggy-node` SDK source and official
+`quickstart` reference implementation (fetched from GitHub), not assumed from prior knowledge.
+**Rationale:** The `OpenFinanceProvider` interface is the entire boundary — `financial-engine` only
+ever sees the canonical DTOs (`ExternalAccountInput`, `ExternalTransactionInput`, `ExternalBillInput`)
+these adapters produce, never a Pluggy response type. Using the official `pluggy-sdk` npm package
+(rather than hand-rolling HTTP calls) gets its built-in API-key caching (a ~2h JWT, checked for
+expiry before re-authenticating) and cursor-based pagination helper (`fetchAllTransactions`) for free,
+reducing the surface area for a mapping mistake.
+**Status:** Accepted.
+**Consequences:** No live sandbox credentials were available in this environment
+(`PLUGGY_CLIENT_ID`/`PLUGGY_CLIENT_SECRET` unset) — `PluggyProvider` is contract-tested against an
+injected fake client (`PluggyApiClient`) and sanitized fixture payloads, not a real Pluggy sandbox
+call. See docs/PROJECT_STATE.md, "Live sandbox validation status."
+
+---
+
+### DEC-026
+
+**Date:** 2026-09-05
+**Context:** Pluggy reports its own `category`/`categoryId` on transactions. NON-NEGOTIABLE (Sprint
+3): provider categories must not override the product's deterministic categorization.
+**Decision:** The provider's category is preserved as `providerCategory` on the canonical
+transaction, entirely separate from our own `category`/`subcategory` fields, which are always
+computed by `domain/category.ts`'s deterministic rule engine (see Sprint 2, DEC unchanged).
+`providerCategory` is not read by any calculation and not used as an input to categorization in
+Sprint 3.
+**Rationale:** Keeps a single source of truth for the product's budgeting categories while not
+discarding potentially-useful provider evidence for a future sprint (e.g. as a suggested-rule input
+to a human reviewing uncategorized transactions).
+**Status:** Accepted.
+**Consequences:** A future sprint could use `providerCategory` as a suggestion signal when a human is
+asked to create a new categorization rule — not implemented in Sprint 3.
+
+---
+
+### DEC-027
+
+**Date:** 2026-09-05
+**Context:** Webhook deliveries must be processed idempotently, and must not be trusted as a complete
+payload (NON-NEGOTIABLE, Sprint 3).
+**Decision:** `webhook_events.id` IS the provider's own `eventId` — claiming an event is a single
+`INSERT ... ON CONFLICT DO NOTHING`, and a zero-row result means "already processed," handled without
+any additional bookkeeping (`claimWebhookEvent`). Every handled event type re-fetches canonical data
+from the provider rather than trusting the webhook body: `transactions/created` triggers a full
+date-filtered `syncConnection`; `transactions/updated` triggers a **targeted** re-fetch by external
+transaction id (`refetchTransactionsByExternalId`), not the date-filtered sweep.
+**Rationale:** The targeted-refetch split for `transactions/updated` was not the original design —
+integration testing during this sprint caught that a date-filtered sweep (`since:
+lastSuccessfulSyncAt`) silently misses a status change (e.g. PENDING -> POSTED) on a transaction
+whose own `date` predates the cutoff, even though the change itself is recent. This matches Pluggy's
+own reference implementation, which calls `fetchAllTransactions(accountId, { ids: transactionIds })`
+for update events specifically, never a date sweep.
+**Status:** Accepted.
+**Consequences:** Any future webhook-triggered import must ask "does this event's payload identify
+specific ids, or just an account/time window?" and pick the matching re-fetch strategy — never assume
+one sweep strategy covers every event type.
+
+---
+
+### DEC-028
+
+**Date:** 2026-09-05
+**Context:** Sprint 3 requires FinancialPosition to expose whether the connected accounts represent
+*complete* coverage of the user's real liquidity, and must not silently treat a subset of connected
+accounts as the whole picture.
+**Decision:** `FinancialPosition.coverage: "COMPLETE" | "PARTIAL" | "UNKNOWN"` — COMPLETE only when
+every discovered account (of those actually considered) reports a known balance; PARTIAL when some
+do and some don't; UNKNOWN when there are no accounts at all. `computeLiquidityAwareSafeToSpend`
+downgrades its own confidence to at most `PARTIAL` whenever coverage isn't `COMPLETE`, even if the
+arithmetic itself would otherwise look fully resolved. Manually-entered (non-provider) payment
+sources are excluded from this calculation entirely (see DEC-022's consequence).
+**Rationale:** "Coverage of the accounts we know about" is the only honest claim the system can make
+— it cannot know how many total accounts the user has in real life. Excluding manual payment sources
+avoids the false signal of "PARTIAL forever" for a profile that has categorization-only payment
+sources but zero real connected accounts.
+**Status:** Accepted.
+**Consequences:** `docs/FINANCIAL-ENGINE.md` and the web UI's liquidity stat now speak of "coverage"
+as a distinct concept from certainty.
+
+---
+
+### DEC-029
+
+**Date:** 2026-09-05
+**Context:** Pluggy's `transactions/deleted` webhook reports that a transaction the provider
+previously reported no longer exists (e.g. it was voided before settling). NON-NEGOTIABLE: "do not
+hard-delete financial audit history without thought."
+**Decision:** A deleted-by-provider transaction is marked `status: "REVERSED"` (`markTransactionReversed`)
+— the row is preserved, never hard-deleted. `buildFinancialSnapshot` already excludes `REVERSED`
+transactions from `actualSpending` (a Sprint 2 mechanism, exercised here for the first time by a real
+provider event).
+**Rationale:** Reuses an existing mechanism rather than inventing a new tombstone state; preserves
+audit history; the financial snapshot already stops treating a `REVERSED` transaction as active
+consumption with zero new snapshot logic required.
+**Status:** Accepted.
+**Consequences:** None to existing behavior — this is Sprint 2's `REVERSED` status finally reachable
+via a real (simulated) provider event, not a new concept.
+
+---
+
+### DEC-030
+
+**Date:** 2026-09-05
+**Context:** NON-NEGOTIABLE (Sprint 3): "do not persist full raw provider payloads by default,"
+"redact sensitive provider payload fields from logs," "never log CLIENT_SECRET/API key/Connect
+Token/bank credentials."
+**Decision:** `ExternalTransactionInput.raw` (an optional field carrying the original provider
+payload) exists in the DTO for interactive debugging only — the persistence mapping layer
+(`draftTransactionFromExternalInput`, `packages/persistence`) never reads or stores it. Webhook
+payloads are summarized to `{event, eventId, itemId?, accountId?, transactionCount?}`
+(`summarizeWebhookPayload`) before being written to `webhook_events.payloadSummary` — the full raw
+webhook body is never persisted. `getPluggyClient` throws a `ProviderError` mentioning only env
+variable *names*, never values, when credentials are missing.
+**Rationale:** Directly implements the brief's retention policy without needing a separate
+configuration flag — the narrow/sanitized shape is simply the only shape that exists past the
+adapter boundary.
+**Status:** Accepted.
+**Consequences:** If a future sprint needs full raw-payload replay for debugging a mapping bug, it
+must add an explicit, clearly-labeled opt-in store — never silently widen `payloadSummary` back into
+a full payload dump.
+
+---
+
+### DEC-031
+
+**Date:** 2026-09-05
+**Context:** NON-NEGOTIABLE (Sprint 3): "do NOT create an abusive high-frequency polling scheduler,"
+but also "the application must also support a manual synchronization command/button so local
+development does not depend entirely on webhook delivery."
+**Decision:** Sprint 3 ships exactly two sync triggers: webhook-driven (`/api/webhook` ->
+`handleWebhookEvent`) and manual (`/api/sync`, a "Refresh / sync" button in the Connected Accounts
+UI). No scheduled/polling sync job exists.
+**Rationale:** Matches the brief's explicit preference for provider-driven synchronization, while the
+manual button covers local development (and any real webhook delivery failure) without introducing a
+recurring background job this early. `syncConnection`'s adapter-agnostic design means a future
+scheduled-sync sprint can add a cron-style trigger without changing the pipeline itself.
+**Status:** Accepted.
+**Consequences:** In production, staleness is only resolved by a webhook firing or a human clicking
+"Refresh / sync" — no automatic periodic refresh. Acceptable for Sprint 3's sandbox-only scope; revisit
+before any real production deployment.
+
+---
+
+### DEC-032
+
+**Date:** 2026-09-05
+**Context:** Sprint 3 requires that a provider-derived installment schedule never silently replaces
+the founder's manual ~BRL 1,400/month old-debt estimate, "only high-confidence deterministic evidence
+may replace the estimate automatically... otherwise flag for human review."
+**Decision:** `matchInstallmentPlans` (Sprint 2 code, extended in Sprint 3 usage) NEVER returns
+`status: "CONFIRMED"` for an installment-plan match — every match, regardless of confidence (HIGH
+requires a shared `paymentSourceId` and amounts within 5%; MEDIUM is amounts within 15% alone), is a
+`"CANDIDATE"`. No code path in `@money-copilot/app-services` auto-applies a match (e.g. by marking the
+manual plan `COMPLETED`).
+**Rationale:** Given no live sandbox data to validate the matching heuristic's real-world precision,
+and the brief's explicit conservative instruction, the safest choice for Sprint 3 is: surface every
+match as a candidate, apply none automatically. `getInstallmentPlanMatchCandidates` exposes them for
+a human (or a future sprint's more confident logic) to act on.
+**Status:** Accepted.
+**Consequences:** A future sprint that wants automatic replacement for HIGH-confidence matches must
+make that an explicit, separate, documented decision — not a change to `matchInstallmentPlans`'s
+default behavior.
+
+---
+
+### DEC-033
+
+**Date:** 2026-09-05
+**Context:** Live Pluggy sandbox credentials (`PLUGGY_CLIENT_ID`/`PLUGGY_CLIENT_SECRET`) were not
+available in this environment.
+**Decision:** All Sprint 3 engineering (provider abstraction, Pluggy adapter, mapping/sign logic,
+sync pipeline, webhook handling, DB-backed UI) was completed and verified via automated tests
+(`MockProvider`, injected fake `PluggyApiClient`, sanitized Pluggy-shaped fixtures) and manual
+build/server smoke tests. Live sandbox validation (a real `POST /auth`, `POST /connect_token`, and an
+actual Pluggy Connect flow) was NOT executed.
+**Rationale:** Per the Sprint 3 brief's own instruction: "If provider credentials are not available:
+finish ALL implementation and automated provider-contract tests... Do not incorrectly mark the entire
+engineering sprint blocked if only the external live validation requires credentials."
+**Status:** Accepted.
+**Consequences:** Reported as `ENGINEERING COMPLETE / LIVE SANDBOX VALIDATION PENDING`. The Founder
+must supply real Pluggy sandbox credentials (`.env.example` documents the exact variables) for a
+follow-up live validation pass — see docs/PROJECT_STATE.md, "Open questions."

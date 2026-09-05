@@ -16,3 +16,6 @@ export * from "./recurring";
 export * from "./installment";
 export * from "./position";
 export * from "./external-transaction";
+export * from "./external-account";
+export * from "./bill";
+export * from "./provider";

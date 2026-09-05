@@ -1,6 +1,6 @@
 import type { Id } from "@money-copilot/shared";
 import type { Money } from "../money/index";
-import type { Certainty } from "./certainty";
+import type { Certainty, CertainAmount } from "./certainty";
 import type { FinancialEffect } from "./financial-effect";
 
 export type PaymentSourceType =
@@ -11,18 +11,47 @@ export type PaymentSourceType =
   | "PIX"
   | "OTHER";
 
+/** Provider-reported credit card metadata for a `PaymentSource` of type `CREDIT_CARD`. */
+export interface PaymentSourceCreditCardInfo {
+  readonly creditLimit?: Money;
+  readonly availableCreditLimit?: Money;
+  /** ISO date of the current bill's closing date, if known. */
+  readonly closingDate?: string;
+  /** ISO date of the current bill's due date, if known. */
+  readonly dueDate?: string;
+  readonly minimumPayment?: Money;
+}
+
 /**
  * A payment source is the RAIL used to move money (e.g. "Nubank Credit
  * Card"). It is never itself an expense category — see RULE #4. A credit
  * card bill is not "an expense"; the underlying purchases it paid for are.
- * Also doubles, for Sprint 2, as the "account/financial container" the
- * transaction belongs to — a separate `Account` entity was judged
- * unnecessary complexity until a real provider needs it. See DEC-009.
+ * Also doubles as the "account/financial container" the transaction
+ * belongs to — a separate `Account` entity was judged unnecessary
+ * complexity (DEC-009); Sprint 3 extends this shape with optional
+ * provider/account fields rather than introducing that parallel entity
+ * (DEC-022), so a manually-entered Sprint 1/2 payment source remains a
+ * valid, minimal `PaymentSource` with none of these fields set.
  */
 export interface PaymentSource {
   readonly id: Id<"payment-source">;
   readonly label: string;
   readonly type: PaymentSourceType;
+
+  /** Finer-grained institution subtype, e.g. "CHECKING_ACCOUNT", "SAVINGS_ACCOUNT". */
+  readonly subtype?: string;
+  /** e.g. "pluggy". Absent for manually-entered payment sources. */
+  readonly provider?: string;
+  readonly externalAccountId?: string;
+  readonly connectionId?: Id<"provider-connection">;
+  /** ISO 4217 currency code; defaults to BRL when absent. */
+  readonly currency?: string;
+  /** Known account balance, when synced from a provider. */
+  readonly balance?: CertainAmount;
+  readonly creditCard?: PaymentSourceCreditCardInfo;
+  /** Certainty of the balance/metadata above (distinct from any transaction's own certainty). */
+  readonly certainty?: Certainty;
+  readonly lastSyncedAt?: string;
 }
 
 /** Raw cash-flow direction, independent of financial interpretation. */
@@ -81,6 +110,22 @@ export interface FinancialTransaction {
   /** Null until categorized; see `domain/category.ts`. */
   readonly category: string | null;
   readonly subcategory?: string;
+  /**
+   * The provider's own category label, preserved for reference/future
+   * evidence only. NEVER authoritative over our deterministic
+   * `category`/`subcategory` above — see RULE (Sprint 3): "provider
+   * categories are not authoritative."
+   */
+  readonly providerCategory?: string;
+
+  /** Present when the provider reports installment details for this purchase. */
+  readonly installmentMetadata?: {
+    readonly installmentNumber?: number;
+    readonly totalInstallments?: number;
+    readonly totalAmount?: Money;
+    /** The provider's own bill/invoice identifier this installment belongs to, if any. */
+    readonly externalBillId?: string;
+  };
 
   readonly origin: TransactionOrigin;
   /** Free-form provider/reconciliation metadata. Never used for calculation. */
