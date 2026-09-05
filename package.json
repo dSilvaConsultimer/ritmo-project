@@ -1,0 +1,25 @@
+{
+  "name": "money-copilot",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Money Copilot — deterministic financial core and conversational money assistant",
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@11.25.0",
+  "scripts": {
+    "build": "pnpm -r --filter=./packages/* --filter=./apps/* run build",
+    "test": "pnpm -r --filter=./packages/* run test",
+    "lint": "pnpm -r run lint",
+    "typecheck": "pnpm -r run typecheck",
+    "dev": "pnpm --filter @money-copilot/web run dev"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.10.0",
+    "globals": "^17.12.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.69.0"
+  }
+}
