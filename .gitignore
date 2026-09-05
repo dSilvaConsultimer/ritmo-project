@@ -11,3 +11,5 @@ coverage/
 .env.local
 .turbo/
 *.tsbuildinfo
+.data/
+*.pglite

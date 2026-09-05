@@ -9,28 +9,35 @@ Deterministic financial engine: `Money`, domain model, `FinancialSnapshot`/Safe-
 `simulateExpense`, lifestyle simulation, initial real-life fixture, strong test coverage, minimal
 Next.js display UI, full documentation set. No persistence, no Open Finance, no LLM.
 
-## Sprint 2 — Transactions + normalization + categorization
+## Sprint 2 — Transactions + persistence + financial normalization ✅ (complete)
 
-- Recurring-expense modeling (distinct from one-off `FixedExpense` entries — needs a notion of
-  cadence/next-due-date).
-- Installment tracking (e.g. the existing ~BRL 1,400 credit card installment fixture entry should
-  become a real installment plan with a start date, count, and remaining count).
-- Transaction categorization (rules-based first; the "Nubank → iFood → Food" pattern from Sprint 1
-  needs to generalize to arbitrary merchants).
-- Deduplication groundwork: a stable transaction fingerprint (date + amount + description hash) so
-  manual entries and, later, imported ones can be matched (RULE #12). Full Open Finance-side
-  deduplication logic belongs to Sprint 3, but the fingerprinting scheme should be designed now.
-- Persistence: Sprint 1 has none. This is likely the sprint that introduces it (even if minimal —
-  e.g. a local file/SQLite store) since transactions need to accumulate over time.
+Canonical `FinancialTransaction` model + `FinancialEffect` classification (no more card-payment/
+transfer double counting); merchant normalization + deterministic categorization; recurring-expense
+*candidate* detection (never auto-confirmed); `InstallmentPlan` (incomplete-schedule-aware) +
+future-commitment read model; deduplication/reconciliation (provider-id → fingerprint → candidate,
+never silently merged); `FinancialProfile` ownership model; `FinancialPosition`/liquidity-aware
+Safe-to-Spend alongside the plan figure; tri-state lifestyle viability
+(UNSUSTAINABLE/FRAGILE/SUSTAINABLE); auditable `SafeToSpendBreakdown`; first persistence layer
+(Drizzle + PGlite, no hosted credentials needed) with idempotent seed; extended debug/validation UI.
+See `docs/DECISIONS.md` DEC-009 through DEC-020 and `docs/PROJECT_STATE.md` for the full account.
 
 ## Sprint 3 — Open Finance provider abstraction + sandbox integration
 
-- Define a provider-agnostic interface (`OpenFinanceProvider`) so Pluggy/Belvo/others are
-  swappable.
+- Define a provider-agnostic interface (`OpenFinanceProvider`) that maps a real provider's payload
+  into Sprint 2's `ExternalTransactionInput` DTO (`domain/external-transaction.ts`) so Pluggy/Belvo/
+  others are swappable.
 - Sandbox-only integration first; no real bank credentials.
-- Real transaction import feeding into Sprint 2's categorization + deduplication pipeline.
+- Real transaction import feeding into Sprint 2's normalization, categorization, and reconciliation
+  pipeline (`findTransactionDuplicates`, `matchTransactions`) — this is where `PROVIDER_ID`/
+  `STABLE_SOURCE_ID` matching finally has real provider ids to work with, not just the fallback
+  fingerprint.
 - `Recommendation.VERIFIED`/`FAILED` become reachable for the first time (RULE #10) — imported data
   can finally confirm or refute whether an accepted recommendation's savings materialized.
+- Likely also the sprint to wire the web UI to read live from `@money-copilot/persistence` instead
+  of the in-memory fixture (deferred in Sprint 2 — see DEC-019) — a real provider needs a live-data
+  UI anyway, so bundling the two makes sense.
+- Replace the old credit-card debt `InstallmentPlan`'s unknown schedule (Sprint 2:
+  `installmentNumber`/`totalInstallments` both `null`) with the real schedule, once available.
 
 ## Sprint 4 — AI conversational copilot with deterministic financial tools
 

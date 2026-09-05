@@ -2,10 +2,18 @@ import * as M from "../money/index";
 import type { Money } from "../money/index";
 import { TAX_CATEGORY, type FixedExpense, type VariableBudget } from "../domain/expense";
 import type { Income } from "../domain/income";
+import type { Certainty } from "../domain/certainty";
+import { worstCertainty } from "../domain/certainty";
 import type { FinancialTransaction } from "../domain/transaction";
+import { isConsumptionLike } from "../domain/financial-effect";
 import { breakdownEvent, type FinancialEvent } from "../domain/event";
 import type { FinancialGoal } from "../domain/goal";
 import type { ProtectedPreference } from "../domain/preference";
+import type { InstallmentPlan } from "../domain/installment";
+import { summarizeFutureInstallmentCommitments, type FutureCommitmentSummary } from "../domain/installment";
+import { excludedTransactionIds, type ReconciliationLink } from "../domain/reconciliation";
+import type { FinancialPosition } from "../domain/position";
+import { computeLiquidityAwareSafeToSpend, type LiquidityAwareSafeToSpend } from "../domain/position";
 import { daysRemainingInMonth, isSameMonth } from "./date-utils";
 
 export interface FinancialSnapshotInput {
@@ -14,9 +22,13 @@ export interface FinancialSnapshotInput {
   readonly fixedExpenses: readonly FixedExpense[];
   readonly variableBudgets: readonly VariableBudget[];
   readonly transactions: readonly FinancialTransaction[];
+  readonly reconciliationLinks: readonly ReconciliationLink[];
   readonly events: readonly FinancialEvent[];
+  readonly installmentPlans: readonly InstallmentPlan[];
   readonly goal: FinancialGoal;
   readonly protectedPreferences: readonly ProtectedPreference[];
+  /** Optional real liquidity data. Omit to get an honest "unknown" liquidity read. */
+  readonly position?: FinancialPosition;
 }
 
 export type FinancialConfidence = "HIGH" | "MEDIUM" | "LOW";
@@ -39,8 +51,40 @@ export interface FinancialSnapshotCommitments {
   readonly fixed: Money;
   readonly variableBudgets: Money;
   readonly actualSpending: Money;
+  readonly debtCommitments: Money;
   readonly futureConfirmed: Money;
   readonly futureEstimated: Money;
+  readonly unknownLabels: readonly string[];
+}
+
+/**
+ * One line of the Safe-to-Spend audit trail. `amount` is signed: negative
+ * values are deductions, positive values are the starting resource. Summing
+ * every component's `amount` must exactly equal `SafeToSpendBreakdown.total`
+ * — see the reconciliation test in `snapshot.test.ts`.
+ */
+export type SafeToSpendComponentType =
+  | "USABLE_INCOME"
+  | "FIXED_COMMITMENTS"
+  | "VARIABLE_BUDGETS"
+  | "ACTUAL_SPENDING"
+  | "DEBT_COMMITMENTS"
+  | "FUTURE_CONFIRMED"
+  | "FUTURE_ESTIMATED"
+  | "PROTECTED_SAVINGS";
+
+export interface SafeToSpendComponent {
+  readonly label: string;
+  readonly type: SafeToSpendComponentType;
+  readonly amount: Money;
+  readonly certainty: Certainty;
+}
+
+export interface SafeToSpendBreakdown {
+  readonly components: readonly SafeToSpendComponent[];
+  /** Must exactly equal `safeToSpend.total`. */
+  readonly total: Money;
+  /** Commitments that exist but have no amount yet — excluded above, listed here instead of as zero. */
   readonly unknownLabels: readonly string[];
 }
 
@@ -51,19 +95,20 @@ export interface FinancialSnapshot {
   readonly protectedSavings: Money;
   /** Cash left after all commitments, before allocating to protected savings. */
   readonly discretionaryBeforeSavings: Money;
-  /** Projected end-of-month discretionary cash flow (not a bank balance — Sprint 1 models no starting balance). */
+  /** Projected end-of-month discretionary cash flow (not a bank balance — no starting balance is modeled here; see `liquidity`). */
   readonly projectedMonthEndCash: Money;
   /** What will actually be saved toward the goal if no further discretionary spending occurs. */
   readonly projectedSavings: Money;
   readonly safeToSpend: SafeToSpend;
+  readonly safeToSpendBreakdown: SafeToSpendBreakdown;
+  readonly futureInstallmentCommitments: FutureCommitmentSummary;
+  /** Plan Safe-to-Spend narrowed by real liquidity, when available — see `docs/FINANCIAL-ENGINE.md`. */
+  readonly liquidity: LiquidityAwareSafeToSpend;
   readonly confidence: FinancialConfidence;
   readonly warnings: readonly string[];
 }
 
-function computeConfidence(
-  hasEstimated: boolean,
-  hasUnknown: boolean,
-): FinancialConfidence {
+function computeConfidence(hasEstimated: boolean, hasUnknown: boolean): FinancialConfidence {
   if (hasUnknown) return "LOW";
   if (hasEstimated) return "MEDIUM";
   return "HIGH";
@@ -79,6 +124,7 @@ export function buildFinancialSnapshot(input: FinancialSnapshotInput): Financial
   const taxExpenses = input.fixedExpenses.filter((e) => e.category === TAX_CATEGORY);
   const taxes = M.sum(taxExpenses.map((e) => e.amount));
   const usable = M.subtract(gross, taxes);
+  const incomeCertainty = worstCertainty(input.income.map((i) => i.certainty));
 
   for (const incomeItem of input.income) {
     if (incomeItem.certainty === "ESTIMATED") hasEstimated = true;
@@ -88,6 +134,7 @@ export function buildFinancialSnapshot(input: FinancialSnapshotInput): Financial
   // --- Fixed commitments (excluding tax, which is already netted out of income) ---
   const nonTaxFixed = input.fixedExpenses.filter((e) => e.category !== TAX_CATEGORY);
   const fixed = M.sum(nonTaxFixed.map((e) => e.amount));
+  const fixedCertainty = worstCertainty(nonTaxFixed.map((e) => e.certainty));
   for (const expense of [...taxExpenses, ...nonTaxFixed]) {
     if (expense.certainty === "ESTIMATED") hasEstimated = true;
     if (expense.certainty === "UNKNOWN") hasUnknown = true;
@@ -95,16 +142,27 @@ export function buildFinancialSnapshot(input: FinancialSnapshotInput): Financial
 
   // --- Variable budgets (targets, e.g. food) ---
   const variableBudgetsTotal = M.sum(input.variableBudgets.map((b) => b.targetAmount));
+  const variableBudgetsCertainty = worstCertainty(input.variableBudgets.map((b) => b.certainty));
   for (const budget of input.variableBudgets) {
     if (budget.certainty === "ESTIMATED") hasEstimated = true;
     if (budget.certainty === "UNKNOWN") hasUnknown = true;
   }
 
-  // --- Actual spending this month (posted transactions + already-paid event items) ---
-  const monthlyExpenseTransactions = input.transactions.filter(
-    (t) => t.kind === "EXPENSE" && isSameMonth(t.date, input.asOfDate),
+  // --- Reconciled transactions this month: consumption-like effects only, refunds net against them ---
+  const excludedIds = excludedTransactionIds(input.reconciliationLinks);
+  const monthlyTransactions = input.transactions.filter(
+    (t) =>
+      !excludedIds.has(t.id) &&
+      t.status !== "REVERSED" &&
+      isSameMonth(t.date, input.asOfDate),
   );
-  const transactionsActualSpending = M.sum(monthlyExpenseTransactions.map((t) => t.amount));
+  const consumptionSum = M.sum(
+    monthlyTransactions.filter((t) => isConsumptionLike(t.financialEffect)).map((t) => t.amount),
+  );
+  const refundSum = M.sum(
+    monthlyTransactions.filter((t) => t.financialEffect === "REFUND").map((t) => t.amount),
+  );
+  const transactionsActualSpending = M.subtract(consumptionSum, refundSum);
 
   // --- Planned events: already-paid, future-confirmed, future-estimated, unknown ---
   let eventAlreadyPaid = M.ZERO;
@@ -132,6 +190,25 @@ export function buildFinancialSnapshot(input: FinancialSnapshotInput): Financial
 
   const actualSpending = M.add(transactionsActualSpending, eventAlreadyPaid);
 
+  // --- Debt / installment commitments (never counted as fresh category consumption) ---
+  const futureInstallmentCommitments = summarizeFutureInstallmentCommitments(input.installmentPlans);
+  const debtCommitments = futureInstallmentCommitments.currentPeriodAmount;
+  const activeInstallmentCertainties = input.installmentPlans
+    .filter((p) => p.status === "ACTIVE")
+    .map((p) => p.certainty);
+  for (const c of activeInstallmentCertainties) {
+    if (c === "ESTIMATED") hasEstimated = true;
+    if (c === "UNKNOWN") hasUnknown = true;
+  }
+  if (futureInstallmentCommitments.hasIncompleteData) {
+    hasEstimated = true;
+    for (const label of futureInstallmentCommitments.incompletePlanDescriptions) {
+      warnings.push(
+        `Installment plan "${label}" has an incomplete schedule — future commitment projections beyond this month are estimates.`,
+      );
+    }
+  }
+
   // --- Protected savings goal ---
   const protectedSavings = input.goal.monthlySavingsTarget;
 
@@ -142,6 +219,7 @@ export function buildFinancialSnapshot(input: FinancialSnapshotInput): Financial
     actualSpending,
     futureConfirmed,
     futureEstimated,
+    debtCommitments,
   ]);
   const discretionaryBeforeSavings = M.subtract(usable, committedTotal);
   const projectedMonthEndCash = discretionaryBeforeSavings;
@@ -164,6 +242,77 @@ export function buildFinancialSnapshot(input: FinancialSnapshotInput): Financial
 
   const confidence = computeConfidence(hasEstimated, hasUnknown);
 
+  const actualSpendingCertainty = worstCertainty(
+    monthlyTransactions.length > 0 ? monthlyTransactions.map((t) => t.certainty) : ["ACTUAL"],
+  );
+  const debtCertainty = worstCertainty(activeInstallmentCertainties.length > 0 ? activeInstallmentCertainties : ["ACTUAL"]);
+
+  const components: SafeToSpendComponent[] = [
+    { label: "Usable income", type: "USABLE_INCOME", amount: usable, certainty: incomeCertainty },
+    {
+      label: "Fixed commitments",
+      type: "FIXED_COMMITMENTS",
+      amount: M.negate(fixed),
+      certainty: fixedCertainty,
+    },
+    {
+      label: "Variable budgets",
+      type: "VARIABLE_BUDGETS",
+      amount: M.negate(variableBudgetsTotal),
+      certainty: variableBudgetsCertainty,
+    },
+    {
+      label: "Actual spending this month",
+      type: "ACTUAL_SPENDING",
+      amount: M.negate(actualSpending),
+      certainty: actualSpendingCertainty,
+    },
+    {
+      label: "Debt / installment commitments",
+      type: "DEBT_COMMITMENTS",
+      amount: M.negate(debtCommitments),
+      certainty: debtCertainty,
+    },
+    {
+      label: "Future confirmed event reservations",
+      type: "FUTURE_CONFIRMED",
+      amount: M.negate(futureConfirmed),
+      certainty: "CONFIRMED",
+    },
+    {
+      label: "Future estimated event reservations",
+      type: "FUTURE_ESTIMATED",
+      amount: M.negate(futureEstimated),
+      certainty: "ESTIMATED",
+    },
+    {
+      label: "Protected savings target",
+      type: "PROTECTED_SAVINGS",
+      amount: M.negate(protectedSavings),
+      certainty: "CONFIRMED",
+    },
+  ];
+  const breakdownTotal = M.sum(components.map((c) => c.amount));
+
+  const safeToSpendBreakdown: SafeToSpendBreakdown = {
+    components,
+    total: breakdownTotal,
+    unknownLabels,
+  };
+
+  const position = input.position;
+  const liquidity: LiquidityAwareSafeToSpend = position
+    ? computeLiquidityAwareSafeToSpend(safeTotal, position)
+    : {
+        planSafeToSpend: safeTotal,
+        liquidityAwareSafeToSpend: null,
+        confidence: "UNKNOWN",
+        warnings: [
+          "Real-time liquidity is unknown — Safe-to-Spend reflects the monthly plan only, not actual cash on hand.",
+        ],
+      };
+  warnings.push(...liquidity.warnings);
+
   return {
     asOfDate: input.asOfDate,
     income: { gross, taxes, usable },
@@ -171,6 +320,7 @@ export function buildFinancialSnapshot(input: FinancialSnapshotInput): Financial
       fixed,
       variableBudgets: variableBudgetsTotal,
       actualSpending,
+      debtCommitments,
       futureConfirmed,
       futureEstimated,
       unknownLabels,
@@ -184,6 +334,9 @@ export function buildFinancialSnapshot(input: FinancialSnapshotInput): Financial
       recommendedForToday,
       daysRemainingInMonth: days,
     },
+    safeToSpendBreakdown,
+    futureInstallmentCommitments,
+    liquidity,
     confidence,
     warnings,
   };

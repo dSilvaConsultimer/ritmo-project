@@ -2,7 +2,7 @@ import { createId } from "@money-copilot/shared";
 import * as M from "../money/index";
 import type { Money } from "../money/index";
 import type { FixedExpense } from "../domain/expense";
-import type { LifestyleScenario } from "../domain/scenario";
+import { classifyLifestyleViability, type LifestyleScenario, type LifestyleViability } from "../domain/scenario";
 import { buildFinancialSnapshot, type FinancialSnapshot, type FinancialSnapshotInput } from "../snapshot/snapshot";
 
 const LIFESTYLE_SIMULATION_CATEGORY = "Lifestyle Simulation" as const;
@@ -38,8 +38,14 @@ export interface LifestyleComparisonResult {
   readonly independent: FinancialSnapshot;
   readonly projectedSavingsDelta: Money;
   readonly safeToSpendDelta: Money;
-  /** Viable when independent living would not push projected savings negative. */
-  readonly isIndependentLivingViable: boolean;
+  /**
+   * Tri-state viability read — see `docs/DECISIONS.md` DEC-010. Replaces
+   * the Sprint 1 boolean `isIndependentLivingViable`
+   * ("projected savings >= 0"), which did not distinguish "barely
+   * surviving" from "goal fully preserved."
+   */
+  readonly currentViability: LifestyleViability;
+  readonly independentViability: LifestyleViability;
 }
 
 export function compareLifestyles(
@@ -55,6 +61,10 @@ export function compareLifestyles(
     independent,
     projectedSavingsDelta: M.subtract(independent.projectedSavings, current.projectedSavings),
     safeToSpendDelta: M.subtract(independent.safeToSpend.total, current.safeToSpend.total),
-    isIndependentLivingViable: !M.isNegative(independent.projectedSavings),
+    currentViability: classifyLifestyleViability(current.projectedSavings, current.protectedSavings),
+    independentViability: classifyLifestyleViability(
+      independent.projectedSavings,
+      independent.protectedSavings,
+    ),
   };
 }

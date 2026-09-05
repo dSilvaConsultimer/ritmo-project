@@ -5,7 +5,9 @@ import { initialUserSnapshotInput } from "../fixtures/initial-user";
 import { simulateExpense } from "./expense-simulation";
 
 const snapshot = buildFinancialSnapshot(initialUserSnapshotInput);
-// From snapshot.test.ts: safeToSpend.total = 247_890 cents; protectedSavings = 200_000 cents.
+// From snapshot.test.ts: safeToSpend.total = 217_111 cents; protectedSavings = 200_000 cents;
+// discretionaryBeforeSavings = 417_111 cents (Sprint 2 fixture — see DEC-013 for the
+// reconciliation of this value against Sprint 1's 247_890).
 
 describe("simulateExpense", () => {
   it("classifies a within-budget expense as SAFE with no compensation required", () => {
@@ -24,7 +26,7 @@ describe("simulateExpense", () => {
 
   it("classifies a moderate overage as CAUTION (acceptable stretch)", () => {
     const result = simulateExpense(snapshot, {
-      amount: M.fromCents(267_890),
+      amount: M.fromCents(237_111),
       category: "Date night",
       date: "2026-09-05",
     });
@@ -43,8 +45,8 @@ describe("simulateExpense", () => {
     });
 
     expect(result.status).toBe("HIGH_IMPACT");
-    expect(result.compensationRequired.cents).toBe(252_110);
-    expect(result.projectedSavingsAfter.cents).toBe(-52_110);
+    expect(result.compensationRequired.cents).toBe(282_889);
+    expect(result.projectedSavingsAfter.cents).toBe(-82_889);
     // The simulation always returns a structured result — spending above the
     // recommendation is allowed, never blocked. See NON-NEGOTIABLE RULE #7.
     expect(result.requestedAmount.cents).toBe(500_000);
@@ -58,7 +60,7 @@ describe("simulateExpense", () => {
       date: "2026-09-05",
     });
 
-    expect(result.recommendedLimit.cents).toBe(247_890);
+    expect(result.recommendedLimit.cents).toBe(217_111);
     expect(result.projectedSavingsBefore.cents).toBe(snapshot.projectedSavings.cents);
   });
 

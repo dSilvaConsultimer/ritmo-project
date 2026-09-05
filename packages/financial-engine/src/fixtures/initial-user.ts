@@ -2,12 +2,15 @@ import { createId } from "@money-copilot/shared";
 import * as M from "../money/index";
 import { TAX_CATEGORY, type FixedExpense, type VariableBudget } from "../domain/expense";
 import type { Income } from "../domain/income";
-import type { FinancialTransaction, PaymentSource } from "../domain/transaction";
 import type { FinancialEvent } from "../domain/event";
 import type { FinancialGoal } from "../domain/goal";
 import type { ProtectedPreference } from "../domain/preference";
 import type { LifestyleScenario } from "../domain/scenario";
+import type { InstallmentPlan } from "../domain/installment";
+import { reconcileEventLineItems, findTransactionDuplicates, type ReconciliationLink } from "../domain/reconciliation";
 import type { FinancialSnapshotInput } from "../snapshot/snapshot";
+import { FIXTURE_PROFILE_ID } from "./profile";
+import { septemberTransactions } from "./transactions";
 
 /**
  * "Today" for the fixture. Chosen so the rodeo event has already partly
@@ -61,15 +64,6 @@ const carSubscription: FixedExpense = {
   protected: false,
 };
 
-const creditCardBillInstallment: FixedExpense = {
-  id: createId("fixed-expense"),
-  label: "Existing credit card bill installment",
-  category: "Debt",
-  amount: M.fromReais(1_400),
-  certainty: "ESTIMATED",
-  protected: false,
-};
-
 const lifeInsurance: FixedExpense = {
   id: createId("fixed-expense"),
   label: "Life insurance",
@@ -97,12 +91,18 @@ const footvolley: FixedExpense = {
   protected: false,
 };
 
+/**
+ * Sprint 2: the old credit-card-debt installment (~BRL 1,400/month) is no
+ * longer a flat `FixedExpense` — it's modeled as an `InstallmentPlan` (see
+ * `installmentPlans` below) so it's correctly classified as DEBT_PAYMENT,
+ * not fresh consumption, and so its (currently unknown) remaining schedule
+ * is represented honestly rather than guessed. See DEC-011.
+ */
 export const fixedExpenses: readonly FixedExpense[] = [
   taxes,
   housing,
   motherSupport,
   carSubscription,
-  creditCardBillInstallment,
   lifeInsurance,
   gym,
   footvolley,
@@ -118,40 +118,52 @@ const foodBudget: VariableBudget = {
 
 export const variableBudgets: readonly VariableBudget[] = [foodBudget];
 
-const nubankCreditCard: PaymentSource = {
-  id: createId("payment-source"),
-  label: "Nubank",
-  type: "CREDIT_CARD",
+/**
+ * The existing card debt: a known monthly amount but an unknown
+ * installment number/total — Sprint 3 may replace this estimate with the
+ * real schedule once real bank data is available. Modeling it with
+ * `installmentNumber`/`totalInstallments` as `null` (rather than guessing)
+ * demonstrates handling incomplete installment data with real fixture
+ * data, per RULE #9/#16/#17.
+ */
+export const oldCreditCardDebtPlan: InstallmentPlan = {
+  id: createId("installment-plan"),
+  financialProfileId: FIXTURE_PROFILE_ID,
+  description: "Existing credit card bill installment",
+  totalOriginalAmount: null,
+  installmentAmount: M.fromReais(1_400),
+  installmentNumber: null,
+  totalInstallments: null,
+  firstDueDate: null,
+  certainty: "ESTIMATED",
+  status: "ACTIVE",
 };
+
+export const installmentPlans: readonly InstallmentPlan[] = [oldCreditCardDebtPlan];
 
 /**
  * Demonstrates RULE #4: Nubank is the payment rail, "Food" is the category.
  * Nubank's bill is never itself modeled as an expense category — its
- * underlying transactions (like this one) are categorized individually.
+ * underlying transactions (like these) are categorized individually via
+ * deterministic rules (`fixtures/rules.ts`), not hand-assigned. See
+ * `fixtures/transactions.ts` for the raw September transaction set,
+ * including the rodeo ticket purchase that must reconcile with the rodeo
+ * event's ALREADY_PAID line item below (never counted twice).
  */
-export const transactions: readonly FinancialTransaction[] = [
-  {
-    id: createId("transaction"),
-    description: "iFood dinner",
-    amount: M.fromReais(45),
-    kind: "EXPENSE",
-    category: "Food",
-    paymentSource: nubankCreditCard,
-    date: FIXTURE_AS_OF_DATE,
-    certainty: "ACTUAL",
-  },
-];
+export const transactions = septemberTransactions;
 
 /**
  * Rodeo: the ticket has already been paid (counted once, as actual
  * spending — never reserved again). Transportation is a confirmed future
- * cost; drinks are an estimated future cost.
+ * cost; drinks are an estimated future cost. The ticket amount also exists
+ * as a raw transaction (`septemberTransactions`) — `reconciliationLinks`
+ * below links the two so the snapshot counts it exactly once.
  */
 const rodeo: FinancialEvent = {
   id: createId("financial-event"),
   label: "Rodeo",
-  startDate: "2026-09-06",
-  endDate: "2026-09-06",
+  startDate: "2026-09-04",
+  endDate: "2026-09-04",
   lineItems: [
     {
       id: createId("event-line-item"),
@@ -199,6 +211,18 @@ const beachTrip: FinancialEvent = {
 };
 
 export const events: readonly FinancialEvent[] = [rodeo, beachTrip];
+
+/**
+ * Reconciliation links computed the same way a real pipeline would: the
+ * rodeo ticket transaction is matched against the rodeo event's
+ * ALREADY_PAID line item (same amount, same date window), and the full
+ * transaction set is scanned for likely duplicates (none expected here —
+ * every fixture transaction is financially distinct).
+ */
+export const reconciliationLinks: readonly ReconciliationLink[] = [
+  ...reconcileEventLineItems(events, transactions),
+  ...findTransactionDuplicates(transactions),
+];
 
 export const independentLivingGoal: FinancialGoal = {
   id: createId("financial-goal"),
@@ -258,7 +282,10 @@ export const initialUserSnapshotInput: FinancialSnapshotInput = {
   fixedExpenses,
   variableBudgets,
   transactions,
+  reconciliationLinks,
   events,
+  installmentPlans,
   goal: independentLivingGoal,
   protectedPreferences,
+  // No real liquidity data yet — see FinancialPosition, DEC-012.
 };

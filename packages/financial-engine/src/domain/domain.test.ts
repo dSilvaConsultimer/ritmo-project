@@ -9,13 +9,13 @@ import type { Recommendation } from "./recommendation";
 
 describe("payment source vs. expense category", () => {
   it("models the credit card as a payment source, never as an expense category", () => {
-    const dinner = transactions[0]!;
+    const dinner = transactions.find((t) => t.normalizedMerchant === "IFOOD")!;
     expect(dinner.paymentSource.label).toBe("Nubank");
     expect(dinner.paymentSource.type).toBe("CREDIT_CARD");
     expect(dinner.category).toBe("Food");
     // The category must describe what the money was for, not how it was paid.
-    expect(dinner.category.toLowerCase()).not.toContain("credit card");
-    expect(dinner.category.toLowerCase()).not.toContain("nubank");
+    expect(dinner.category!.toLowerCase()).not.toContain("credit card");
+    expect(dinner.category!.toLowerCase()).not.toContain("nubank");
   });
 });
 

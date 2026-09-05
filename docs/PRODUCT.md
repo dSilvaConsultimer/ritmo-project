@@ -59,8 +59,32 @@ actually moves out — so he can make an informed decision about timing. See
 See [docs/PROJECT_STATE.md](./PROJECT_STATE.md) for the full, authoritative list of non-negotiable
 product rules, and [docs/DECISIONS.md](./DECISIONS.md) for why each one was adopted.
 
-## Out of scope for Sprint 1
+## Financial Plan vs. Financial Position (Sprint 2)
+
+Money Copilot deliberately separates two different questions:
+
+- **Financial Plan** — given this month's income, commitments, and goals, what does the math say I
+  can safely spend? (`FinancialSnapshot`, unchanged in spirit since Sprint 1.)
+- **Financial Position / Liquidity** — what does my bank account actually show right now?
+  (`FinancialPosition`, new in Sprint 2.)
+
+A healthy plan does not always mean healthy liquidity (income committed but not yet received), and a
+large bank balance does not always mean healthy plan headroom (it may already be earmarked). The
+product surfaces both rather than conflating them — see `docs/FINANCIAL-ENGINE.md` for
+`computeLiquidityAwareSafeToSpend`.
+
+## A bank transaction is not automatically an expense (Sprint 2)
+
+Extending RULE #4 (credit cards are payment sources, not categories): a raw bank/card transaction
+must be classified by its actual financial effect before it means anything. A credit card bill
+payment is not a second expense on top of the purchases it paid for; a transfer between the user's
+own accounts is not consumption; a refund reduces net spend rather than sitting alongside the
+original purchase as if both were real. See `docs/FINANCIAL-ENGINE.md`, "Financial effect
+classification."
+
+## Out of scope for Sprint 1 and Sprint 2
 
 Open Finance/Pluggy/Belvo integration, real bank/credit card connections, WhatsApp, any LLM API
-(OpenAI, Anthropic, or otherwise), and a recommendation *discovery* engine. Sprint 1 proves the
-deterministic core works; these are future sprints — see [docs/ROADMAP.md](./ROADMAP.md).
+(OpenAI, Anthropic, or otherwise), and a recommendation *discovery* engine. Sprints 1–2 prove the
+deterministic core and its persistence work; these are future sprints — see
+[docs/ROADMAP.md](./ROADMAP.md).

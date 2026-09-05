@@ -1,0 +1,30 @@
+{
+  "name": "@money-copilot/persistence",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src --max-warnings=0",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build": "tsc -p tsconfig.json",
+    "db:generate": "drizzle-kit generate",
+    "db:seed": "tsx src/seed.ts"
+  },
+  "dependencies": {
+    "@money-copilot/financial-engine": "workspace:*",
+    "@money-copilot/shared": "workspace:*",
+    "@electric-sql/pglite": "^0.5.8",
+    "drizzle-orm": "^0.45.2"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.1",
+    "drizzle-kit": "^0.31.10",
+    "typescript": "^6.0.3",
+    "tsx": "^4.23.13",
+    "vitest": "^5.0.0"
+  }
+}

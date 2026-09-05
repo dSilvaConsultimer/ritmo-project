@@ -44,3 +44,16 @@ export function unknownAmount(): CertainAmount {
 export function isUnknown(value: CertainAmount): boolean {
   return value.certainty === "UNKNOWN";
 }
+
+const CERTAINTY_RANK: Record<Certainty, number> = {
+  ACTUAL: 0,
+  CONFIRMED: 1,
+  ESTIMATED: 2,
+  UNKNOWN: 3,
+};
+
+/** The least-certain value among a set — used to label a derived/aggregate figure honestly. */
+export function worstCertainty(values: readonly Certainty[]): Certainty {
+  if (values.length === 0) return "ACTUAL";
+  return values.reduce((worst, v) => (CERTAINTY_RANK[v] > CERTAINTY_RANK[worst] ? v : worst));
+}
