@@ -44,4 +44,17 @@ NON-NEGOTIABLE RULES — never violate these:
 Tone: calm, clear, non-judgmental, concise. Prefer plain language over jargon. When you state a
 monetary figure, use the exact figure from the tool result — do not round or restate it differently.`;
 
-export const CURRENT_SYSTEM_INSTRUCTIONS = SYSTEM_INSTRUCTIONS_V1;
+/**
+ * Sprint 4.5: adds an explicit language-matching rule. The Founder and
+ * most real users write in Portuguese (PT-BR) — the model already handles
+ * this well without a translated instruction set (the deterministic
+ * mutation-guard and grounding logic are independently language-aware —
+ * see `mutation-guard.ts`/`grounding.ts`), but making it explicit avoids
+ * relying on implicit behavior.
+ */
+export const SYSTEM_INSTRUCTIONS_V2 = `${SYSTEM_INSTRUCTIONS_V1}
+11. Respond in the same language the user writes in (e.g. Portuguese) — matching their language is
+    expected, not a special case. Never switch to English just because these instructions are in
+    English.`;
+
+export const CURRENT_SYSTEM_INSTRUCTIONS = SYSTEM_INSTRUCTIONS_V2;

@@ -290,3 +290,102 @@ describe("runCopilotTurn — financial fact grounding", () => {
     expect(response.financialFacts.some((f) => f.semanticType === "CAUTION_LIMIT")).toBe(true);
   });
 });
+
+describe("runCopilotTurn — PT-BR conversational scenarios (Sprint 4.5 hardening)", () => {
+  it("answers a PT-BR Safe-to-Spend question and grounds the regression value (217_111 cents)", async () => {
+    const db = await freshSeededDb();
+    const provider = new MockAIProvider([
+      mockToolCallResult([{ id: "call_1", name: "getSafeToSpend", argumentsJson: "{}" }]),
+      mockTextResult("Você pode gastar com segurança R$ 2.171,11 pelo resto do mês."),
+    ]);
+
+    const response = await runCopilotTurn(
+      baseInput({ db, aiProvider: provider, userMessageText: "Quanto posso gastar até o fim do mês?" }),
+    );
+
+    expect(response.groundingStatus).toBe("PASSED");
+    const fact = response.financialFacts.find((f) => f.semanticType === "SAFE_TO_SPEND");
+    expect(fact?.amountCents).toBe(217_111);
+  });
+
+  it("does NOT execute a mutation tool for PT-BR hypothetical language ('E se eu gastasse...')", async () => {
+    const db = await freshSeededDb();
+    const before = await getSafeToSpend(db, fixtureProfile.id, ASOF);
+
+    const provider = new MockAIProvider([
+      mockToolCallResult([
+        {
+          id: "call_1",
+          name: "recordManualTransaction",
+          argumentsJson: JSON.stringify({ amountReais: 250, merchantOrDescription: "Restaurante X", date: ASOF }),
+        },
+      ]),
+      mockTextResult("Gastar R$ 250 ainda estaria dentro do seu limite recomendado."),
+    ]);
+
+    const response = await runCopilotTurn(
+      baseInput({ db, aiProvider: provider, userMessageText: "E se eu gastasse R$ 250 no Restaurante X?" }),
+    );
+
+    expect(response.toolExecutions).toEqual([{ name: "recordManualTransaction", status: "FAILED" }]);
+    const after = await getSafeToSpend(db, fixtureProfile.id, ASOF);
+    expect(after.total.cents).toBe(before.total.cents);
+  });
+
+  it("DOES execute a mutation tool for PT-BR explicit, decided action language ('Gastei...')", async () => {
+    const db = await freshSeededDb();
+    const before = await getSafeToSpend(db, fixtureProfile.id, ASOF);
+
+    const provider = new MockAIProvider([
+      mockToolCallResult([
+        {
+          id: "call_1",
+          name: "recordManualTransaction",
+          argumentsJson: JSON.stringify({ amountReais: 250, merchantOrDescription: "Restaurante X", date: ASOF }),
+        },
+      ]),
+      mockTextResult("Anotado — R$ 250 no Restaurante X foi registrado."),
+    ]);
+
+    await runCopilotTurn(
+      baseInput({ db, aiProvider: provider, userMessageText: "Gastei R$ 250 no Restaurante X." }),
+    );
+
+    const after = await getSafeToSpend(db, fixtureProfile.id, ASOF);
+    expect(after.total.cents).toBe(before.total.cents - 25_000);
+  });
+
+  it("replaces an AI-invented amount in PT-BR prose with a deterministic fallback", async () => {
+    const db = await freshSeededDb();
+    const provider = new MockAIProvider([
+      mockToolCallResult([{ id: "call_1", name: "getSafeToSpend", argumentsJson: "{}" }]),
+      mockTextResult("Você pode gastar até R$ 999,99 hoje sem problemas."),
+    ]);
+
+    const response = await runCopilotTurn(
+      baseInput({ db, aiProvider: provider, userMessageText: "Quanto posso gastar hoje?" }),
+    );
+
+    expect(response.groundingStatus).toBe("FAILED");
+    expect(response.text).not.toContain("999,99");
+  });
+
+  it("answers the PT-BR independent-living question via getLifestyleComparison", async () => {
+    const db = await freshSeededDb();
+    const provider = new MockAIProvider([
+      mockToolCallResult([{ id: "call_1", name: "getLifestyleComparison", argumentsJson: "{}" }]),
+      mockTextResult("Ainda não é o momento ideal para morar sozinho, considerando seu plano atual."),
+    ]);
+
+    const response = await runCopilotTurn(
+      baseInput({
+        db,
+        aiProvider: provider,
+        userMessageText: "Estou financeiramente pronto para morar sozinho?",
+      }),
+    );
+
+    expect(response.toolExecutions).toEqual([{ name: "getLifestyleComparison", status: "SUCCESS" }]);
+    expect(response.groundingStatus).not.toBe("FAILED");
+  });
+});

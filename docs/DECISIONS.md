@@ -882,3 +882,90 @@ brief's "never expose... unnecessary request metadata" while still being clear a
 **Status:** Accepted.
 **Consequences:** `MockAIProvider` is understood repo-wide as a test utility only, never a disguised
 runtime fallback — a future sprint changing that must make it an explicit, separate decision.
+
+
+---
+
+### DEC-043
+
+**Date:** 2026-09-06
+**Context:** Sprint 4.5's live OpenAI validation immediately surfaced a real, previously-untested
+bug: every tool call to the real Responses API failed with `400 invalid_function_parameters` —
+"'required' is required to be supplied and to be an array including every key in properties." Plain
+Zod `.optional()` fields (used throughout `packages/app-services/src/copilot/tools.ts` for every
+optional tool argument) are correctly translated by `z.toJSONSchema()` into a JSON Schema that omits
+the optional key from `required` — which is exactly what OpenAI's strict function-calling mode
+rejects. `MockAIProvider`-based tests never caught this because they never actually send a tool's
+JSON Schema anywhere; only a live call exercises OpenAI's schema validator.
+**Decision:** Every optional tool argument was converted from `.optional()` to
+`.nullable().default(null)`. This keeps the property listed in `required` (satisfying OpenAI's
+validator — the model sends an explicit `null` instead of omitting the key) while `.default(null)`
+keeps `schema.parse({})`-style call sites (our own tests, and any future internal caller) working
+without needing to pass every field explicitly. Added a permanent, fully offline regression test
+(`tool-schema-strict-mode.test.ts`) asserting every tool's generated JSON Schema lists every
+`properties` key in `required` — this would have caught the bug without any live API call.
+**Rationale:** This is exactly the class of bug live validation exists to catch (see Sprint 4's own
+"Live OpenAI validation" pending-item framing) — a real constraint of the actual provider contract
+that no amount of `MockAIProvider`-based testing could have exposed, since the mock never serializes
+a tool definition through OpenAI's schema validator.
+**Status:** Accepted.
+**Consequences:** Any future new tool argument must default to `.nullable().default(null)` rather
+than `.optional()` — the new regression test enforces this automatically for every tool, present and
+future, so this constraint no longer depends on a human remembering it.
+
+---
+
+### DEC-044
+
+**Date:** 2026-09-06
+**Context:** Sprint 4.5 explicitly calls for PT-BR (Brazilian Portuguese) conversational hardening —
+the Founder and the product's real target users write in Portuguese, not English.
+**Decision:** Extended `hasExplicitMutationIntent`/`containsHypotheticalLanguage`
+(`mutation-guard.ts`) with a parallel set of Portuguese hypothetical/explicit-action patterns
+(discovered during this work: Portuguese frequently drops the subject pronoun — "Poderia
+reservar...?" means "Could [I] reserve...?" with no "eu" — patterns were written to match the verb
+alone, not "eu poderia"/"poderia eu"). Added an explicit language-matching instruction to the system
+prompt (`SYSTEM_INSTRUCTIONS_V2`: "respond in the same language the user writes in"). Confirmed
+`groundResponseText`'s currency-amount grounding is already language-agnostic (it only pattern-matches
+BRL-shaped numbers, never words) and added PT-BR regression tests proving this explicitly rather than
+leaving it merely assumed.
+**Rationale:** The brief's explicit Sprint 4.5 scope items 2-4 ("PT-BR conversational validation and
+hardening," "PT-BR explicit-vs-hypothetical mutation validation," "financial monetary grounding
+validation"). Doing this as deterministic, offline, `MockAIProvider`-based tests (rather than only as
+live-model prose, which is non-deterministic) gives permanent regression protection independent of
+any specific model's actual phrasing.
+**Status:** Accepted.
+**Consequences:** The mutation-guard's pattern list now needs to be maintained in two languages going
+forward; a future third language would follow the same pattern (a parallel block of regexes, tested
+against concrete example sentences, never a general grammatical rule).
+
+---
+
+### DEC-045
+
+**Date:** 2026-09-06
+**Context:** Sprint 4.5 attempted live validation of both external providers using the Founder's real
+development credentials (OpenAI and Pluggy sandbox), added to `apps/web/.env.local` by the Founder
+directly — never pasted into the conversation.
+**Decision:** OpenAI live validation is PARTIAL: the configured model (`gpt-5.6-terra`) was confirmed
+to exist and be retrievable via `client.models.retrieve`, and the schema bug (DEC-043) was found and
+fixed via a live call, but every actual `generate()` call returns `429 credit_balance_exhausted` even
+after the Founder added credits and a wait — this was not retried further, no model was changed, and
+no new key was created, per explicit instruction. Pluggy live validation is PARTIAL: real
+authentication and Connect Token creation both succeeded live (`POST /api/token` → HTTP 200 against
+the real Pluggy sandbox API), but the interactive Connect-widget step the Founder reported completing
+did not reach this application's `/api/connections` endpoint — the dev server's request log shows no
+such call, and `GET /api/connections` still returns an empty list. No account/transaction/bill data
+was imported; Sprint 4.5 scope items 6-7 (validating real Pluggy data shapes and sign semantics,
+double-counting protection against real data) remain unexecuted.
+**Rationale:** Per the brief's own instruction and the precedent set by DEC-033: report exactly, do
+not fabricate a validation result, and do not mark engineering blocked when only an external
+credential/action is outstanding.
+**Status:** Accepted.
+**Consequences:** Reported as `ENGINEERING COMPLETE / LIVE OPENAI VALIDATION PARTIAL — BILLING ISSUE
+/ LIVE PLUGGY VALIDATION PARTIAL — CONNECT STEP DID NOT PERSIST`. Two concrete follow-ups are owed to
+the Founder: (1) check whether the OpenAI project this key belongs to has its own $0 budget/spend
+limit independent of the organization's overall credit balance (a common source of this exact error
+even with credits present at the org level), and (2) retry the Pluggy Connect widget, keeping it open
+until it shows its own success confirmation and closes on its own, rather than closing the tab/window
+once sandbox credentials are submitted.

@@ -79,6 +79,12 @@ no `OPENAI_API_KEY` is required for the default test suite.
   continuation mechanism. This is deliberate: see "No provider-locked conversation memory" below.
 - Tool definitions are translated to OpenAI's `{ type: "function", name, description, parameters,
   strict: true }` shape from the app-services tool registry's Zod schema (via `z.toJSONSchema`).
+  **Every tool argument must be `.nullable().default(null)` rather than plain `.optional()`** —
+  discovered via live validation (Sprint 4.5, DEC-043): OpenAI's strict mode rejects any schema where
+  a `properties` key is missing from `required`, which is exactly what plain Zod `.optional()`
+  produces. `.nullable().default(null)` keeps the key in `required` (the model sends explicit `null`)
+  while still letting internal call sites omit it. Enforced by a permanent regression test,
+  `tool-schema-strict-mode.test.ts`, run offline against every registered tool.
 - SDK error classes are mapped to the app's `AIErrorCode` taxonomy in `normalizeOpenAIError` —
   `AuthenticationError`/`PermissionDeniedError` → `AI_AUTHENTICATION_ERROR`, `RateLimitError` →
   `AI_RATE_LIMITED`, `APIConnectionTimeoutError` → `AI_TIMEOUT`, `APIConnectionError` →
@@ -152,6 +158,12 @@ Ambiguous text (neither pattern matches) is treated as NOT explicit — biased t
 mode. When a mutation is skipped this way, the orchestrator records an `AIToolExecution` with status
 `FAILED` and `errorCategory: "MUTATION_NOT_EXPLICIT"`, and feeds the model a tool result saying so, so
 the assistant can tell the user nothing was recorded.
+
+**PT-BR (Sprint 4.5):** both pattern lists have a parallel set of Portuguese phrases (e.g. "gastei",
+"registre", "reserve"/"reservar" for explicit action; "e se eu", "será que", "poderia", "deveria" for
+hypothetical). Portuguese frequently drops the subject pronoun ("Poderia reservar...?" means "Could
+[I] reserve...?" with no "eu") — patterns match the verb alone rather than requiring "eu poderia"/
+"poderia eu", a real nuance discovered while writing the PT-BR test cases in `mutation-guard.test.ts`.
 
 ## `getSpendingEnvelope` and daily guidance
 
@@ -227,11 +239,14 @@ propagates as a normalized `AIError` to the caller.
 ## System instructions
 
 `packages/app-services/src/copilot/system-instructions.ts` — a single version-controlled string
-(`SYSTEM_INSTRUCTIONS_V1`), never inline in a route handler. Covers: calculations only via tools,
-never inventing missing data, stating uncertainty, never moralizing, distinguishing hypothetical from
-decided actions, protecting existing priorities/never proposing cost-cutting, asking concise
-clarifying questions only when necessary, always fetching current data via tools rather than memory,
-no real-world venue/product recommendations yet, and explaining impact rather than a bare yes/no.
+(`CURRENT_SYSTEM_INSTRUCTIONS`, currently `SYSTEM_INSTRUCTIONS_V2`), never inline in a route handler.
+Covers: calculations only via tools, never inventing missing data, stating uncertainty, never
+moralizing, distinguishing hypothetical from decided actions, protecting existing priorities/never
+proposing cost-cutting, asking concise clarifying questions only when necessary, always fetching
+current data via tools rather than memory, no real-world venue/product recommendations yet, and
+explaining impact rather than a bare yes/no. **V2 (Sprint 4.5)** adds an explicit rule: respond in
+the same language the user writes in (e.g. Portuguese) — the instructions themselves stay in English
+(the model handles this fine), but the rule is now explicit rather than merely assumed.
 
 ## Model configuration
 
@@ -260,23 +275,37 @@ the persisted messages for that conversation, nothing more.
 
 ## Testing
 
-Every test uses `MockAIProvider` — no `OPENAI_API_KEY` required for the default suite
+Every default-suite test uses `MockAIProvider` — no `OPENAI_API_KEY` required
 (`packages/ai`, `packages/app-services/src/copilot/*.test.ts`). Coverage includes: provider
 abstraction/no-SDK-leakage, conversation/message/tool-execution persistence, read-vs-mutation
-behavior, explicit-vs-hypothetical mutation gating (both directions), the Safe-to-Spend regression
-(217,111 cents) reached through a simulated chat turn, envelope/daily-guidance determinism,
-`simulateExpense`'s three zones never blocking, `replanAfterExpense` recalculation, no-auto-cost-
-cutting, tool sandboxing (unregistered tool / invalid arguments rejected), bounded max-iterations,
+behavior, explicit-vs-hypothetical mutation gating in both English and PT-BR (Sprint 4.5), the
+Safe-to-Spend regression (217,111 cents) reached through a simulated chat turn in both languages,
+envelope/daily-guidance determinism, `simulateExpense`'s three zones never blocking,
+`replanAfterExpense` recalculation, no-auto-cost-cutting, tool sandboxing (unregistered tool / invalid
+arguments rejected), every tool's JSON Schema satisfying OpenAI's strict-mode `required` constraint
+(Sprint 4.5, `tool-schema-strict-mode.test.ts` — see DEC-043), bounded max-iterations,
 tool-execution-failure handling, AI provider failure normalization (rate limit, timeout), grounding
-pass/fail (including an AI-invented amount being replaced, and a user-supplied amount being allowed),
-and structured facts staying separate from narrative text.
+pass/fail in both languages (including an AI-invented amount being replaced, and a user-supplied
+amount being allowed), and structured facts staying separate from narrative text.
 
 ## Live OpenAI smoke test
 
-Not executed in this sprint — no `OPENAI_API_KEY` was available in this environment. See
-`docs/PROJECT_STATE.md` for the exact status line and what a future pass with real credentials should
-validate (a basic response, a tool call, argument validation, tool-result continuation, and a final
-grounded response, using only sanitized fixture data).
+**Attempted in Sprint 4.5 — PARTIAL.** With a real `OPENAI_API_KEY` configured:
+
+- The configured model (`gpt-5.6-terra`) was confirmed to exist and be retrievable
+  (`client.models.retrieve`).
+- The first real call surfaced DEC-043's strict-schema bug, which was fixed and re-verified live.
+- Every actual scenario call (`live-openai-smoke.test.ts`, `describe.skipIf(!OPENAI_API_KEY)` so it
+  never runs in the default suite) returns `429 credit_balance_exhausted` — this persisted even after
+  credits were added to the account and a wait, and was NOT retried further, and no model was changed,
+  per explicit instruction. This looks like a billing/quota issue on the OpenAI account or its
+  specific project (OpenAI project-level budgets are independent of the organization's overall credit
+  balance — worth checking specifically), not a code or configuration issue on this end.
+- None of the six PT-BR scenario tests (basic response, tool call + grounding regression, affordability
+  question, hypothetical-vs-explicit mutation gating, independent-living question) have run to
+  completion yet. They are written and ready; re-run with:
+  `pnpm --filter @money-copilot/app-services exec vitest run src/copilot/live-openai-smoke.test.ts`
+  (with `OPENAI_API_KEY`/`OPENAI_MODEL` loaded into the shell environment first).
 
 ## Known limitations
 
@@ -292,3 +321,11 @@ grounded response, using only sanitized fixture data).
   plain-number shapes; an unusual format could in principle slip past detection. Given the
   brief's explicit "do not over-engineer general NL verification" instruction, this was judged
   sufficient for the given test scenarios rather than building a full currency-parsing library.
+- The PT-BR mutation-guard patterns (Sprint 4.5) are a curated example list, not a grammatical parser
+  — validated against the specific example sentences in this sprint's brief and the founder's likely
+  phrasing, not exhaustively against every way a Brazilian Portuguese speaker might phrase intent.
+- (Sprint 4.5) A real Pluggy sandbox Connect flow was attempted and did not persist a connection on
+  this app's side — see docs/PROJECT_STATE.md, "Integration status," for the exact retry steps. Real
+  Pluggy account/transaction/bill shape validation (this sprint's scope items 6-7) therefore remains
+  unexecuted; the amount-sign/effect mapping in `docs/OPEN-FINANCE.md` is still an unvalidated,
+  documentation-derived heuristic.

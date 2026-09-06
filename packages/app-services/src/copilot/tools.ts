@@ -88,11 +88,21 @@ const getGoalStatusTool = tool({
   execute: (ctx) => queries.getGoalStatusForProfile(ctx.db, ctx.financialProfileId, ctx.asOfDate),
 });
 
+// NOTE on `.nullable().default(null)` throughout this file: OpenAI's strict
+// function-calling mode requires EVERY property to appear in the schema's
+// `required` array (verified against a live call — plain Zod `.optional()`
+// omits the key from `required` and OpenAI rejects the tool definition
+// outright with "'required' is required to be supplied and to be an array
+// including every key in properties"). Making a field `.nullable()` keeps
+// it in `required` while still letting the model omit it in practice (it
+// sends `null`); `.default(null)` keeps `schema.parse({})` working for our
+// own tests/call sites that don't set it.
 const spendingEnvelopeSchema = z.object({
   category: z
     .string()
-    .optional()
-    .describe("An optional specific spending category to check headroom for, e.g. 'Food'."),
+    .describe("An optional specific spending category to check headroom for, e.g. 'Food'. Null if not applicable.")
+    .nullable()
+    .default(null),
 });
 
 const getSpendingEnvelopeTool = tool({
@@ -125,7 +135,11 @@ const getDailyGuidanceTool = tool({
 const simulateExpenseSchema = z.object({
   amountReais: z.number().positive().describe("The hypothetical expense amount, in BRL reais (e.g. 500 for R$500.00)."),
   category: z.string().describe("The spending category this expense belongs to, e.g. 'Date night', 'Groceries'."),
-  date: z.string().optional().describe("ISO 8601 date of the hypothetical expense. Defaults to today."),
+  date: z
+    .string()
+    .describe("ISO 8601 date of the hypothetical expense. Null defaults to today.")
+    .nullable()
+    .default(null),
 });
 
 const simulateExpenseTool = tool({
@@ -160,7 +174,14 @@ const getCategoryBudgetStatusTool = tool({
 });
 
 const recentSpendingSchema = z.object({
-  days: z.number().int().positive().max(90).optional().describe("How many recent days to summarize. Defaults to 7."),
+  days: z
+    .number()
+    .int()
+    .positive()
+    .max(90)
+    .describe("How many recent days to summarize. Null defaults to 7.")
+    .nullable()
+    .default(null),
 });
 
 const getRecentSpendingSummaryTool = tool({
@@ -178,11 +199,18 @@ const getRecentSpendingSummaryTool = tool({
 const recordManualTransactionSchema = z.object({
   amountReais: z.number().positive().describe("The amount actually spent, in BRL reais."),
   merchantOrDescription: z.string().min(1).describe("Where or what the money was spent on, e.g. 'Restaurant X'."),
-  date: z.string().optional().describe("ISO 8601 date the expense happened. Defaults to today."),
+  date: z
+    .string()
+    .describe("ISO 8601 date the expense happened. Null defaults to today.")
+    .nullable()
+    .default(null),
   paymentSourceLabel: z
     .string()
-    .optional()
-    .describe("Only set this if the user explicitly said how they paid (e.g. 'with my Nubank card'). Never guess."),
+    .describe(
+      "Only set this if the user explicitly said how they paid (e.g. 'with my Nubank card'). Null if not stated — never guess.",
+    )
+    .nullable()
+    .default(null),
 });
 
 const recordManualTransactionTool = tool({
@@ -207,8 +235,9 @@ const createPlannedFinancialEventSchema = z.object({
   budgetAmountReais: z
     .number()
     .positive()
-    .optional()
-    .describe("Only set this if the user stated a specific budget. Never invent one — omit it instead."),
+    .describe("Only set this if the user stated a specific budget. Never invent one — pass null instead.")
+    .nullable()
+    .default(null),
 });
 
 const createPlannedFinancialEventTool = tool({
@@ -222,7 +251,7 @@ const createPlannedFinancialEventTool = tool({
       label: args.label,
       startDate: args.startDate,
       endDate: args.endDate,
-      ...(args.budgetAmountReais !== undefined ? { budgetAmount: fromReais(args.budgetAmountReais) } : {}),
+      ...(args.budgetAmountReais !== null ? { budgetAmount: fromReais(args.budgetAmountReais) } : {}),
     }),
 });
 
@@ -230,12 +259,15 @@ const updatePlannedFinancialEventSchema = z.object({
   eventId: z.string().describe("The event's id, obtained from a prior getUpcomingFinancialEvents call."),
   lineItemId: z
     .string()
-    .optional()
-    .describe("Required only if the event has more than one planned line item — obtained from getUpcomingFinancialEvents."),
-  budgetAmountReais: z.number().positive().optional(),
-  label: z.string().optional(),
-  startDate: z.string().optional(),
-  endDate: z.string().optional(),
+    .describe(
+      "Required only if the event has more than one planned line item — obtained from getUpcomingFinancialEvents. Null otherwise.",
+    )
+    .nullable()
+    .default(null),
+  budgetAmountReais: z.number().positive().nullable().default(null),
+  label: z.string().nullable().default(null),
+  startDate: z.string().nullable().default(null),
+  endDate: z.string().nullable().default(null),
 });
 
 const updatePlannedFinancialEventTool = tool({
@@ -248,7 +280,7 @@ const updatePlannedFinancialEventTool = tool({
     mutations.updatePlannedFinancialEvent(ctx.db, ctx.financialProfileId, ctx.asOfDate, {
       eventId: args.eventId,
       ...(args.lineItemId ? { lineItemId: args.lineItemId } : {}),
-      ...(args.budgetAmountReais !== undefined ? { budgetAmount: fromReais(args.budgetAmountReais) } : {}),
+      ...(args.budgetAmountReais !== null ? { budgetAmount: fromReais(args.budgetAmountReais) } : {}),
       ...(args.label ? { label: args.label } : {}),
       ...(args.startDate ? { startDate: args.startDate } : {}),
       ...(args.endDate ? { endDate: args.endDate } : {}),
@@ -260,7 +292,11 @@ const replanAfterExpenseSchema = z.object({
   actualExpenseReais: z.number().positive().describe("What the user says they actually spent, in BRL reais."),
   merchantOrDescription: z.string().min(1).describe("Where or what the money was spent on."),
   category: z.string().describe("The spending category, e.g. 'Date night'."),
-  date: z.string().optional().describe("ISO 8601 date the expense happened. Defaults to today."),
+  date: z
+    .string()
+    .describe("ISO 8601 date the expense happened. Null defaults to today.")
+    .nullable()
+    .default(null),
 });
 
 const replanAfterExpenseTool = tool({

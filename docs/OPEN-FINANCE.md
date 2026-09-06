@@ -271,8 +271,22 @@ real user data (NON-NEGOTIABLE, Sprint 3).
   need a migration before real multi-profile support.
 - No automatic/scheduled sync exists (see DEC-031) — staleness is only resolved by a webhook or a
   manual "Refresh / sync" click.
-- **Still true as of Sprint 4**: live Pluggy sandbox validation has still not been executed (no
-  credentials available in this environment either). Sprint 4's AI copilot layer (`docs/AI-COPILOT.md`)
-  does not touch this package at all — it reads through `@money-copilot/app-services`'s existing
-  query functions, which already sit on top of whichever provider (`MockProvider` today) is
-  registered, so nothing here needs to change once real sandbox credentials arrive.
+- **Sprint 4**: live Pluggy sandbox validation was not executed (no credentials available in that
+  environment). Sprint 4's AI copilot layer (`docs/AI-COPILOT.md`) does not touch this package at
+  all — it reads through `@money-copilot/app-services`'s existing query functions, which already sit
+  on top of whichever provider (`MockProvider` today) is registered, so nothing here needs to change
+  once real sandbox credentials arrive.
+- **Sprint 4.5 (partial progress)**: with real `PLUGGY_CLIENT_ID`/`PLUGGY_CLIENT_SECRET` configured,
+  live authentication and Connect Token creation both succeeded (`POST /api/token` → a real Pluggy
+  sandbox `accessToken`, verified via an HTTP 200 from the running app). The interactive Connect
+  widget step (choosing a sandbox/test connector and completing its fake login) did not result in a
+  persisted `provider_connections` row on this app's side — the dev server's request log showed no
+  `POST /api/connections` call reaching it, so either the widget's `onSuccess` callback didn't fire
+  (commonly because the tab/widget was closed before Pluggy's own success confirmation appeared,
+  rather than right after submitting the sandbox test credentials) or the flow was exercised outside
+  this app entirely (e.g. directly against Pluggy's own dashboard tooling). No account/transaction/
+  bill data was imported. This sprint's scope items — validating real Pluggy data shapes/sign
+  semantics and re-confirming card-payment/bill double-counting protection against real sandbox data
+  — therefore remain unexecuted; the amount-sign/effect mapping above is still a documentation-derived
+  heuristic, not one validated against an observed real payload. A retry should keep the Pluggy
+  Connect widget open until it shows its own success confirmation and closes on its own.

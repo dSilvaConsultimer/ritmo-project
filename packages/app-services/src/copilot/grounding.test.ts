@@ -59,6 +59,34 @@ describe("groundResponseText", () => {
     );
     expect(result.status).toBe("PASSED");
   });
+
+  it("passes for grounded PT-BR prose (grounding is language-agnostic — only currency shapes are checked)", () => {
+    const result = groundResponseText(
+      "Você pode gastar com segurança R$ 217,11 hoje.",
+      facts,
+      "Quanto posso gastar hoje?",
+    );
+    expect(result.status).toBe("PASSED");
+  });
+
+  it("fails for an AI-invented amount in PT-BR prose just as it would in English", () => {
+    const result = groundResponseText(
+      "Você pode gastar até R$ 999,99 hoje sem problemas.",
+      facts,
+      "Quanto posso gastar hoje?",
+    );
+    expect(result.status).toBe("FAILED");
+    expect(result.unsupportedAmountsCents).toEqual([99_999]);
+  });
+
+  it("allows a user-supplied amount in PT-BR even with no matching tool fact", () => {
+    const result = groundResponseText(
+      "Gastar R$ 650,00 ultrapassaria seu limite recomendado de R$ 217,11.",
+      facts,
+      "Gastei R$ 650,00 no restaurante.",
+    );
+    expect(result.status).toBe("PASSED");
+  });
 });
 
 describe("buildFallbackResponseText", () => {
