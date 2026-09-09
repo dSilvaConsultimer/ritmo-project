@@ -1086,3 +1086,110 @@ account.
 **Status:** Accepted.
 **Consequences:** None beyond the fix — the pattern now matches every other external-entity import in
 the pipeline.
+
+
+---
+
+### DEC-049
+
+**Date:** 2026-09-09
+**Context:** Rigorously validating `seed()`'s idempotency across real, separate process invocations
+(per the Founder's explicit instruction, going beyond the same-process tests DEC-047 added) found a
+SECOND instability the first fix missed: `reconciliation_links` grew by exactly one row on every
+fresh-process seed run (1, 3, 4, 5, 6, 7...). Root cause: `fixtures/initial-user.ts`'s
+`reconciliationLinks` export is computed by calling `findTransactionDuplicates`/
+`reconcileEventLineItems` at fixture-module-evaluation time — and those functions generate a fresh
+`id` (`createId("reconciliation-link")`) on every call, BY DESIGN, since a real sync must always be
+free to re-propose the same candidate link without caring what id a previous proposal used (real
+usage already guards against this via content-based dedup — see below). `seed()` had no equivalent
+guard: it just upserted the fixture's freshly-generated links by id every time, creating a new row
+per fresh evaluation.
+**Decision:** Exported `reconciliationLinkPairKey` (the content-identity function — `type:primary:
+linked` — used to detect an equivalent link regardless of its own `id`) from
+`packages/financial-engine/src/domain/reconciliation.ts`, replacing an unexported local duplicate
+that `app-services/src/sync.ts`'s `reconcileProfile` already had. `seed()` now looks up an existing
+link by this content key before upserting, reusing its id when found — mirroring
+`reconcileProfile`'s own established pattern exactly, rather than inventing a parallel one. Extended
+the `vi.resetModules()` regression test to three resets with explicit per-entity count assertions
+(including `reconciliation_links`), since the original two-call version happened not to catch this.
+**Rationale:** The general-purpose domain functions are correctly designed for real sync usage (fresh
+id + content-based pre-filtering by the caller) — the bug was `seed()` not applying that same
+caller-side discipline Sprint 2/3's own `reconcileProfile` already established.
+**Status:** Accepted.
+**Consequences:** Any future fixture-derived (as opposed to literal-id) collection needs the same
+caller-side content-dedup treatment if it's persisted by `seed()` — `reconciliationLinks` was the
+only such case as of Sprint 4.5.
+
+---
+
+### DEC-050
+
+**Date:** 2026-09-09
+**Context:** A second live Pluggy sandbox Connect attempt (after DEC-046's hardening) actually
+succeeded — twice, from two separate widget interactions — leaving two real, independent
+`ProviderConnection`s instead of one. No existing application-level function could safely remove one:
+`OpenFinanceProvider.deleteConnection` only removes the Item on the provider's own side; nothing
+cleaned up the LOCAL rows scoped to a connection. The Founder explicitly required using "the
+application's existing deleteConnection/provider lifecycle rather than manually deleting random DB
+rows," and to report rather than improvise if proper deletion semantics didn't yet exist.
+**Decision:** Implemented `disconnectConnection` (`packages/app-services/src/sync.ts`): best-effort
+provider-side deletion (never blocks local cleanup if it fails — the Item may already be gone there),
+then removes every LOCAL row scoped to the connection in FK-safe order — reconciliation links
+referencing its transactions (on EITHER side, including a cross-connection link where the OTHER side
+belongs to a connection being kept, since real Pluggy sandbox data from two connections turned out to
+trigger exactly this via `findTransactionDuplicates`'s ordinary recurring-charge matching) →
+installment plans referencing its transactions/payment sources → bills → transactions → payment
+sources → sync runs → the connection row itself. New repository functions
+(`packages/persistence/src/repositories.ts`) do the actual deletes, each a targeted `DELETE ... WHERE`
+— never raw/ad-hoc SQL. Exposed via `DELETE /api/connections?connectionId=...`
+(`apps/web/app/api/connections/route.ts`), scoped to the current profile's own connections. Added
+`connection-deletion.test.ts` (3 tests) proving: a cross-connection reconciliation link is correctly
+removed while the kept connection's own data is untouched; a connection with no imported data at all
+deletes cleanly; an unknown connection id throws rather than silently no-op-ing.
+**Rationale:** The Founder's explicit deterministic tie-break (prefer CONNECTED + successfully synced,
+then earliest-created) selected `provider-connection_2` as canonical; this function is what made
+discarding the other one safe and complete rather than improvised.
+**Status:** Accepted.
+**Consequences:** `disconnectConnection` is a real, permanent, general-purpose application capability
+now — not a one-off cleanup script. No UI "Disconnect" button exists yet (only the API endpoint); a
+natural, low-risk follow-up, not required for this to be correct.
+
+---
+
+### DEC-051
+
+**Date:** 2026-09-09
+**Context:** While verifying the post-cleanup and post-3x-sync database state, a standalone
+diagnostic script (`createDatabase()` + `runMigrations()` against the same file-backed
+`apps/web/.data/money-copilot.pglite` path) was run WHILE the Next.js dev server was ALSO running
+against that same file. This is the same category of risk `docs/PROJECT_STATE.md` had already flagged
+as a "known limitation" after discovering Next.js gives RSC pages and Route Handlers separate
+`getDb()` singleton instances — but this time, a genuinely SEPARATE OS process (not just a separate
+in-process singleton) touched the file concurrently. The result was a hard PGlite/WASM
+`RuntimeError: Aborted()` on `CREATE SCHEMA IF NOT EXISTS "drizzle"` — and, critically, the corruption
+did not self-heal: EVERY subsequent attempt to open that same data directory failed identically, even
+after stopping every process, removing the stale `postmaster.pid` lock file (a standard, safe Postgres
+recovery step — confirmed safe here since its recorded PID, `-42`, is a PGlite-internal placeholder,
+never a real OS process), and retrying from a fresh process. The file was unrecoverable.
+**Decision:** Documented, as a hard operational rule for this project: **never run a second
+process (standalone script, a second `pnpm` command, etc.) against the same file-backed PGlite data
+directory while the Next.js dev server (or any other process) already has it open.** All
+database-state verification during live/manual testing must go through the ALREADY-RUNNING
+application's own API surface (e.g. `GET /api/connections`, `POST /api/sync`) — never a parallel
+`tsx`/`node` script — unless the other process (dev server included) is first confirmed stopped.
+Recovered by wiping `.data` and rebuilding from migrations + the (now-fixed, DEC-047/DEC-049) seed —
+this reconstructs the canonical fixture baseline byte-for-byte deterministically, but the real
+Pluggy-imported connection/accounts/transactions from the live validation session were lost and had
+to be re-established via one more live sandbox Connect.
+**Rationale:** PGlite is a single embedded WASM Postgres instance per file; unlike a real
+client-server Postgres, there is no built-in mechanism here arbitrating concurrent writers/openers
+across OS processes, and a failed concurrent open can corrupt the file irrecoverably rather than
+simply erroring cleanly. Given this project's data is either deterministic fixture data or
+sandbox-only Open Finance data (never real personal financial data, per
+`REAL_PERSONAL_FINANCIAL_DATA_ALLOWED`), the cost of this failure mode is inconvenience, not real data
+loss — but the rule stands regardless of what the data represents.
+**Status:** Accepted.
+**Consequences:** Any future diagnostic/administrative script that touches this database must check
+(or be told) whether the dev server is running first. A more robust long-term fix (e.g., a real
+client-server Postgres for local dev, or a documented safe "maintenance mode" toggle) is not
+implemented — out of scope for this sprint, noted as technical debt.

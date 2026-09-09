@@ -7,6 +7,7 @@ import {
   events,
   installmentPlans,
   reconciliationLinks,
+  reconciliationLinkPairKey,
   independentLivingGoal,
   protectedPreferences,
   currentLifestyleScenario,
@@ -26,6 +27,19 @@ import * as repo from "./repositories";
  * sources, categorization rules, and the old card-debt installment).
  * Running this any number of times leaves the database in the same state
  * — every write is an upsert keyed by the fixture's own stable ids.
+ *
+ * ONE fixture value is deliberately NOT a stable literal:
+ * `reconciliationLinks` is computed by calling
+ * `findTransactionDuplicates`/`reconcileEventLineItems` at fixture-module
+ * -evaluation time — by design, since those are the exact same general-
+ * purpose functions a real sync uses, and a real sync must always be free
+ * to generate a fresh `id` for a freshly-proposed candidate (see
+ * `reconciliationLinkPairKey`'s doc comment). That means a fresh
+ * evaluation of the fixtures module produces DIFFERENT link ids for the
+ * SAME real link every time — this is `seed()`'s job to absorb, by
+ * deduping on content (`reconciliationLinkPairKey`) before upserting,
+ * exactly like `app-services/src/sync.ts`'s `reconcileProfile` already
+ * does for real syncs. See docs/DECISIONS.md DEC-049.
  */
 export async function seed(db: Database): Promise<void> {
   await repo.upsertProfile(db, fixtureProfile);
@@ -52,8 +66,11 @@ export async function seed(db: Database): Promise<void> {
   for (const plan of installmentPlans) {
     await repo.upsertInstallmentPlan(db, plan);
   }
+  const existingLinks = await repo.listAllReconciliationLinks(db);
+  const existingKeys = new Map(existingLinks.map((l) => [reconciliationLinkPairKey(l), l.id]));
   for (const link of reconciliationLinks) {
-    await repo.upsertReconciliationLink(db, link);
+    const existingId = existingKeys.get(reconciliationLinkPairKey(link));
+    await repo.upsertReconciliationLink(db, existingId ? { ...link, id: existingId } : link);
   }
 
   await repo.upsertGoal(db, independentLivingGoal, fixtureProfile.id);

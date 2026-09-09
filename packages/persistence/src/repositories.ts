@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, or } from "drizzle-orm";
 import type {
   FinancialEvent,
   FinancialGoal,
@@ -693,4 +693,123 @@ export async function listAIRequestLogsForConversation(
     .from(schema.aiRequests)
     .where(eq(schema.aiRequests.conversationId, conversationId));
   return rows.map(mappers.rowToAIRequest);
+}
+
+// ---------- Connection deletion (Sprint 4.5 addendum, DEC-050) ----------
+//
+// Proper cascading-delete semantics for removing a single connection's
+// data — never raw/ad-hoc SQL, and never touches shared/canonical fixture
+// data (nothing here is scoped to a connection in the first place). Every
+// function is a targeted DELETE keyed by id/foreign-key, run in FK-safe
+// order by the caller (`app-services/src/sync.ts`'s `disconnectConnection`):
+// reconciliation links -> installment plans -> bills -> transactions ->
+// payment sources -> sync runs -> the connection row itself.
+
+export async function listPaymentSourceIdsByConnectionId(
+  db: Database,
+  connectionId: string,
+): Promise<string[]> {
+  const rows = await db
+    .select({ id: schema.paymentSources.id })
+    .from(schema.paymentSources)
+    .where(eq(schema.paymentSources.connectionId, connectionId));
+  return rows.map((r) => r.id);
+}
+
+export async function listTransactionIdsByPaymentSourceIds(
+  db: Database,
+  paymentSourceIds: readonly string[],
+): Promise<string[]> {
+  if (paymentSourceIds.length === 0) return [];
+  const rows = await db
+    .select({ id: schema.financialTransactions.id })
+    .from(schema.financialTransactions)
+    .where(inArray(schema.financialTransactions.paymentSourceId, [...paymentSourceIds]));
+  return rows.map((r) => r.id);
+}
+
+/** Deletes any link referencing a to-be-deleted transaction on EITHER side — including a cross-connection link where the other side belongs to a connection being kept. */
+export async function deleteReconciliationLinksReferencingTransactionIds(
+  db: Database,
+  transactionIds: readonly string[],
+): Promise<number> {
+  if (transactionIds.length === 0) return 0;
+  const ids = [...transactionIds];
+  const result = await db
+    .delete(schema.reconciliationLinks)
+    .where(
+      or(
+        inArray(schema.reconciliationLinks.primaryTransactionId, ids),
+        inArray(schema.reconciliationLinks.linkedTransactionId, ids),
+      ),
+    )
+    .returning({ id: schema.reconciliationLinks.id });
+  return result.length;
+}
+
+/** Matches by EITHER originTransactionId or paymentSourceId — a provider-derived installment plan (e.g. from Pluggy's installmentMetadata) may set both. */
+export async function deleteInstallmentPlansReferencing(
+  db: Database,
+  transactionIds: readonly string[],
+  paymentSourceIds: readonly string[],
+): Promise<number> {
+  if (transactionIds.length === 0 && paymentSourceIds.length === 0) return 0;
+  const conditions = [
+    ...(transactionIds.length > 0
+      ? [inArray(schema.installmentPlans.originTransactionId, [...transactionIds])]
+      : []),
+    ...(paymentSourceIds.length > 0
+      ? [inArray(schema.installmentPlans.paymentSourceId, [...paymentSourceIds])]
+      : []),
+  ];
+  const result = await db
+    .delete(schema.installmentPlans)
+    .where(or(...conditions))
+    .returning({ id: schema.installmentPlans.id });
+  return result.length;
+}
+
+export async function deleteBillsByPaymentSourceIds(
+  db: Database,
+  paymentSourceIds: readonly string[],
+): Promise<number> {
+  if (paymentSourceIds.length === 0) return 0;
+  const result = await db
+    .delete(schema.bills)
+    .where(inArray(schema.bills.paymentSourceId, [...paymentSourceIds]))
+    .returning({ id: schema.bills.id });
+  return result.length;
+}
+
+export async function deleteTransactionsByIds(db: Database, transactionIds: readonly string[]): Promise<number> {
+  if (transactionIds.length === 0) return 0;
+  const result = await db
+    .delete(schema.financialTransactions)
+    .where(inArray(schema.financialTransactions.id, [...transactionIds]))
+    .returning({ id: schema.financialTransactions.id });
+  return result.length;
+}
+
+export async function deletePaymentSourcesByIds(
+  db: Database,
+  paymentSourceIds: readonly string[],
+): Promise<number> {
+  if (paymentSourceIds.length === 0) return 0;
+  const result = await db
+    .delete(schema.paymentSources)
+    .where(inArray(schema.paymentSources.id, [...paymentSourceIds]))
+    .returning({ id: schema.paymentSources.id });
+  return result.length;
+}
+
+export async function deleteSyncRunsByConnectionId(db: Database, connectionId: string): Promise<number> {
+  const result = await db
+    .delete(schema.syncRuns)
+    .where(eq(schema.syncRuns.connectionId, connectionId))
+    .returning({ id: schema.syncRuns.id });
+  return result.length;
+}
+
+export async function deleteProviderConnectionById(db: Database, connectionId: string): Promise<void> {
+  await db.delete(schema.providerConnections).where(eq(schema.providerConnections.id, connectionId));
 }

@@ -116,8 +116,28 @@ needs to know.
 
 ## Completed capabilities
 
-**New in Sprint 4.5** (see `docs/DECISIONS.md` DEC-043–048, `docs/AI-COPILOT.md`, and
+**New in Sprint 4.5** (see `docs/DECISIONS.md` DEC-043–051, `docs/AI-COPILOT.md`, and
 `docs/OPEN-FINANCE.md` for the full account):
+
+- **Connection deletion** (`disconnectConnection`, `DELETE /api/connections?connectionId=...`, DEC-050):
+  a real live-testing scenario (two independent sandbox Connects both succeeding) needed a way to
+  cleanly remove one connection and everything scoped to it, including reconciliation links that
+  cross-reference a connection being kept — implemented using the existing repository layer only,
+  never raw SQL, with 3 regression tests.
+- **A second fixture-id instability** (DEC-049): `reconciliation_links` was NOT fully fixed by DEC-047
+  — it still grew by one row per fresh-process seed run, because the fixture's reconciliation links
+  are computed by calling the same general-purpose `findTransactionDuplicates`/
+  `reconcileEventLineItems` functions a real sync uses, which generate a fresh id every call by
+  design. Fixed by exporting `reconciliationLinkPairKey` and having `seed()` dedupe by content before
+  upserting, exactly like a real sync already does. Caught only by extending the regression test to
+  three resets with explicit per-entity assertions — the two-reset version happened not to catch it.
+- **An operational lesson recorded, not a code bug** (DEC-051): running a standalone diagnostic script
+  against the file-backed dev database WHILE the Next.js dev server also had it open corrupted the
+  PGlite file irrecoverably (a hard WASM abort on every subsequent open, from any process). Recovered
+  by wiping `.data` and rebuilding from migrations + the (now-fixed) seed — deterministic and
+  complete for fixture data, but the real Pluggy-imported connection data from that session was lost
+  and required one more live sandbox Connect. Documented as a hard rule: never run a second process
+  against the same PGlite data directory while another one (dev server included) has it open.
 
 - Fixed a real, live-discovered bug: every optional AI tool argument is now `.nullable().default(
   null)` instead of plain Zod `.optional()` — OpenAI's strict function-calling mode rejects any tool
@@ -386,10 +406,18 @@ plus:
   consequence).
 - (Sprint 4.5) The mutation-guard's pattern list is now maintained in two languages (English and
   Portuguese) with no shared test harness enforcing parity between them — see "Risks."
+- (Sprint 4.5, DEC-051) PGlite (the embedded, file-backed local dev database) has no built-in
+  arbitration for a second OS process opening the same data directory concurrently — a standalone
+  script run while the dev server was also running corrupted the file irrecoverably. No code fix
+  exists for this yet, only a documented hard rule (never do that) — a real client-server Postgres
+  for local dev, or a "maintenance mode" toggle the app itself enforces, would remove the risk
+  entirely but is out of scope for this sprint.
+- (Sprint 4.5, DEC-050) No UI "Disconnect" button exists yet for `disconnectConnection` — only the
+  `DELETE /api/connections?connectionId=...` endpoint. Low-risk, natural follow-up.
 
 ## Known bugs
 
-None open at end of Sprint 4.5. Five found and fixed across Sprints 3-4.5's own live/integration
+None open at end of Sprint 4.5. Six found and fixed across Sprints 3-4.5's own live/integration
 testing (all are process/design corrections, documented as decisions rather than silent fixes):
 
 1. The incremental sync's date-filtered fetch would miss a status update (PENDING → POSTED) on an
@@ -415,12 +443,19 @@ testing (all are process/design corrections, documented as decisions rather than
 5. (Sprint 4.5) `CreditCardBill` rows were duplicated on every repeat sync of the same connection —
    found via real Pluggy sandbox data. Fixed to match the existing idempotent-upsert pattern already
    used for transactions/payment sources — see DEC-048.
+6. (Sprint 4.5) DEC-047's fixture-id fix was incomplete: `reconciliation_links` still grew by one row
+   per fresh-process seed run, since those links are computed via the same general-purpose functions
+   a real sync uses (fresh id every call, by design) and `seed()` had no content-based dedup guard for
+   them the way a real sync already does. Fixed by exporting `reconciliationLinkPairKey` and applying
+   the same dedup in `seed()` — see DEC-049.
 
 ## Test status
 
-**344 automated tests passing** in the default suite, zero failing, across six packages (up from
+**347 automated tests passing** in the default suite, zero failing, across six packages (up from
 288 at end of Sprint 4), plus **6 additional opt-in live-OpenAI tests** that skip automatically
-without `OPENAI_API_KEY` (never part of the default suite — see "Integration status"):
+without `OPENAI_API_KEY` (never part of the default suite — see "Integration status"). The increase
+since the 344 count earlier in Sprint 4.5 is `connection-deletion.test.ts` (3 tests, DEC-050) and one
+additional persistence test replacing a two-reset idempotency check with a three-reset one (DEC-049):
 
 - `packages/financial-engine`: **126** (124 from earlier in Sprint 4.5, plus `stable-ids.test.ts` —
   DEC-047's `vi.resetModules()`-based fixture-id-stability regression test).
@@ -428,12 +463,13 @@ without `OPENAI_API_KEY` (never part of the default suite — see "Integration s
 - `packages/open-finance`: **46** (unchanged from Sprint 3 — `MockProvider`'s `getConnection` gained
   an optional `clientUserId` lookup for connection-recovery testability, no behavior change for
   existing callers).
-- `packages/persistence`: **22** (21 from earlier in Sprint 4.5, plus a `vi.resetModules()`-based
-  cross-module-reset idempotent-seed regression test — the persistence-level half of DEC-047).
+- `packages/persistence`: **22** (a `vi.resetModules()`-based TRIPLE-reset idempotent-seed regression
+  test replacing the earlier two-reset version — DEC-047/DEC-049 — now asserting every entity count,
+  including `reconciliation_links`, stays identical across all three resets).
 - `apps/web` (new test runner, Sprint 4.5): **4** (`warningKey`'s uniqueness/stability/no-content-
   loss properties — the regression test for the React duplicate-key bug this sprint's live validation
   surfaced).
-- `packages/app-services`: **135** (Sprint 4's 86, plus Sprint 4.5: PT-BR mutation-guard explicit/
+- `packages/app-services`: **138** (Sprint 4's 86, plus Sprint 4.5: PT-BR mutation-guard explicit/
   hypothetical cases mirroring the brief's examples, PT-BR grounding pass/fail cases, a full PT-BR
   conversation-loop suite in `orchestrator.test.ts` (Safe-to-Spend regression, hypothetical-vs-
   explicit mutation gating, grounding fallback, independent-living question — all in Portuguese),
@@ -442,8 +478,11 @@ without `OPENAI_API_KEY` (never part of the default suite — see "Integration s
   scenarios (onSuccess normally, frontend closes before onSuccess, webhook later confirms the Item,
   missing connection recovered, both onSuccess and webhook arrive in either order, repeated recovery
   stays idempotent) plus two defensive cases (no `clientUserId` reported; `clientUserId` matching no
-  known profile), and a bill-deduplication regression test (DEC-048, syncing the same mock connection
-  twice and asserting exactly one bill row persists) — plus 6 skipped-by-default live tests in
+  known profile), a bill-deduplication regression test (DEC-048, syncing the same mock connection
+  twice and asserting exactly one bill row persists), and `connection-deletion.test.ts`'s 3 tests
+  (DEC-050: a cross-connection reconciliation link removed correctly while the kept connection's data
+  stays untouched; a connection with no imported data at all deletes cleanly; an unknown connection id
+  throws rather than silently no-op-ing) — plus 6 skipped-by-default live tests in
   `live-openai-smoke.test.ts`.
 
 Run with `pnpm run test` from the repo root, or per-package with `--filter`.

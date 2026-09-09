@@ -91,36 +91,56 @@ describe("idempotent seed", () => {
   });
 
   /**
-   * Regression test for a real Sprint 4.5 bug (DEC-047): the tests above
-   * only prove idempotency when `seed` and its fixture imports stay in ONE
-   * already-running process — which is exactly what masked the bug in the
-   * wild. `vi.resetModules()` + a fresh dynamic `import()` forces the
-   * fixtures module to re-evaluate from scratch between seed calls, the
-   * same as a real dev-server restart (or Next.js instantiating a separate
-   * module registry per RSC-vs-Route-Handler "layer", both observed live)
-   * — this is what actually caught the duplicate-row bug.
+   * Regression test for a real Sprint 4.5 bug (DEC-047/DEC-049): the tests
+   * above only prove idempotency when `seed` and its fixture imports stay
+   * in ONE already-running process — which is exactly what masked the bug
+   * in the wild. `vi.resetModules()` + a fresh dynamic `import()` forces
+   * the fixtures module to re-evaluate from scratch between seed calls,
+   * the same as a real dev-server restart (or Next.js instantiating a
+   * separate module registry per RSC-vs-Route-Handler "layer", both
+   * observed live) — this is what actually caught the duplicate-row bug,
+   * and (a second time) the `reconciliation_links` variant of it: those
+   * links are computed via `findTransactionDuplicates`/
+   * `reconcileEventLineItems` at fixture-evaluation time, which generate a
+   * fresh `id` on every call by design (see `reconciliationLinkPairKey`'s
+   * doc comment) — `seed()` must dedupe them by content, not by id.
+   *
+   * Three resets (not just two) so a would-be linear-growth bug (N rows
+   * after N resets) is unambiguous rather than possibly masked by an
+   * off-by-one in a two-call comparison.
    */
-  it("stays idempotent even when the fixtures module is freshly re-evaluated between seed calls", async () => {
+  it("stays idempotent — including reconciliation_links — across three fresh module re-evaluations", async () => {
     const db = await freshDb();
+    const countsAfterEachReset: Record<string, number>[] = [];
 
-    vi.resetModules();
-    const { seed: seedFirst } = await import("./seed");
-    await seedFirst(db);
+    for (let i = 0; i < 3; i += 1) {
+      vi.resetModules();
+      const { seed: freshSeed } = await import("./seed");
+      await freshSeed(db);
 
-    vi.resetModules();
-    const { seed: seedSecond } = await import("./seed");
-    await seedSecond(db);
+      countsAfterEachReset.push({
+        events: (await db.select().from(schema.financialEvents)).length,
+        installmentPlans: (await db.select().from(schema.installmentPlans)).length,
+        fixedExpenses: (await db.select().from(schema.fixedExpenses)).length,
+        reconciliationLinks: (await db.select().from(schema.reconciliationLinks)).length,
+        goals: (await db.select().from(schema.financialGoals)).length,
+        protectedPreferences: (await db.select().from(schema.protectedPreferences)).length,
+        lifestyleScenarios: (await db.select().from(schema.lifestyleScenarios)).length,
+      });
+    }
 
-    const events = await db.select().from(schema.financialEvents);
-    expect(events).toHaveLength(2); // Rodeo + Beach trip, not 4.
+    // Identical after every single reset — not just "eventually stable."
+    expect(countsAfterEachReset[1]).toEqual(countsAfterEachReset[0]);
+    expect(countsAfterEachReset[2]).toEqual(countsAfterEachReset[0]);
 
-    const installmentPlans = await db.select().from(schema.installmentPlans);
-    expect(installmentPlans).toHaveLength(1);
-
-    const fixedExpenses = await db.select().from(schema.fixedExpenses);
-    expect(fixedExpenses).toHaveLength(7);
-
-    const goals = await db.select().from(schema.financialGoals);
-    expect(goals).toHaveLength(1);
+    expect(countsAfterEachReset[0]).toEqual({
+      events: 2, // Rodeo + Beach trip, never duplicated.
+      installmentPlans: 1,
+      fixedExpenses: 7,
+      reconciliationLinks: 1, // The rodeo-ticket link — this is what DEC-049 fixed.
+      goals: 1,
+      protectedPreferences: 1,
+      lifestyleScenarios: 2,
+    });
   });
 });

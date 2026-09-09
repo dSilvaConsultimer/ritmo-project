@@ -40,6 +40,22 @@ export interface ReconciliationLink {
   readonly createdAt: string;
 }
 
+/**
+ * The content identity of a reconciliation link — independent of its own
+ * `id`, which `findTransactionDuplicates`/`reconcileEventLineItems`
+ * generate fresh (via `createId()`) on every call, by design: a real sync
+ * re-scans the full transaction set every time and must be free to
+ * propose the same candidate again without caring what id a previous
+ * proposal used. A caller that persists these links (e.g.
+ * `app-services/src/sync.ts`'s `reconcileProfile`, or `persistence`'s
+ * `seed()`) MUST dedupe by this key before upserting — matching on `id`
+ * alone is not sufficient, since two calls describing the SAME real-world
+ * link will have DIFFERENT `id`s. See docs/DECISIONS.md DEC-049.
+ */
+export function reconciliationLinkPairKey(link: ReconciliationLink): string {
+  return `${link.type}:${link.primaryTransactionId}:${link.linkedTransactionId ?? link.linkedEventLineItemId ?? ""}`;
+}
+
 const FINGERPRINT_DATE_TOLERANCE_DAYS = 3;
 
 function daysBetween(isoA: string, isoB: string): number {

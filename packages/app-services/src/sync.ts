@@ -7,13 +7,13 @@ import {
   categorize,
   findTransactionDuplicates,
   reconcileEventLineItems,
+  reconciliationLinkPairKey,
   matchInstallmentPlans,
   ProviderError,
   EMPTY_SYNC_RUN_METRICS,
   fromCents,
   type FinancialTransaction,
   type FinancialEvent,
-  type ReconciliationLink,
   type ProviderConnection,
   type SyncRun,
   type SyncRunStatus,
@@ -153,10 +153,6 @@ interface MutableMetrics {
   billsReceived: number;
 }
 
-function linkPairKey(link: ReconciliationLink): string {
-  return `${link.type}:${link.primaryTransactionId}:${link.linkedTransactionId ?? link.linkedEventLineItemId ?? ""}`;
-}
-
 /**
  * Normalizes, categorizes, and upserts one batch of already-fetched
  * external transactions for one account — the piece of the pipeline
@@ -246,13 +242,13 @@ async function reconcileProfile(
   const allTransactions = profileData.transactions;
   const events: readonly FinancialEvent[] = profileData.events;
   const existingLinks = await repo.listAllReconciliationLinks(db);
-  const existingKeys = new Set(existingLinks.map(linkPairKey));
+  const existingKeys = new Set(existingLinks.map(reconciliationLinkPairKey));
 
   const candidateLinks = [
     ...reconcileEventLineItems(events, allTransactions),
     ...findTransactionDuplicates(allTransactions),
   ];
-  const newLinks = candidateLinks.filter((link) => !existingKeys.has(linkPairKey(link)));
+  const newLinks = candidateLinks.filter((link) => !existingKeys.has(reconciliationLinkPairKey(link)));
 
   for (const link of newLinks) {
     await repo.upsertReconciliationLink(db, link);
@@ -478,4 +474,93 @@ export async function getInstallmentPlanMatchCandidates(
     }
   }
   return candidates;
+}
+
+export interface DisconnectConnectionResult {
+  readonly connectionId: string;
+  readonly externalConnectionId: string;
+  readonly providerDeletionAttempted: boolean;
+  readonly providerDeletionSucceeded: boolean;
+  readonly providerDeletionError?: string;
+  readonly deletedPaymentSourceCount: number;
+  readonly deletedTransactionCount: number;
+  readonly deletedBillCount: number;
+  readonly deletedInstallmentPlanCount: number;
+  readonly deletedReconciliationLinkCount: number;
+  readonly deletedSyncRunCount: number;
+}
+
+/**
+ * Fully removes ONE connection and every piece of local data that belongs
+ * EXCLUSIVELY to it — never shared/canonical fixture data, since nothing
+ * here is scoped to a connection in the first place. Uses the application's
+ * existing repository layer throughout (never raw/ad-hoc SQL). See
+ * docs/OPEN-FINANCE.md, "Connection deletion," DEC-050.
+ *
+ * Order matters (FK-safe, children before parents): reconciliation links
+ * referencing this connection's transactions (on EITHER side — a
+ * cross-connection link where the other side belongs to a connection being
+ * KEPT is still deleted, since the link itself no longer has anything to
+ * link) -> installment plans referencing its transactions/payment sources
+ * (a provider-derived plan, e.g. from Pluggy's `installmentMetadata`) ->
+ * bills -> transactions -> payment sources -> sync runs -> the connection
+ * row itself.
+ *
+ * Best-effort on the PROVIDER side: attempts `provider.deleteConnection`
+ * (removes the Item on Pluggy's own side) but never lets that failure
+ * block local cleanup — the Item may already be gone/expired there, and
+ * this application's own data should not become stuck because of it. The
+ * outcome is reported, never silently swallowed.
+ */
+export async function disconnectConnection(
+  db: Database,
+  connectionId: string,
+): Promise<DisconnectConnectionResult> {
+  const connection = await repo.getProviderConnectionById(db, connectionId);
+  if (!connection) {
+    throw new Error(`No provider connection ${connectionId}`);
+  }
+
+  let providerDeletionSucceeded = false;
+  let providerDeletionError: string | undefined;
+  try {
+    const provider = getProvider(connection.provider as ProviderName);
+    await provider.deleteConnection(connection.externalConnectionId);
+    providerDeletionSucceeded = true;
+  } catch (error) {
+    const normalized = normalizeSyncError(error);
+    providerDeletionError = normalized.message;
+  }
+
+  const paymentSourceIds = await repo.listPaymentSourceIdsByConnectionId(db, connectionId);
+  const transactionIds = await repo.listTransactionIdsByPaymentSourceIds(db, paymentSourceIds);
+
+  const deletedReconciliationLinkCount = await repo.deleteReconciliationLinksReferencingTransactionIds(
+    db,
+    transactionIds,
+  );
+  const deletedInstallmentPlanCount = await repo.deleteInstallmentPlansReferencing(
+    db,
+    transactionIds,
+    paymentSourceIds,
+  );
+  const deletedBillCount = await repo.deleteBillsByPaymentSourceIds(db, paymentSourceIds);
+  const deletedTransactionCount = await repo.deleteTransactionsByIds(db, transactionIds);
+  const deletedPaymentSourceCount = await repo.deletePaymentSourcesByIds(db, paymentSourceIds);
+  const deletedSyncRunCount = await repo.deleteSyncRunsByConnectionId(db, connectionId);
+  await repo.deleteProviderConnectionById(db, connectionId);
+
+  return {
+    connectionId,
+    externalConnectionId: connection.externalConnectionId,
+    providerDeletionAttempted: true,
+    providerDeletionSucceeded,
+    ...(providerDeletionError ? { providerDeletionError } : {}),
+    deletedPaymentSourceCount,
+    deletedTransactionCount,
+    deletedBillCount,
+    deletedInstallmentPlanCount,
+    deletedReconciliationLinkCount,
+    deletedSyncRunCount,
+  };
 }

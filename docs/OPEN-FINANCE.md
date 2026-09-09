@@ -114,6 +114,29 @@ default for local dev), the webhook path cannot fire regardless of how well it's
 about a new Item at all. This is a genuine, documented constraint of Pluggy's webhook delivery model,
 not a gap in this recovery mechanism.
 
+## Connection deletion (Sprint 4.5, DEC-050)
+
+The inverse of recovery: fully removing ONE connection and every piece of local data scoped
+exclusively to it, without touching shared/canonical fixture data (nothing in that data is scoped to
+a connection). `disconnectConnection` (`packages/app-services/src/sync.ts`), exposed at
+`DELETE /api/connections?connectionId=...`:
+
+1. Best-effort deletes the Item on the provider's own side (`provider.deleteConnection`) — never lets
+   that failure block local cleanup, since the Item may already be gone/expired there. The outcome
+   (`providerDeletionSucceeded`/`providerDeletionError`) is reported, never silently swallowed.
+2. Deletes local rows in FK-safe order (children before parents): reconciliation links referencing the
+   connection's transactions **on either side** → installment plans referencing its transactions/
+   payment sources → bills → transactions → payment sources → sync runs → the connection row itself.
+
+**Cross-connection links are a real scenario, not a hypothetical one.** Two independent live sandbox
+connections were found (Sprint 4.5) to have transactions `findTransactionDuplicates` correctly
+matched as likely recurring duplicates ACROSS the two connections — entirely ordinary behavior for
+that function, unrelated to any bug. Deleting one connection therefore has to remove any link that
+references its transactions even when the OTHER side of that link belongs to a connection being kept
+— the link itself has nothing left to link once one side is gone. Every delete uses the existing
+repository layer (`packages/persistence/src/repositories.ts`'s targeted `DELETE ... WHERE` functions)
+— never raw/ad-hoc SQL.
+
 ## Sync model
 
 `SyncRun` (`packages/financial-engine/src/domain/provider.ts`): `status: PENDING | RUNNING |
