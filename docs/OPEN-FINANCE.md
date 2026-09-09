@@ -70,6 +70,50 @@ connection by (profile, provider, externalConnectionId) before creating a new on
 (`findProviderConnection`), and the database additionally enforces a unique constraint on that triple
 (DEC-023) as a last-resort guarantee.
 
+## Connection recovery (Sprint 4.5)
+
+**`completeConnection`/`onSuccess` is a fast UX path, never the sole mechanism for persisting a
+connection.** Pluggy's own documentation states the Connect widget's `onSuccess` callback is not
+guaranteed to fire, so business logic and database integrity must not depend exclusively on it — a
+live Sprint 4.5 validation attempt independently confirmed this is a real, not just theoretical, risk:
+a real sandbox Connect flow was completed, but its `onSuccess` callback never reached this
+application, leaving a real Pluggy Item with no corresponding `ProviderConnection`. See DEC-046.
+
+**Discovery mechanism.** Pluggy's REST API (as exposed by the official `pluggy-sdk`, verified by
+inspecting its full method list) has no "list Items for a clientUserId" endpoint — recovery therefore
+cannot be a proactive poll. It works the other way: `Item.clientUserId` (which this application always
+sets to the internal `financialProfileId` at Connect Token creation time — `createConnectToken`'s
+`clientUserId` option) is read back via `provider.getConnection(externalConnectionId)` (added to
+`ExternalConnectionStatus.clientUserId`, Sprint 4.5) whenever ANY signal surfaces an
+`externalConnectionId` this application doesn't yet have a connection for. The authoritative source of
+that signal is the **existing webhook architecture** (`item/created`/`item/updated`/`item/
+login_succeeded`/`item/error`/`item/waiting_user_*` — see "Webhooks" below): the webhook dispatcher,
+on finding no known connection for an incoming `itemId`, now calls `recoverOrphanedConnection`
+instead of silently dropping the event.
+
+`recoverOrphanedConnection` (`packages/app-services/src/sync.ts`):
+
+1. Checks `findProviderConnectionByExternalId(provider, externalConnectionId)` first (profile-
+   agnostic) — if a connection already exists (from `onSuccess`, a prior recovery, or both), returns
+   it immediately without calling the provider again. This is the idempotency guarantee: calling this
+   function repeatedly, or having both `onSuccess` and a webhook trigger it, never creates a second
+   row.
+2. Otherwise calls `provider.getConnection(externalConnectionId)` and reads `clientUserId`. No
+   `clientUserId` → cannot recover (`{ recovered: false, reason: "NO_CLIENT_USER_ID" }`).
+3. Validates `clientUserId` against a real, known `FinancialProfile` (`repo.getProfileById`) before
+   trusting it — never attributes a connection to an unrecognized profile id
+   (`{ recovered: false, reason: "UNKNOWN_PROFILE" }`).
+4. Delegates to the SAME `completeConnection` function `onSuccess` calls — a recovered Item runs
+   through the exact same initial-sync pipeline, never a parallel/duplicated one.
+
+**Local development caveat.** Webhooks cannot reach `localhost` without a public URL
+(`NEXT_PUBLIC_APP_URL`) registered at Connect Token creation time — in that configuration (the
+default for local dev), the webhook path cannot fire regardless of how well it's implemented, and
+`onSuccess` (or a manually-supplied `externalConnectionId` passed directly to
+`recoverOrphanedConnection`, e.g. copied from Pluggy's own dashboard) remains the only way to learn
+about a new Item at all. This is a genuine, documented constraint of Pluggy's webhook delivery model,
+not a gap in this recovery mechanism.
+
 ## Sync model
 
 `SyncRun` (`packages/financial-engine/src/domain/provider.ts`): `status: PENDING | RUNNING |
@@ -125,6 +169,11 @@ DEC-027. The webhook dispatcher (`packages/app-services/src/webhook.ts`) routes
    canonical data from the provider (see "Incremental sync" above), using the payload only as a
    *trigger* naming what changed (`itemId`, `accountId`, `transactionIds`).
 3. Marks the claimed row `PROCESSED` or `FAILED` (with an error message) once done.
+
+**(Sprint 4.5)** For `item/*` events, an unknown `itemId` (no existing `ProviderConnection`) no longer
+silently returns — it calls `recoverOrphanedConnection` instead, since this is exactly the situation
+that arises when the Connect widget's `onSuccess` callback never fired. See "Connection recovery"
+above.
 
 ### Webhook security
 

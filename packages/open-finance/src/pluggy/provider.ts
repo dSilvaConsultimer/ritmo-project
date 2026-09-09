@@ -65,6 +65,7 @@ export class PluggyProvider implements OpenFinanceProvider {
         ...(item.lastUpdatedAt
           ? { providerLastUpdatedAt: new Date(item.lastUpdatedAt).toISOString() }
           : {}),
+        ...(item.clientUserId ? { clientUserId: item.clientUserId } : {}),
       };
     } catch (error) {
       throw normalizePluggyError(error);

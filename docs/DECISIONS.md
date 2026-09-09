@@ -969,3 +969,51 @@ limit independent of the organization's overall credit balance (a common source 
 even with credits present at the org level), and (2) retry the Pluggy Connect widget, keeping it open
 until it shows its own success confirmation and closes on its own, rather than closing the tab/window
 once sandbox credentials are submitted.
+
+
+---
+
+### DEC-046
+
+**Date:** 2026-09-09
+**Context:** Sprint 4.5's live Pluggy validation exposed a real architectural weakness, independently
+confirmed by the Founder against OpenAI's public error taxonomy and Pluggy's own documentation: a
+real sandbox Connect flow was completed, but the Connect widget's client-side `onSuccess` callback
+never reached this application, so no `ProviderConnection` was ever persisted and no data was
+imported — even though the Item was successfully created on Pluggy's side. Pluggy's own docs state
+`onSuccess` is not guaranteed to fire and that business logic/database integrity must not rely on it
+exclusively.
+**Decision:** Hardened the connection lifecycle so `onSuccess` is a fast UX path, never the sole
+discovery/persistence mechanism:
+1. `ExternalConnectionStatus` (the `OpenFinanceProvider` interface) gained an optional
+   `clientUserId` field, populated by `PluggyProvider.getConnection` from the real Item's own
+   `clientUserId` (which this application always sets to the internal `financialProfileId` at
+   Connect Token creation — unchanged from Sprint 3).
+2. Added `recoverOrphanedConnection(db, providerName, externalConnectionId)`
+   (`packages/app-services/src/sync.ts`): idempotent (checks for an existing connection by
+   (provider, externalConnectionId) — profile-agnostic — before doing anything else), validates the
+   Item's `clientUserId` against a real, known `FinancialProfile` (`repo.getProfileById`, new) before
+   trusting it, and — only once validated — delegates to the SAME `completeConnection` function
+   `onSuccess` already calls, so a recovered Item runs through the identical initial-sync pipeline
+   rather than a parallel one.
+3. The webhook dispatcher (`packages/app-services/src/webhook.ts`) now calls
+   `recoverOrphanedConnection` for any `item/*` lifecycle event whose `itemId` has no known
+   connection yet, instead of silently dropping the event — making the existing webhook
+   infrastructure the authoritative asynchronous discovery path, per the Founder's explicit
+   instruction to prefer it over any new polling mechanism.
+4. Pluggy's REST API (verified via the full `pluggy-sdk` method list) has no "list Items by
+   clientUserId" endpoint, so true proactive polling-based discovery is not possible against the
+   documented API — recovery is therefore reactive (triggered by a webhook, or a manually-supplied
+   `externalConnectionId`), never a fabricated polling loop. This is documented explicitly in
+   `docs/OPEN-FINANCE.md` rather than silently assumed.
+**Rationale:** The Founder's explicit instruction, following live validation surfacing the exact
+failure mode Pluggy's own documentation warns about. Reusing `completeConnection` rather than writing
+parallel recovery-specific import logic keeps exactly one code path responsible for turning a Pluggy
+Item into local data, avoiding drift between the two entry points.
+**Status:** Accepted.
+**Consequences:** In local development (no public `NEXT_PUBLIC_APP_URL`), Pluggy cannot deliver
+webhooks to `localhost` at all — this is a genuine constraint of Pluggy's delivery model, not a gap in
+`recoverOrphanedConnection` itself, which remains directly callable (e.g. with an `externalConnectionId`
+copied from Pluggy's own dashboard) as a manual fallback in that environment. Live Pluggy sandbox
+validation remains pending a further sandbox Connect attempt from the Founder — this hardening does
+not itself constitute that validation.

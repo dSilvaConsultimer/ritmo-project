@@ -6,7 +6,8 @@ import {
 } from "@money-copilot/open-finance";
 import * as repo from "@money-copilot/persistence";
 import type { Database } from "@money-copilot/persistence";
-import { syncConnection, refetchTransactionsByExternalId } from "./sync";
+import { syncConnection, refetchTransactionsByExternalId, recoverOrphanedConnection } from "./sync";
+import type { ProviderName } from "./provider-registry";
 
 export type WebhookOutcome = "IGNORED_DUPLICATE" | "IGNORED_UNHANDLED" | "PROCESSED" | "FAILED";
 
@@ -64,8 +65,18 @@ async function dispatch(db: Database, payload: PluggyWebhookPayload, provider: s
     case "item/waiting_user_input":
     case "item/waiting_user_action": {
       const connection = await repo.findProviderConnectionByExternalId(db, provider, payload.itemId);
-      if (!connection) return; // Not a connection we know about yet — nothing to refresh.
-      await syncConnection(db, connection.financialProfileId, connection.id);
+      if (connection) {
+        await syncConnection(db, connection.financialProfileId, connection.id);
+        return;
+      }
+      // No known connection yet — this may be the very first signal this
+      // application has ever received for this Item (the Connect widget's
+      // `onSuccess` callback is not guaranteed to fire client-side — see
+      // docs/OPEN-FINANCE.md, "Connection recovery," DEC-046). Recover it
+      // deterministically via the Item's own `clientUserId` rather than
+      // silently dropping the event — `recoverOrphanedConnection` is a
+      // no-op if a connection already exists (idempotent either way).
+      await recoverOrphanedConnection(db, provider as ProviderName, payload.itemId);
       return;
     }
 

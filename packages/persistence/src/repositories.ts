@@ -39,6 +39,18 @@ export async function upsertProfile(db: Database, profile: FinancialProfile): Pr
 }
 
 /**
+ * Looks up a profile by id — used by connection recovery (Sprint 4.5) to
+ * validate that a Pluggy Item's `clientUserId` corresponds to a real,
+ * known profile before attributing a connection to it, rather than
+ * trusting the value blindly. See `app-services/src/sync.ts`,
+ * `recoverOrphanedConnection`.
+ */
+export async function getProfileById(db: Database, id: string): Promise<FinancialProfile | undefined> {
+  const [row] = await db.select().from(schema.financialProfiles).where(eq(schema.financialProfiles.id, id));
+  return row as FinancialProfile | undefined;
+}
+
+/**
  * Finds a previously-synced payment source by its provider + external
  * account id — used by the sync pipeline to decide whether to update an
  * existing `PaymentSource` row or create a new one (provider accounts have

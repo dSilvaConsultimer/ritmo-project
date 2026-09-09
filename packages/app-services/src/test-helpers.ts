@@ -15,6 +15,7 @@ export function installMockProvider(options: {
   accounts: readonly ExternalAccountInput[];
   transactionsByAccount: ReadonlyMap<string, readonly ExternalTransactionInput[]>;
   billsByAccount?: ReadonlyMap<string, readonly ExternalBillInput[]>;
+  clientUserIdByExternalConnectionId?: ReadonlyMap<string, string>;
 }): MockProvider {
   resetProviderRegistry();
   const provider = new MockProvider(options);

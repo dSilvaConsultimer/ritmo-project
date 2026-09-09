@@ -9,7 +9,7 @@ identify the conflict, explain the existing rule, do not silently change it, imp
 behavior only if it clearly supersedes the old decision, and record the change in
 `docs/DECISIONS.md` (mark the old decision superseded, add a new one — never rewrite history).
 
-Last updated: **2026-09-06, end of Sprint 4.5.**
+Last updated: **2026-09-09, end of Sprint 4.5 (connection-recovery hardening addendum).**
 
 ---
 
@@ -109,8 +109,8 @@ for the full account; this file carries forward only what a future sprint needs 
 
 ## Completed capabilities
 
-**New in Sprint 4.5** (see `docs/DECISIONS.md` DEC-043–045 and `docs/AI-COPILOT.md` for the full
-account):
+**New in Sprint 4.5** (see `docs/DECISIONS.md` DEC-043–046, `docs/AI-COPILOT.md`, and
+`docs/OPEN-FINANCE.md` for the full account):
 
 - Fixed a real, live-discovered bug: every optional AI tool argument is now `.nullable().default(
   null)` instead of plain Zod `.optional()` — OpenAI's strict function-calling mode rejects any tool
@@ -128,7 +128,17 @@ account):
 - Live Pluggy sandbox validation: real authentication + Connect Token creation succeeded live; the
   interactive Connect-widget step did not result in a persisted connection on this app's side —
   reported, no real account/transaction/bill data was imported (see "Integration status").
-- 326 automated tests passing in the default suite (up from 288), plus 6 additional opt-in
+- **Connection recovery hardening (architectural finding from the above)**: `onSuccess` is no longer
+  the sole mechanism for discovering/persisting a `ProviderConnection` — Pluggy's own docs say it's
+  not guaranteed to fire, and this sprint's live attempt proved that in practice.
+  `recoverOrphanedConnection` (`packages/app-services/src/sync.ts`) deterministically re-attributes an
+  orphaned Item to its owning `FinancialProfile` via the Item's own `clientUserId` (validated against
+  a real known profile first), then runs it through the exact same `completeConnection` pipeline
+  `onSuccess` uses. The existing webhook dispatcher now calls this instead of silently dropping an
+  `item/*` event for an unknown `itemId`. Idempotent by construction — never duplicates a connection
+  regardless of whether `onSuccess`, a webhook, or both eventually fire. See DEC-046 and
+  `docs/OPEN-FINANCE.md`, "Connection recovery."
+- 336 automated tests passing in the default suite (up from 288), plus 6 additional opt-in
   live-OpenAI tests that skip automatically without a key (never part of the default suite).
 
 **New in Sprint 4** (see `docs/DECISIONS.md` DEC-034–042 and `docs/AI-COPILOT.md` for the full
@@ -309,6 +319,12 @@ Everything carried forward from Sprint 2, plus:
   input is never shown as-is — `groundResponseText` replaces it with a deterministic fallback.
 - (Sprint 4) `OPENAI_API_KEY` is never sent to the browser, logged, persisted, or included in an
   `AIRequestLog` row.
+- (Sprint 4.5) A `ProviderConnection` is never lost solely because the Connect widget's `onSuccess`
+  callback failed to fire — `recoverOrphanedConnection` re-attributes the Item via its own
+  `clientUserId`, validated against a real known `FinancialProfile` first.
+- (Sprint 4.5) A connection is never duplicated regardless of whether `onSuccess`, a webhook, or both
+  eventually report the same Item — `recoverOrphanedConnection` checks for an existing connection
+  (profile-agnostic) before doing anything else, on top of DEC-023's existing DB-level guarantee.
 
 ## Rejected approaches
 
@@ -385,21 +401,28 @@ testing (all are process/design corrections, documented as decisions rather than
 
 ## Test status
 
-**326 automated tests passing** in the default suite, zero failing, across five packages (up from
+**336 automated tests passing** in the default suite, zero failing, across five packages (up from
 288 at end of Sprint 4), plus **6 additional opt-in live-OpenAI tests** that skip automatically
 without `OPENAI_API_KEY` (never part of the default suite — see "Integration status"):
 
 - `packages/financial-engine`: **124** (unchanged from Sprint 4).
 - `packages/ai`: **11** (unchanged from Sprint 4).
-- `packages/open-finance`: **46** (unchanged from Sprint 3).
-- `packages/persistence`: **21** (unchanged from Sprint 4).
-- `packages/app-services`: **124** (Sprint 4's 86, plus Sprint 4.5: PT-BR mutation-guard explicit/
+- `packages/open-finance`: **46** (unchanged from Sprint 3 — `MockProvider`'s `getConnection` gained
+  an optional `clientUserId` lookup for connection-recovery testability, no behavior change for
+  existing callers).
+- `packages/persistence`: **21** (unchanged from Sprint 4 — `getProfileById` added, not yet exercised
+  by a dedicated persistence-level test since it's covered end-to-end via
+  `connection-recovery.test.ts`).
+- `packages/app-services`: **134** (Sprint 4's 86, plus Sprint 4.5: PT-BR mutation-guard explicit/
   hypothetical cases mirroring the brief's examples, PT-BR grounding pass/fail cases, a full PT-BR
   conversation-loop suite in `orchestrator.test.ts` (Safe-to-Spend regression, hypothetical-vs-
-  explicit mutation gating, grounding fallback, independent-living question — all in Portuguese), and
+  explicit mutation gating, grounding fallback, independent-living question — all in Portuguese),
   `tool-schema-strict-mode.test.ts` asserting every one of the 16 tools' JSON Schemas satisfy OpenAI's
-  strict-mode `required` constraint) — plus 6 skipped-by-default live tests in
-  `live-openai-smoke.test.ts`.
+  strict-mode `required` constraint, and `connection-recovery.test.ts`'s 10 tests covering the 6
+  required scenarios (onSuccess normally, frontend closes before onSuccess, webhook later confirms
+  the Item, missing connection recovered, both onSuccess and webhook arrive in either order, repeated
+  recovery stays idempotent) plus two defensive cases (no `clientUserId` reported; `clientUserId`
+  matching no known profile) — plus 6 skipped-by-default live tests in `live-openai-smoke.test.ts`.
 
 Run with `pnpm run test` from the repo root, or per-package with `--filter`.
 
@@ -420,6 +443,14 @@ explicitly shows success and closes itself; then confirm `GET /api/connections` 
 before considering the flow complete. Once a connection actually persists, the remaining validation
 steps are: account retrieval, transaction retrieval, persistence, and snapshot recalculation — per
 the original checklist, still unexecuted.
+
+**Architectural hardening completed as a result of this finding** (DEC-046,
+`docs/OPEN-FINANCE.md` "Connection recovery"): `onSuccess` is no longer treated as the sole
+mechanism for discovering/persisting a connection — the webhook dispatcher now recovers an orphaned
+Item deterministically via its `clientUserId` if `onSuccess` never fires. This does NOT itself
+constitute live validation (it's tested via `MockProvider` only, `connection-recovery.test.ts`) — a
+further live sandbox Connect attempt is still needed and remains pending per the Founder's explicit
+instruction to hold off retrying until they complete another one.
 
 No Belvo, no real (non-sandbox) bank connections, no WhatsApp — all correctly out of scope for
 Sprint 1–4.5.

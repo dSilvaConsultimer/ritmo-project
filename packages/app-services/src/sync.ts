@@ -82,6 +82,67 @@ export async function completeConnection(
   return { connection, syncRun };
 }
 
+export type RecoveryOutcome =
+  | { readonly recovered: true; readonly alreadyExisted: true; readonly connection: ProviderConnection }
+  | {
+      readonly recovered: true;
+      readonly alreadyExisted: false;
+      readonly connection: ProviderConnection;
+      readonly syncRun: SyncRun;
+    }
+  | { readonly recovered: false; readonly reason: "NO_CLIENT_USER_ID" | "UNKNOWN_PROFILE" };
+
+/**
+ * Deterministically discovers and persists a `ProviderConnection` for a
+ * Pluggy Item this application does not yet know about — the hardening
+ * this sprint's live validation exposed the need for (Sprint 4.5, DEC-046):
+ * Pluggy's own docs say the Connect widget's `onSuccess` callback is not
+ * guaranteed to fire, so it must never be the ONLY path by which a
+ * connection is discovered and persisted.
+ *
+ * Never trusts the caller's claim about which profile owns this
+ * `externalConnectionId` — it always asks the provider for the Item's own
+ * `clientUserId` (which Pluggy always reports, and which this application
+ * always sets to the internal `financialProfileId` at Connect Token
+ * creation time — see `createConnectToken`) and validates that it matches
+ * a real, known `FinancialProfile` before persisting anything.
+ *
+ * Idempotent: if a connection already exists for this
+ * (provider, externalConnectionId) — whether created by `onSuccess`, a
+ * prior recovery, or both — this returns it without re-deriving anything
+ * or duplicating a row (requirement: "never duplicate ProviderConnection,
+ * accounts, transactions, or consumption when both onSuccess and
+ * webhook/recovery occur").
+ *
+ * A newly recovered Item runs through the EXACT SAME `completeConnection`
+ * → `syncConnection` pipeline `onSuccess` uses — there is no parallel/
+ * duplicated import logic to keep in sync.
+ */
+export async function recoverOrphanedConnection(
+  db: Database,
+  providerName: ProviderName,
+  externalConnectionId: string,
+): Promise<RecoveryOutcome> {
+  const existing = await repo.findProviderConnectionByExternalId(db, providerName, externalConnectionId);
+  if (existing) {
+    return { recovered: true, alreadyExisted: true, connection: existing };
+  }
+
+  const provider = getProvider(providerName);
+  const status = await provider.getConnection(externalConnectionId);
+  if (!status.clientUserId) {
+    return { recovered: false, reason: "NO_CLIENT_USER_ID" };
+  }
+
+  const profile = await repo.getProfileById(db, status.clientUserId);
+  if (!profile) {
+    return { recovered: false, reason: "UNKNOWN_PROFILE" };
+  }
+
+  const { connection, syncRun } = await completeConnection(db, profile.id, providerName, externalConnectionId);
+  return { recovered: true, alreadyExisted: false, connection, syncRun };
+}
+
 interface MutableMetrics {
   accountsDiscovered: number;
   transactionsReceived: number;

@@ -34,6 +34,18 @@ export interface ExternalConnectionStatus {
   readonly consentExpiresAt?: string;
   /** The provider's own last-completed-sync timestamp, if it reports one. */
   readonly providerLastUpdatedAt?: string;
+  /**
+   * The `clientUserId` the connection was created with, when the provider
+   * reports it back (Pluggy always does — see `Item.clientUserId`). This
+   * is what makes connection RECOVERY possible: a webhook (or any other
+   * signal) that surfaces an `externalConnectionId` we don't yet have a
+   * `ProviderConnection` for can look this up to deterministically
+   * re-attribute the Item to the right `FinancialProfile`, since
+   * `clientUserId` is always set to the internal `financialProfileId` at
+   * Connect Token creation time. See docs/OPEN-FINANCE.md, "Connection
+   * recovery."
+   */
+  readonly clientUserId?: string;
 }
 
 export interface ListTransactionsOptions {

@@ -24,15 +24,19 @@ export class MockProvider implements OpenFinanceProvider {
   private readonly accounts: readonly ExternalAccountInput[];
   private readonly transactionsByAccount: ReadonlyMap<string, readonly ExternalTransactionInput[]>;
   private readonly billsByAccount: ReadonlyMap<string, readonly ExternalBillInput[]>;
+  /** Simulates Pluggy's `Item.clientUserId` — set per externalConnectionId so connection-recovery tests can exercise `getConnection`'s `clientUserId` field without real Pluggy access. */
+  private readonly clientUserIdByExternalConnectionId: ReadonlyMap<string, string>;
 
   constructor(options: {
     accounts: readonly ExternalAccountInput[];
     transactionsByAccount: ReadonlyMap<string, readonly ExternalTransactionInput[]>;
     billsByAccount?: ReadonlyMap<string, readonly ExternalBillInput[]>;
+    clientUserIdByExternalConnectionId?: ReadonlyMap<string, string>;
   }) {
     this.accounts = options.accounts;
     this.transactionsByAccount = options.transactionsByAccount;
     this.billsByAccount = options.billsByAccount ?? new Map();
+    this.clientUserIdByExternalConnectionId = options.clientUserIdByExternalConnectionId ?? new Map();
   }
 
   async createConnectionToken(
@@ -42,11 +46,13 @@ export class MockProvider implements OpenFinanceProvider {
   }
 
   async getConnection(externalConnectionId: string): Promise<ExternalConnectionStatus> {
+    const clientUserId = this.clientUserIdByExternalConnectionId.get(externalConnectionId);
     return {
       externalConnectionId,
       status: "CONNECTED",
       connectorId: "mock-connector",
       connectorName: "Mock Bank",
+      ...(clientUserId ? { clientUserId } : {}),
     };
   }
 
