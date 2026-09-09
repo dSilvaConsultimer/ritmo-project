@@ -111,14 +111,30 @@ Founder's real family-support commitment) can never become a cost-cutting recomm
 before anything else. Accepting a recommendation is intent, not confirmed savings — it never inflates
 current Safe-to-Spend. See [docs/RECOMMENDATIONS.md](./RECOMMENDATIONS.md) for the full architecture.
 
-## Out of scope for Sprint 1–5
+## Concierge & real-world discovery (Sprint 6)
+
+Money Copilot can now help decide a real-world discretionary action — "Vou sair para jantar hoje,
+quanto posso gastar e onde eu poderia ir?" — by combining the deterministic financial engine (always
+first: what can the user safely spend) with a provider-neutral real-world discovery layer (what
+options actually exist and what they cost). The financial envelope is never influenced by external
+search results — only the reverse. Real-world prices are treated as genuinely imperfect: every price
+carries provenance (exact/range/starting-at/price-level/estimated/unknown) and a venue with no price
+evidence is never presented as "fitting the budget." Multi-part plans (e.g. dinner + optional lodging)
+are evaluated deterministically, with required and optional costs always shown separately so an
+optional component's cost is never mistaken for unavoidable spend. Saving/selecting a plan is intent,
+never spending — no transaction is created; an explicit budget reservation reuses the existing planned-
+event mechanism. **No live discovery provider credential exists yet** — see
+[docs/CONCIERGE.md](./CONCIERGE.md) for the full architecture and exact live-provider status.
+
+## Out of scope for Sprint 1–6
 
 Real (non-sandbox) bank/credit card connections (technically eligible as of Sprint 4.5's passed
 validation, but gated on separate explicit Founder approval — see `docs/PROJECT_STATE.md`), WhatsApp,
-and a real-world venue/product/travel concierge (no restaurant/hotel/store search, no external
-merchant cancellation, no location-based search — Sprint 6). Sprint 4 added conversational AI (OpenAI,
-via a provider-neutral abstraction that a future Anthropic provider could also implement) strictly as
-an interpretation/interface layer over the unchanged deterministic core; Sprint 5 added the
-recommendation engine above using that same interpretation-only AI layer — see
-[docs/AI-COPILOT.md](./AI-COPILOT.md), [docs/RECOMMENDATIONS.md](./RECOMMENDATIONS.md), and
+and any external booking/reservation/payment/cancellation action (Sprint 6 only discovers and
+recommends — no restaurant/hotel booking, no ticket purchase, no merchant contact). Sprint 4 added
+conversational AI (OpenAI, via a provider-neutral abstraction a future Anthropic provider could also
+implement) strictly as an interpretation/interface layer over the unchanged deterministic core; Sprint
+5 added the recommendation engine, and Sprint 6 the concierge, both using that same
+interpretation-only AI layer — see [docs/AI-COPILOT.md](./AI-COPILOT.md),
+[docs/RECOMMENDATIONS.md](./RECOMMENDATIONS.md), [docs/CONCIERGE.md](./CONCIERGE.md), and
 [docs/ROADMAP.md](./ROADMAP.md).

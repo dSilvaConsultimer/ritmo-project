@@ -47,6 +47,20 @@ describe("TOOL_REGISTRY", () => {
     }
   });
 
+  it("includes every required Sprint 6 concierge tool", () => {
+    const names = new Set(TOOL_REGISTRY.map((t) => t.name));
+    for (const required of [
+      "getConciergeBudget",
+      "searchPlaces",
+      "buildConciergePlans",
+      "evaluateConciergePlan",
+      "saveConciergePlan",
+      "reservePlanBudget",
+    ]) {
+      expect(names.has(required)).toBe(true);
+    }
+  });
+
   it("classifies exactly the state-changing tools as MUTATION", () => {
     const mutationNames = TOOL_REGISTRY.filter((t) => t.kind === "MUTATION").map((t) => t.name).sort();
     expect(mutationNames).toEqual(
@@ -57,6 +71,8 @@ describe("TOOL_REGISTRY", () => {
         "recordManualTransaction",
         "rejectRecommendation",
         "replanAfterExpense",
+        "reservePlanBudget",
+        "saveConciergePlan",
         "updatePlannedFinancialEvent",
       ].sort(),
     );
@@ -65,6 +81,13 @@ describe("TOOL_REGISTRY", () => {
   it("classifies getRecommendations and getRecommendationDetails as READ", () => {
     expect(findTool("getRecommendations")?.kind).toBe("READ");
     expect(findTool("getRecommendationDetails")?.kind).toBe("READ");
+  });
+
+  it("classifies getConciergeBudget, searchPlaces, buildConciergePlans, and evaluateConciergePlan as READ", () => {
+    expect(findTool("getConciergeBudget")?.kind).toBe("READ");
+    expect(findTool("searchPlaces")?.kind).toBe("READ");
+    expect(findTool("buildConciergePlans")?.kind).toBe("READ");
+    expect(findTool("evaluateConciergePlan")?.kind).toBe("READ");
   });
 
   it("classifies getSafeToSpend, simulateExpense, and getSpendingEnvelope as READ", () => {

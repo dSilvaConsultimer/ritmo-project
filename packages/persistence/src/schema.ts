@@ -514,3 +514,57 @@ export const webhookEvents = pgTable("webhook_events", {
   payloadSummary: text("payload_summary"), // small JSON: event/itemId/accountId/counts only
   errorMessage: text("error_message"),
 });
+
+/**
+ * Sprint 6: records enough to answer "por que você me recomendou isso?"
+ * and "esse orçamento ainda é válido?" — the exact envelope figures used
+ * are captured at creation time so staleness can be detected later by
+ * comparing against a freshly-computed envelope (see
+ * `reevaluateConciergePlan`, docs/CONCIERGE.md, "Stale financial context").
+ * `intentJson`/(on `saved_concierge_plans`) `planJson` are normalized
+ * domain data, never a raw provider payload.
+ */
+export const conciergeSessions = pgTable("concierge_sessions", {
+  id: text("id").primaryKey(),
+  financialProfileId: text("financial_profile_id")
+    .notNull()
+    .references(() => financialProfiles.id),
+  intentJson: text("intent_json").notNull(),
+  envelopeRecommendedAmountCents: integer("envelope_recommended_amount_cents").notNull(),
+  envelopeCautionAmountCents: integer("envelope_caution_amount_cents").notNull(),
+  envelopeAsOfDate: text("envelope_as_of_date").notNull(),
+  /**
+   * JSON-encoded `OutingPlan[]` — every plan this session proposed, so
+   * `saveConciergePlan(sessionId, planId)` can look one up by id without
+   * requiring the LLM to echo back a complex nested object it received
+   * earlier (unreliable tool-calling ergonomics) — it only ever needs to
+   * pass back the short id string from the prior `buildConciergePlans`
+   * tool result.
+   */
+  plansJson: text("plans_json").notNull(),
+  createdAt: text("created_at").notNull(),
+});
+
+/**
+ * Saving a plan is intent, never spending — no `financial_transactions`
+ * row is ever created here (see docs/CONCIERGE.md, "Plan vs. actual
+ * spending"). `planId` (the `OutingPlan`'s own id) is unique per profile so
+ * saving the identical already-returned plan twice never duplicates a row.
+ */
+export const savedConciergePlans = pgTable(
+  "saved_concierge_plans",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => conciergeSessions.id),
+    financialProfileId: text("financial_profile_id")
+      .notNull()
+      .references(() => financialProfiles.id),
+    planId: text("plan_id").notNull(),
+    planJson: text("plan_json").notNull(),
+    status: text("status").$type<"SELECTED">().notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [unique().on(table.financialProfileId, table.planId)],
+);

@@ -862,3 +862,83 @@ export async function listRecommendationsForProfile(
     .where(eq(schema.recommendations.financialProfileId, financialProfileId));
   return rows.map(mappers.rowToRecommendation);
 }
+
+// ---------- Concierge (Sprint 6) ----------
+//
+// Unlike every other entity in this file, `ConciergeSession`/`OutingPlan`
+// are APPLICATION-layer types (`packages/app-services/src/concierge/
+// types.ts`), not `financial-engine` domain types — persistence cannot
+// import them without an illegal app-services -> persistence -> app-services
+// cycle. These functions therefore work with plain row shapes (JSON blobs
+// + primitive fields); `concierge-service.ts` does its own mapping to/from
+// its rich domain types. See docs/CONCIERGE.md, "Persistence."
+
+export interface ConciergeSessionRow {
+  readonly id: string;
+  readonly financialProfileId: string;
+  readonly intentJson: string;
+  readonly envelopeRecommendedAmountCents: number;
+  readonly envelopeCautionAmountCents: number;
+  readonly envelopeAsOfDate: string;
+  readonly plansJson: string;
+  readonly createdAt: string;
+}
+
+export async function upsertConciergeSessionRow(db: Database, row: ConciergeSessionRow): Promise<void> {
+  await db
+    .insert(schema.conciergeSessions)
+    .values(row)
+    .onConflictDoUpdate({ target: schema.conciergeSessions.id, set: row });
+}
+
+export async function getConciergeSessionRowById(
+  db: Database,
+  id: string,
+): Promise<ConciergeSessionRow | undefined> {
+  const [row] = await db.select().from(schema.conciergeSessions).where(eq(schema.conciergeSessions.id, id));
+  return row;
+}
+
+export interface SavedConciergePlanRow {
+  readonly id: string;
+  readonly sessionId: string;
+  readonly financialProfileId: string;
+  readonly planId: string;
+  readonly planJson: string;
+  readonly status: "SELECTED";
+  readonly createdAt: string;
+}
+
+export async function upsertSavedConciergePlanRow(db: Database, row: SavedConciergePlanRow): Promise<void> {
+  await db
+    .insert(schema.savedConciergePlans)
+    .values(row)
+    .onConflictDoUpdate({ target: schema.savedConciergePlans.id, set: row });
+}
+
+export async function findSavedConciergePlanRowByPlanId(
+  db: Database,
+  financialProfileId: string,
+  planId: string,
+): Promise<SavedConciergePlanRow | undefined> {
+  const [row] = await db
+    .select()
+    .from(schema.savedConciergePlans)
+    .where(
+      and(
+        eq(schema.savedConciergePlans.financialProfileId, financialProfileId),
+        eq(schema.savedConciergePlans.planId, planId),
+      ),
+    );
+  return row;
+}
+
+export async function listSavedConciergePlansForProfile(
+  db: Database,
+  financialProfileId: string,
+): Promise<SavedConciergePlanRow[]> {
+  return db
+    .select()
+    .from(schema.savedConciergePlans)
+    .where(eq(schema.savedConciergePlans.financialProfileId, financialProfileId));
+}

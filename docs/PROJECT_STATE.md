@@ -3,20 +3,33 @@
 **This file is the canonical persistent project memory.** Before every future sprint, read this
 file, plus `docs/PRODUCT.md`, `docs/ARCHITECTURE.md`, `docs/FINANCIAL-ENGINE.md`,
 `docs/ROADMAP.md`, and `docs/DECISIONS.md` (`docs/OPEN-FINANCE.md` from Sprint 3 on for
-provider-integration detail, `docs/AI-COPILOT.md` from Sprint 4 on for the AI copilot layer, and
-`docs/RECOMMENDATIONS.md` from Sprint 5 on for the recommendation engine), in that order. This
-documentation is more authoritative than assumptions carried over from a chat session. If a new
-request conflicts with a rule documented here: identify the conflict, explain the existing rule, do
-not silently change it, implement the new behavior only if it clearly supersedes the old decision,
-and record the change in `docs/DECISIONS.md` (mark the old decision superseded, add a new one — never
-rewrite history).
+provider-integration detail, `docs/AI-COPILOT.md` from Sprint 4 on for the AI copilot layer,
+`docs/RECOMMENDATIONS.md` from Sprint 5 on for the recommendation engine, and `docs/CONCIERGE.md` from
+Sprint 6 on for the concierge/discovery layer), in that order. This documentation is more authoritative
+than assumptions carried over from a chat session. If a new request conflicts with a rule documented
+here: identify the conflict, explain the existing rule, do not silently change it, implement the new
+behavior only if it clearly supersedes the old decision, and record the change in
+`docs/DECISIONS.md` (mark the old decision superseded, add a new one — never rewrite history).
 
-Last updated: **2026-09-09, Sprint 5 complete.** Deterministic recommendation engine (discovery,
-ACCEPT/MODIFY/REJECT/VERIFIED/FAILED lifecycle, idempotent identity-based suppression, Safe-to-Spend
-separation, AI tools + grounding) — see `docs/RECOMMENDATIONS.md` and `docs/DECISIONS.md` DEC-056
-through DEC-064. Sprint 4.5 (both external validations PASSED) remains fully closed;
-`REAL_PERSONAL_FINANCIAL_DATA_ALLOWED` remains `TRUE_PENDING_FOUNDER_APPROVAL` — Sprint 5 did not
-change the release gate and did not connect any real institution.
+Last updated: **2026-09-09, Sprint 6 complete.** Budget-aware concierge/real-world-discovery layer
+(financial-envelope-first architecture, provider-neutral `LocalDiscoveryProvider` abstraction,
+structured price evidence, deterministic budget-fit classification, multi-part plans, discovery
+grounding, privacy boundary) — see `docs/CONCIERGE.md` and `docs/DECISIONS.md` DEC-065 through
+DEC-075. **No live discovery provider credential exists** — `LIVE_DISCOVERY_VALIDATION =
+BLOCKED_BY_EXTERNAL_PROVIDER_CONFIGURATION` (DEC-073); the running app uses a deterministic mock
+provider, and the full pipeline THROUGH that mock provider was live-validated end to end against the
+real running product and real OpenAI, using the brief's own Section 51 scenario — a genuine success:
+correct envelope-first ordering, correct party-size/payment-responsibility inference, correct
+multi-part plan arithmetic, correct budget-fit classification, no fabricated venue/price data, and
+`groundingStatus: PASSED`, with Safe-to-Spend confirmed unchanged afterward. Live validation also found
+and fixed two real bugs (both now regression-tested and documented): **DEC-074** (`getConciergeBudget`
+had no fact extractor, so a correct answer was rejected by grounding — the same "tool output not
+exposed to grounding is a product bug" lesson recurring a third time after DEC-055/DEC-062) and
+**DEC-075** (a stale Sprint 4 system-instruction rule, accurate when written, was telling the model it
+had no real-world venue search — silently suppressing the brand-new Sprint 6 tools until removed).
+Sprint 5 (recommendation engine) and Sprint 4.5 (both external validations PASSED) remain
+complete/closed; `REAL_PERSONAL_FINANCIAL_DATA_ALLOWED` remains `TRUE_PENDING_FOUNDER_APPROVAL` —
+Sprint 6 did not change the release gate and did not connect any real institution.
 
 ---
 
@@ -114,32 +127,57 @@ Full detail: `docs/PRODUCT.md`.
 
 ## Current architecture
 
-pnpm workspace monorepo, now six packages deep: `apps/web` (Next.js 16 App Router, DB-backed via
-`app-services`, plus `/api/chat`) → `packages/app-services` (application/query service layer AND the
-Sprint 4 AI tool/orchestration layer, `src/copilot/`, zero Next.js dependency) → `packages/ai`
-(provider-neutral `AIProvider` + OpenAI adapter, Sprint 4), `packages/open-finance` (provider
-abstraction + Pluggy adapter + MockProvider), and `packages/persistence` (Drizzle + PGlite) →
-`packages/financial-engine` (zero framework/database/provider/AI dependencies, the priority package)
-→ `packages/shared` (generic `Id`/id-generation only). Full detail: `docs/ARCHITECTURE.md`.
-Calculation detail: `docs/FINANCIAL-ENGINE.md`. Provider integration detail: `docs/OPEN-FINANCE.md`.
-AI copilot detail: `docs/AI-COPILOT.md`. Recommendation engine detail: `docs/RECOMMENDATIONS.md`.
+pnpm workspace monorepo, now eight packages deep: `apps/web` (Next.js 16 App Router, DB-backed via
+`app-services`, plus `/api/chat`) → `packages/app-services` (application/query service layer, the
+Sprint 4 AI tool/orchestration layer `src/copilot/`, the Sprint 5 recommendation service, and the
+Sprint 6 concierge module `src/concierge/`, zero Next.js dependency) → `packages/ai` (provider-neutral
+`AIProvider` + OpenAI adapter, Sprint 4), `packages/open-finance` (provider abstraction + Pluggy
+adapter + MockProvider), `packages/discovery` (provider-neutral `LocalDiscoveryProvider` + Mock
+provider, Sprint 6 — mirrors `open-finance`'s shape for real-world venue data), and
+`packages/persistence` (Drizzle + PGlite) → `packages/financial-engine` (zero framework/database/
+provider/AI/discovery dependencies, the priority package) → `packages/shared` (generic
+`Id`/id-generation only). Full detail: `docs/ARCHITECTURE.md`. Calculation detail:
+`docs/FINANCIAL-ENGINE.md`. Provider integration detail: `docs/OPEN-FINANCE.md`. AI copilot detail:
+`docs/AI-COPILOT.md`. Recommendation engine detail: `docs/RECOMMENDATIONS.md`. Concierge detail:
+`docs/CONCIERGE.md`.
 
 ## Current sprint
 
+**Sprint 6 — Budget-aware concierge & real-world discovery. COMPLETE.** A new `@money-copilot/discovery`
+package (mirroring Open Finance's exact abstraction pattern) plus `packages/app-services/src/concierge/`
+combine the deterministic financial engine with real-world venue discovery, with a hard,
+architecturally-enforced rule: the financial envelope is always resolved first, and external search
+can never influence it (`@money-copilot/discovery` has zero dependency on
+`@money-copilot/financial-engine`, and vice versa). Deterministic `evaluateBudgetFit` reuses the
+existing SAFE/CAUTION/HIGH_IMPACT boundaries rather than inventing a second zone model; structured
+`PriceEvidence` never treats a price as exact by default and never invents a `$`-to-BRL conversion;
+multi-part plans (required + optional components) are combined with deterministic arithmetic, with an
+unknown-priced optional component correctly producing an `UNKNOWN_COST` (not `SAFE`) combined fit;
+ranking is centralized and budget-fit-dominant; discovery facts are grounded by construction (no
+fragile regex-based name/rating/address verification); a strict privacy boundary ensures the discovery
+provider only ever sees derived search constraints; and saving/selecting a plan is intent, never
+spending (no `FinancialTransaction`; an explicit reservation reuses the existing `FinancialEvent`
+mechanism). **No live discovery provider credential exists in this environment** — the running app
+uses a deterministic mock provider; live validation covered the full envelope → intent → plans →
+grounding → AI-explanation pipeline against real OpenAI, with only the external-venue-data step
+mocked, and the exact Section 51 acceptance scenario PASSED end to end (correct envelope-first
+ordering, party-size/payment-responsibility inference, plan arithmetic, budget-fit classification, no
+fabricated data, `groundingStatus: PASSED`). Two real bugs were found live and fixed with regression
+coverage: DEC-074 (a missing fact extractor for `getConciergeBudget` caused a correct answer to fail
+grounding) and DEC-075 (a stale Sprint 4 system-instruction rule was suppressing the new discovery
+tools). See `docs/CONCIERGE.md` for the full architecture and `docs/DECISIONS.md` DEC-065 through
+DEC-075.
+
 **Sprint 5 — Recommendation engine with ACCEPT / MODIFY / REJECT / VERIFIED / FAILED lifecycle.
-COMPLETE.** Extended (not replaced) Sprint 1's `Recommendation` data model into a full deterministic
-discovery/decision/verification system: candidate generation from confirmed recurring discretionary
-spending (reusing `detectRecurringCandidates` unchanged), `ProtectedPreference` evaluated before
-anything else, a centralized `RecommendationPolicy` (no hidden magic numbers), a single
-`identityKey`-based mechanism that provides idempotency AND suppression AND material-change
+COMPLETE** (unchanged by Sprint 6). Extended (not replaced) Sprint 1's `Recommendation` data model
+into a full deterministic discovery/decision/verification system: candidate generation from confirmed
+recurring discretionary spending (reusing `detectRecurringCandidates` unchanged), `ProtectedPreference`
+evaluated before anything else, a centralized `RecommendationPolicy` (no hidden magic numbers), a
+single `identityKey`-based mechanism that provides idempotency AND suppression AND material-change
 resurfacing all at once, an append-only decision history, a `VerificationAssessment` kept separate
 from lifecycle `status` so insufficient evidence never falsely resolves to VERIFIED/FAILED, full
-Safe-to-Spend separation (accepting a recommendation never inflates current spendable cash), a UI
-panel, and 5 new AI tools with complete grounding coverage. Found and fixed 4 real bugs along the way
-(DEC-061 verification date-parsing bug, DEC-063 Netflix/Spotify left uncategorized, DEC-064
-mutation-guard missing recommendation-decision language, plus the DEC-056 domain-model refactor
-itself). See `docs/RECOMMENDATIONS.md` for the full architecture and `docs/DECISIONS.md` DEC-056
-through DEC-064.
+Safe-to-Spend separation, a UI panel, and 5 AI tools with complete grounding coverage. See
+`docs/RECOMMENDATIONS.md` and `docs/DECISIONS.md` DEC-056 through DEC-064.
 
 **Sprint 4.5 — external-validation + PT-BR hardening pass on top of Sprint 4. FULLY CLOSED** (both
 Pluggy and OpenAI portions APPROVED/PASSED; unchanged by Sprint 5). Eight real, previously-untested
@@ -156,6 +194,66 @@ permanent fixture-only regression (BRL 2,171.11) and the live sandbox-connected 
 Sprint 4.5 final report delivered to the founder for the full account.
 
 ## Completed capabilities
+
+**New in Sprint 6** (see `docs/DECISIONS.md` DEC-065–073 and `docs/CONCIERGE.md` for the full account):
+
+- **`@money-copilot/discovery`** (new package): `LocalDiscoveryProvider` interface + deterministic
+  `MockDiscoveryProvider` — mirrors `open-finance`'s exact abstraction pattern for real-world venue
+  data. Zero dependency in either direction with `financial-engine` — the architectural guarantee
+  behind "external search can never determine Safe-to-Spend."
+  `packages/app-services/src/discovery-provider-registry.ts` mirrors `provider-registry.ts` exactly.
+- **Financial-envelope-first, enforced architecturally** (DEC-065): every concierge entry point
+  resolves `getSpendingEnvelopeForProfile` (Sprint 4, unchanged) before any discovery call;
+  regression-tested that the search ceiling sent to the provider IS the envelope's own caution
+  ceiling, and that an adversarial provider price cannot change `getSafeToSpend`'s own output.
+- **`evaluateBudgetFit`** (`packages/financial-engine/src/simulation/budget-fit.ts`, DEC-066): reuses
+  `SpendingEnvelope`'s existing two boundaries — no second zone model. Five zones
+  (`WITHIN_RECOMMENDED`/`WITHIN_CAUTION`/`HIGH_IMPACT`/`EXCEEDS_LIMIT`/`UNKNOWN_COST`);
+  `EXCEEDS_LIMIT` is the user's OWN explicit ceiling specifically and can never loosen a `HIGH_IMPACT`
+  classification. Ranged costs get separate `minZone`/`maxZone` plus a conservative overall zone.
+- **Structured `PriceEvidence`** (`packages/discovery/src/provider.ts`, DEC-067): six provenance-tagged
+  shapes; `PRICE_LEVEL` never converts to a BRL amount in V1 (no documented mapping policy exists).
+- **Concierge persistence type boundary** (DEC-068): `ConciergeSession`/`OutingPlan` are
+  application-layer types (`app-services/src/concierge/types.ts`), never `financial-engine` domain
+  types (they'd otherwise leak discovery concepts into the engine) — `packages/persistence` works with
+  plain JSON-blob row shapes for the two new tables instead, with mapping done by
+  `concierge-service.ts`.
+- **Privacy boundary + external-data safety** (DEC-069): `DiscoverySearchCriteria` structurally cannot
+  carry income/balance/debt/transaction history; a malicious venue description fed through a tool
+  result is regression-tested to have zero effect on the system instructions sent to the AI provider
+  or on grounding.
+- **Discovery grounding by construction** (DEC-070): `DiscoveryFact` (separate from `FinancialFact`)
+  is populated structurally from tool output, never written by the LLM — no fragile regex-based
+  name/address/rating verification exists. Price-shaped discovery facts are merged into the SAME
+  amount-checking pool `groundResponseText` already uses (the check only, never the response's
+  `financialFacts` array).
+- **Multi-part plans with deterministic arithmetic** (DEC-071): required-vs-optional power-set plan
+  generation; any unknown-priced included component makes the combined total `null`
+  (`UNKNOWN_COST`, never silently `SAFE`); `saveConciergePlan` never creates a `FinancialTransaction`;
+  `reservePlanBudget` reuses the existing `createPlannedFinancialEvent` (Sprint 1/4) — no parallel
+  reservation mechanism.
+- **Budget-fit-dominant ranking** (`ConciergeRankingPolicy`, DEC-072): centralized, named weights;
+  regression-tested that a lower-rated but within-budget venue outranks a higher-rated but
+  HIGH_IMPACT one.
+- **Stale financial context detection**: every `ConciergeSession` records its envelope snapshot;
+  `reevaluateConciergePlan` flags `stale: true` the moment the envelope has changed since the plan was
+  built.
+- **6 new AI tools + full grounding coverage**: `getConciergeBudget`/`searchPlaces`/
+  `buildConciergePlans`/`evaluateConciergePlan` (READ), `saveConciergePlan`/`reservePlanBudget`
+  (MUTATION, gated by `hasExplicitMutationIntent` extended with plan-selection/reservation language in
+  English and PT-BR). `getConciergeBudget`'s fact extractor (DEC-074) and a stale Sprint 4
+  system-instruction rule that suppressed these tools entirely (DEC-075) were both real bugs found via
+  live testing against the real model, not offline tests — both fixed, both regression-tested.
+- **UI**: a read-only "Saved Concierge Plans" dashboard section, plus discovery-evidence cards in the
+  chat panel.
+- **`LIVE_DISCOVERY_VALIDATION = BLOCKED_BY_EXTERNAL_PROVIDER_CONFIGURATION`** (DEC-073): no Google
+  Places/web-search/local-discovery credential exists in this environment (confirmed by inspecting
+  `.env.example`/`.env.local` before choosing anything). The running app uses `MockDiscoveryProvider`
+  by default; live validation covered the rest of the pipeline (envelope → intent → plans → grounding
+  → AI explanation) against real OpenAI, running the brief's own Section 51 scenario end to end —
+  **PASSED**, and along the way surfaced/fixed DEC-074 and DEC-075 (see "Current sprint" above).
+- 489 automated tests passing in the default suite (up from 426 at end of Sprint 5), plus the same
+  7 opt-in live-OpenAI tests (unchanged by Sprint 6).
 
 **New in Sprint 5** (see `docs/DECISIONS.md` DEC-056–064 and `docs/RECOMMENDATIONS.md` for the full
 account):
@@ -560,6 +658,19 @@ plus:
   before any real production deployment exists, this route (and any future diagnostic route) must be
   re-evaluated against whatever real auth layer is built then — a `NODE_ENV` check is not itself an
   authorization system.
+- (Sprint 6, DEC-073) No live discovery provider exists — the running app uses
+  `MockDiscoveryProvider` by default, so the concierge feature currently only ever surfaces
+  obviously-synthetic venues in a real (non-test) session. Provisioning a product-owned places/
+  local-search API credential and implementing one live `LocalDiscoveryProvider` adapter is required
+  before this feature has any real user-facing value — see `docs/CONCIERGE.md`, "Live provider
+  status," for the exact infrastructure needed.
+- (Sprint 6) `PRICE_LEVEL` price evidence never contributes a numeric cost estimate (no documented
+  `$`-to-BRL mapping policy exists) — a venue with only price-level evidence is treated identically to
+  one with no price evidence at all. Acceptable for V1 (never inventing a number beats a wrong one),
+  but worth a deliberate policy decision once real provider data is available to calibrate against.
+- (Sprint 6) No distance/travel-time ranking factor exists — V1 ranks by neighborhood/location-text
+  match only. Deliberate (the brief explicitly says not to implement a routing engine unless a live
+  provider actually supplies coordinates), but a real gap once live discovery data exists.
 
 ## Known bugs
 
@@ -603,44 +714,44 @@ testing (all are process/design corrections, documented as decisions rather than
 
 ## Test status
 
-**426 automated tests passing** in the default suite, zero failing, across seven packages/apps (up
-from 354 at end of Sprint 4.5, 288 at end of Sprint 4), plus the same **7 opt-in live-OpenAI tests**
-(unchanged by Sprint 5, still skip automatically without `OPENAI_API_KEY`).
+**491 automated tests passing** in the default suite, zero failing, across eight packages/apps (up
+from 426 at end of Sprint 5, 354 at end of Sprint 4.5), plus the same **7 opt-in live-OpenAI tests**
+(unchanged by Sprint 6, still skip automatically without `OPENAI_API_KEY`).
 
-- `packages/financial-engine`: **160** (up from 126) — Sprint 5 adds `recommendation-generation.test.ts`
-  (11: high-confidence subscription → exactly one candidate; identical `identityKey` across repeated
-  generation; the protected family-support fixture produces zero candidates even when an otherwise-
-  eligible transaction shares its category; TRANSFER/CARD_PAYMENT/DEBT_PAYMENT/REFUND excluded;
-  uncategorized excluded; a default-excluded category excluded; MEDIUM confidence → REVIEW not CANCEL;
-  a weekly cadence never multiplied as monthly), `recommendation-impact.test.ts` (10: X−Y reduction
-  math; target ≥ current → null; cadence classification; monthly-equivalent conversion; annual = 
-  monthly×12), `recommendation-verification.test.ts` (11: VERIFIED/FAILED/INCONCLUSIVE/NOT_DUE for
-  both CANCEL and REDUCE, plus the DEC-061 full-ISO-timestamp regression), and a `category.test.ts`
-  addition (DEC-063: NETFLIX/SPOTIFY now categorize instead of staying UNCATEGORIZED).
+- `packages/discovery`: **6** (new package) — `MockDiscoveryProvider` returns only venues matching
+  the requested activity type; includes a venue with zero price evidence (unknown price is a real,
+  expected case); `getPlaceDetails` returns the exact venue or `undefined` for an unknown id; searches
+  are deterministic across repeated calls.
+- `packages/financial-engine`: **171** (up from 160) — `budget-fit.test.ts`'s 10 tests (WITHIN_
+  RECOMMENDED/WITHIN_CAUTION/HIGH_IMPACT classification; UNKNOWN_COST for a null cost; a mixed range
+  produces the conservative overall zone; a generous user ceiling never erases HIGH_IMPACT; a stricter
+  user ceiling produces EXCEEDS_LIMIT; `deriveSearchCeiling` never loosens beyond the caution amount).
 - `packages/ai`: **11** (unchanged).
 - `packages/open-finance`: **46** (unchanged).
-- `packages/persistence`: **26** (up from 22) — `recommendation-repository.test.ts`'s 4 tests
-  (round-trip preserves evidence/decision history exactly; upsert is idempotent by id; identityKey
-  lookup finds the persisted row; a different identityKey is a distinct row).
-- `apps/web`: **6** (unchanged — no new apps/web tests this sprint; the new `RecommendationsPanel`/
-  `/api/recommendations` route are covered by app-services' integration tests plus manual live
-  validation).
-- `packages/app-services`: **177** (up from 143) — `recommendation-service.test.ts`'s 11 integration
-  tests (a real sync of recurring Netflix charges produces exactly one recommendation; three identical
-  syncs never duplicate it; a rejected recommendation stays suppressed across repeated evaluation; a
-  materially different amount becomes eligible again after rejection; accepting does NOT change
-  current Safe-to-Spend; MODIFY recalculates impact as exactly X−Y with a decision-history entry;
-  modifying to a target ≥ current throws; accepted cancellation + no continuing charge → VERIFIED;
-  accepted cancellation + continuing charge → FAILED; stale sync coverage → INCONCLUSIVE, never
-  falsely VERIFIED; repeated verification never re-transitions an already-VERIFIED recommendation),
-  `orchestrator-recommendations.test.ts`'s 6 tests (a read question never mutates; explicit PT-BR
-  acceptance mutates exactly once; hypothetical PT-BR wording does not mutate; an explicit PT-BR
-  rejection does mutate; grounding fails on an invented amount; grounding passes on the exact returned
-  monthly/annual impact), `facts.test.ts`'s 3 additional cases (every recommendation tool exposes
-  observed amount + monthly/annual impact; a MODIFIED target amount is exposed; `getRecommendations`
-  exposes every recommendation plus the three aggregate figures), `mutation-guard.test.ts`'s 2
-  additional PT-BR recommendation-decision cases (DEC-064), and `tools.test.ts` updated for the 5 new
-  tools — plus the same 7 skipped-by-default live tests in `live-openai-smoke.test.ts`.
+- `packages/persistence`: **29** (up from 26) — `concierge-repository.test.ts`'s 3 tests (session row
+  round-trip; saving the same plan id twice finds the existing row rather than duplicating; an unknown
+  session id returns `undefined`).
+- `apps/web`: **6** (unchanged — the new `RecommendationsPanel`-style Saved Plans section and chat
+  discovery-fact cards are covered by app-services' integration tests plus manual live validation).
+- `packages/app-services`: **222** (up from 177) — `concierge/plan-builder.test.ts`'s 13 tests
+  (party-size multiplier rules; PER_PERSON vs. TOTAL price handling; PRICE_LEVEL never converts to an
+  amount; deterministic component-cost summation; an unpriced component makes the combined total
+  unknown, never zero; exactly 2 plans for 1 required + 1 optional component; an optional component
+  never inflates the base plan's cost), `concierge/ranking.test.ts`'s 3 tests (budget fit dominates
+  rating; inspectable structured factors; a matching preference increases score),
+  `concierge/concierge-service.test.ts`'s 8 integration tests (the search ceiling is always derived
+  from the envelope; the discovery provider receives only derived constraints, never financial data;
+  an adversarial provider price cannot change Safe-to-Spend; saving a plan creates no transaction;
+  saving the same plan twice does not duplicate; reserving a budget creates a `FinancialEvent`, never a
+  transaction; explicit spending still uses the existing path; a plan is flagged stale once the
+  envelope changes), `orchestrator-concierge.test.ts`'s 5 tests (read tools never mutate; explicit
+  PT-BR plan selection mutates exactly once; hypothetical PT-BR selection language does not mutate; a
+  malicious discovery-tool payload changes neither the system instructions sent to the AI provider nor
+  grounding's rejection of an invented amount; grounding passes when a price is cited exactly as
+  returned), plus `mutation-guard.test.ts`'s 6 additional Sprint 6 cases, `tools.test.ts` updated
+  for the 6 new concierge tools, and `facts.test.ts`'s 2 DEC-074 regression tests (`getConciergeBudget`
+  and its nested appearances inside `buildConciergePlans`/`evaluateConciergePlan` expose their
+  amounts) — plus the same 7 skipped-by-default live tests in `live-openai-smoke.test.ts`.
 
 Run with `pnpm run test` from the repo root (covers `packages/*` and `apps/*`), or per-package with
 `--filter`.
@@ -770,13 +881,14 @@ methodology), plus:
 
 ## Next recommended sprint
 
-**Sprint 6 — Financial concierge.** See `docs/ROADMAP.md` for detailed scope: budget-aware
-recommendations for restaurants, dates, shopping, travel, built on top of `simulateExpense`/
-`getSpendingEnvelope` plus category-specific intent parsing from Sprint 4. Sprint 5's recommendation
-lifecycle machinery (identity, decision history, verification) is available to reuse if Sprint 6 ever
-needs its own accept/reject flow, but Sprint 6's actual job — real-world price discovery,
-concierge/search — is explicitly a NEW capability, not an extension of Sprint 5's recurring-cost
-engine. **Sprint 5 is complete; Sprint 6 has explicitly not been started.**
+**Sprint 7 — Notifications, alerts, UX stabilization, production hardening.** See `docs/ROADMAP.md`
+for detailed scope: proactive alerts (e.g. finally acting on the `UNKNOWN`-certainty warning mechanism
+built in Sprint 1), plus general production hardening (auth, error handling, observability, UX
+polish). Before or alongside Sprint 7, Product should also decide whether to provision a real
+product-owned discovery-provider credential (see `docs/CONCIERGE.md`, "Live provider status" —
+`LIVE_DISCOVERY_VALIDATION = BLOCKED_BY_EXTERNAL_PROVIDER_CONFIGURATION`) so Sprint 6's concierge can
+be live-validated against real venue data; this is independent of Sprint 7's own scope. **Sprint 6 is
+complete; Sprint 7 has explicitly not been started.**
 
 ## Risks
 

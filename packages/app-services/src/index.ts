@@ -1,5 +1,7 @@
+export * from "./concierge/index";
 export * from "./copilot/index";
 export * from "./db";
+export * from "./discovery-provider-registry";
 export * from "./mutations";
 export * from "./queries";
 export * from "./recommendation-service";

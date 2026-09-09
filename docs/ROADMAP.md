@@ -75,10 +75,23 @@ Old-debt installment-match candidates (`DEC-032`) were NOT bundled into this spr
 have no accept/reject flow; this remains a candidate for a future sprint using the same lifecycle
 machinery, not yet done.
 
-## Sprint 6 — Financial concierge
+## Sprint 6 — Financial concierge ✅ (complete)
 
-- Budget-aware recommendations for restaurants, dates, shopping, travel — built on top of
-  `simulateExpense` plus category-specific intent parsing from Sprint 4.
+Budget-aware real-world discovery: financial envelope always resolved before any external search
+(`docs/CONCIERGE.md`, "Financial-envelope-first" — enforced architecturally, not just by convention,
+since `@money-copilot/discovery` has zero dependency on `@money-copilot/financial-engine`); a
+provider-neutral `LocalDiscoveryProvider` abstraction (new `@money-copilot/discovery` package,
+mirroring Open Finance's own pattern) with a deterministic `MockDiscoveryProvider` — no live provider
+credential exists yet, so live discovery itself remains `BLOCKED_BY_EXTERNAL_PROVIDER_CONFIGURATION`
+(DEC-073); structured, provenance-tagged `PriceEvidence` (never a bare number, never inventing a
+`$`-to-BRL conversion); a deterministic `evaluateBudgetFit` classifier reusing the financial engine's
+existing SAFE/CAUTION/HIGH_IMPACT boundaries; required-vs-optional multi-part outing plans with
+deterministic combination arithmetic; a centralized, budget-fit-dominant ranking policy; discovery
+facts grounded by construction (never fragile regex-based name/address/rating verification); a
+privacy boundary ensuring the discovery provider only ever sees derived search constraints, never raw
+financial data; and full plan-vs-actual-spending separation (saving a plan never creates a
+transaction; an explicit budget reservation reuses the existing `FinancialEvent` mechanism). See
+`docs/CONCIERGE.md` and `docs/DECISIONS.md` DEC-065 through DEC-073.
 
 ## Sprint 7 — Notifications, alerts, UX stabilization, production hardening
 

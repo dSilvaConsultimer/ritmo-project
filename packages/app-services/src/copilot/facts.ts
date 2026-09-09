@@ -10,6 +10,7 @@ import type {
   SpendingEnvelope,
 } from "@money-copilot/financial-engine";
 import type { RecommendationsSummary, UpcomingFinancialEvent } from "../queries";
+import type { ConciergeBudget } from "../concierge";
 
 /**
  * A single deterministic monetary fact, always traceable back to the tool
@@ -34,7 +35,9 @@ export type FinancialFactSemanticType =
   | "RECOMMENDATION_MONTHLY_IMPACT"
   | "RECOMMENDATION_ANNUAL_IMPACT"
   | "RECOMMENDATION_TARGET_AMOUNT"
-  | "RECOMMENDATION_AGGREGATE";
+  | "RECOMMENDATION_AGGREGATE"
+  | "DISCOVERY_PRICE_EVIDENCE"
+  | "CONCIERGE_BUDGET";
 
 export interface FinancialFact {
   readonly label: string;
@@ -211,6 +214,42 @@ function recommendationFacts(r: Recommendation, sourceTool: string): FinancialFa
   }
 
   return facts;
+}
+
+/**
+ * Sprint 6 (DEC-074): every monetary figure `getConciergeBudget` returns —
+ * shared because `buildConciergePlans`/`evaluateConciergePlan` both ALSO
+ * carry a nested `ConciergeBudget` (`.budget`/`.currentBudget`) in their own
+ * results. Found live: the model correctly resolved and cited the
+ * recommended/caution amounts (financial-envelope-first, exactly as
+ * designed) but grounding rejected them because this extractor didn't
+ * exist yet — the same "tool output not exposed to grounding is a product
+ * bug" lesson as DEC-055/DEC-062, a third time, in a third domain.
+ */
+function conciergeBudgetFacts(budget: ConciergeBudget, sourceTool: string): FinancialFact[] {
+  return [
+    {
+      label: "Concierge: recommended amount",
+      amountCents: budget.recommendedAmountCents,
+      certainty: "HIGH",
+      sourceTool,
+      semanticType: "CONCIERGE_BUDGET",
+    },
+    {
+      label: "Concierge: caution ceiling",
+      amountCents: budget.cautionAmountCents,
+      certainty: "HIGH",
+      sourceTool,
+      semanticType: "CONCIERGE_BUDGET",
+    },
+    {
+      label: "Concierge: search ceiling",
+      amountCents: budget.searchCeilingCents,
+      certainty: "HIGH",
+      sourceTool,
+      semanticType: "CONCIERGE_BUDGET",
+    },
+  ];
 }
 
 /**
@@ -449,6 +488,17 @@ export function extractFinancialFacts(toolName: string, result: unknown): Financ
     case "rejectRecommendation": {
       if (!result) return [];
       return recommendationFacts(result as Recommendation, toolName);
+    }
+    case "getConciergeBudget": {
+      return conciergeBudgetFacts(result as ConciergeBudget, toolName);
+    }
+    case "buildConciergePlans": {
+      const r = result as { budget: ConciergeBudget };
+      return conciergeBudgetFacts(r.budget, toolName);
+    }
+    case "evaluateConciergePlan": {
+      const r = result as { currentBudget: ConciergeBudget };
+      return conciergeBudgetFacts(r.currentBudget, toolName);
     }
     default:
       return [];

@@ -94,6 +94,9 @@ importers:
       '@money-copilot/ai':
         specifier: workspace:*
         version: link:../ai
+      '@money-copilot/discovery':
+        specifier: workspace:*
+        version: link:../discovery
       '@money-copilot/financial-engine':
         specifier: workspace:*
         version: link:../financial-engine
@@ -109,6 +112,22 @@ importers:
       zod:
         specifier: ^4.5.4
         version: 4.5.4
+    devDependencies:
+      '@types/node':
+        specifier: ^26.4.1
+        version: 26.4.1
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^5.0.0
+        version: 5.0.0(@types/node@26.4.1)(vite@8.2.2(@types/node@26.4.1)(esbuild@0.28.2)(tsx@4.23.13))
+
+  packages/discovery:
+    dependencies:
+      '@money-copilot/shared':
+        specifier: workspace:*
+        version: link:../shared
     devDependencies:
       '@types/node':
         specifier: ^26.4.1

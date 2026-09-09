@@ -152,4 +152,35 @@ describe("extractFinancialFacts", () => {
     expect(amounts).toContain(summary.potentialMonthlySavingsCents);
     expect(amounts).toContain(summary.verifiedMonthlySavingsCents);
   });
+
+  /**
+   * Sprint 6 (DEC-074): a real live bug found via the exact acceptance
+   * scenario ("Vou sair com uma garota..."). The model correctly called
+   * getConciergeBudget and correctly cited its recommended/caution amounts
+   * — financial-envelope-first working exactly as designed — but grounding
+   * rejected them because no extractor existed for this tool at all. The
+   * model's answer was correct the whole time.
+   */
+  it("(Sprint 6, DEC-074) getConciergeBudget exposes recommended/caution/search-ceiling amounts", () => {
+    const budget = { recommendedAmountCents: 129301, cautionAmountCents: 159301, searchCeilingCents: 159301, asOfDate: "2026-09-09" };
+    const amounts = extractFinancialFacts("getConciergeBudget", budget).map((f) => f.amountCents);
+    expect(amounts).toContain(budget.recommendedAmountCents);
+    expect(amounts).toContain(budget.cautionAmountCents);
+    expect(amounts).toContain(budget.searchCeilingCents);
+  });
+
+  it("(Sprint 6, DEC-074) buildConciergePlans/evaluateConciergePlan expose their nested budget's amounts too", () => {
+    const budget = { recommendedAmountCents: 129301, cautionAmountCents: 159301, searchCeilingCents: 159301, asOfDate: "2026-09-09" };
+    const buildAmounts = extractFinancialFacts("buildConciergePlans", { budget, plans: [], sessionId: "s1", discoveryFacts: [] }).map(
+      (f) => f.amountCents,
+    );
+    expect(buildAmounts).toContain(budget.recommendedAmountCents);
+
+    const evalAmounts = extractFinancialFacts("evaluateConciergePlan", {
+      plan: {},
+      stale: false,
+      currentBudget: budget,
+    }).map((f) => f.amountCents);
+    expect(evalAmounts).toContain(budget.cautionAmountCents);
+  });
 });

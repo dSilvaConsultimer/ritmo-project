@@ -7,6 +7,8 @@ import type { Database } from "@money-copilot/persistence";
 import { findTool, TOOL_REGISTRY, type ToolContext } from "./tools";
 import { hasExplicitMutationIntent } from "./mutation-guard";
 import { extractFinancialFacts, type FinancialFact } from "./facts";
+import { discoveryFactsAsGroundingFacts, extractDiscoveryFacts } from "./discovery-facts";
+import type { DiscoveryFact } from "../concierge";
 import { buildFallbackResponseText, groundResponseText, type GroundingResult } from "./grounding";
 import { CURRENT_SYSTEM_INSTRUCTIONS } from "./system-instructions";
 import { appendMessage, getOrCreateConversation } from "./conversation-service";
@@ -24,6 +26,8 @@ export interface CopilotResponse {
   readonly conversationId: string;
   readonly text: string;
   readonly financialFacts: readonly FinancialFact[];
+  /** Sprint 6: external venue/price evidence — kept separate from `financialFacts`, never the user's own money. See docs/CONCIERGE.md, "Discovery grounding." */
+  readonly discoveryFacts: readonly DiscoveryFact[];
   readonly warnings: readonly string[];
   readonly toolExecutions: readonly ToolExecutionSummary[];
   readonly groundingStatus: GroundingResult["status"];
@@ -110,6 +114,7 @@ export async function runCopilotTurn(input: RunCopilotTurnInput): Promise<Copilo
 
   const toolContext: ToolContext = { db, financialProfileId, asOfDate };
   const facts: FinancialFact[] = [];
+  const discoveryFacts: DiscoveryFact[] = [];
   const toolExecutions: ToolExecutionSummary[] = [];
   const warnings: string[] = [];
 
@@ -280,6 +285,7 @@ export async function runCopilotTurn(input: RunCopilotTurnInput): Promise<Copilo
         });
         toolExecutions.push({ name: call.name, status: "SUCCESS" });
         facts.push(...extractFinancialFacts(call.name, toolResult));
+        discoveryFacts.push(...extractDiscoveryFacts(call.name, toolResult));
         turnItems = [
           ...turnItems,
           { type: "tool_result", toolCallId: call.id, name: call.name, resultJson: JSON.stringify(toolResult) },
@@ -310,7 +316,12 @@ export async function runCopilotTurn(input: RunCopilotTurnInput): Promise<Copilo
     warnings.push("Reached the maximum number of tool steps for this turn — showing the deterministic facts gathered so far.");
   }
 
-  const grounding = groundResponseText(finalText, facts, userMessageText);
+  // Discovery price evidence is merged into the grounding CHECK only — never
+  // into the client-facing `financialFacts` array, keeping the two concepts
+  // separate in the response shape while still catching an invented BRL
+  // figure about a venue (Sprint 6 brief, "grounding").
+  const groundingFacts = [...facts, ...discoveryFactsAsGroundingFacts(discoveryFacts)];
+  const grounding = groundResponseText(finalText, groundingFacts, userMessageText);
   let responseText = finalText;
   if (grounding.status === "FAILED") {
     responseText = buildFallbackResponseText(facts);
@@ -323,6 +334,7 @@ export async function runCopilotTurn(input: RunCopilotTurnInput): Promise<Copilo
     conversationId: conversation.id,
     text: responseText,
     financialFacts: facts,
+    discoveryFacts,
     warnings,
     toolExecutions,
     groundingStatus: grounding.status,

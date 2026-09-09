@@ -74,6 +74,18 @@ const EXPLICIT_ACTION_PATTERNS: readonly RegExp[] = [
   /\bquero reduzir\b/i,
   /\bn[ãa]o quero\b/i,
   /\brejeito\b/i,
+  // Sprint 6: concierge plan selection / budget reservation — English
+  /\bi'?ll go with\b/i,
+  /\bi choose\b/i,
+  /\bi pick\b/i,
+  /\bselect (this|that)\b/i,
+  /\bset aside\b/i,
+  // Português (PT-BR)
+  /\bescolho\b/i,
+  /\bfico com (essa|esta)\b/i,
+  /\b(vou|vamos) com\b/i,
+  /\bselecion(o|e|ar)\b/i,
+  /\bsepar(e|ar|a|ado|ei)\b/i,
 ];
 
 /** True when the text contains a hypothetical/exploratory marker — a strong signal the message is NOT reporting a completed or decided action. */

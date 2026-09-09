@@ -4,6 +4,7 @@ import type { Database } from "@money-copilot/persistence";
 import * as queries from "../queries";
 import * as mutations from "../mutations";
 import * as recommendationService from "../recommendation-service";
+import * as conciergeService from "../concierge";
 
 /**
  * The explicit, server-validated tool allowlist the AI may invoke. The
@@ -413,6 +414,176 @@ const rejectRecommendationTool = tool({
     recommendationService.rejectRecommendation(ctx.db, args.recommendationId, args.reason ?? undefined),
 });
 
+// ---------- Concierge (Sprint 6) ----------
+//
+// NON-NEGOTIABLE: the financial envelope (getConciergeBudget) is always
+// resolved deterministically BEFORE any search — searchPlaces/
+// buildConciergePlans internally call it themselves; the LLM never
+// computes or overrides a budget figure. See docs/CONCIERGE.md.
+
+const activityTypeEnum = z.enum(["DINING", "DRINKS", "LODGING", "ENTERTAINMENT", "GENERIC_OUTING"]);
+const paymentResponsibilityEnum = z.enum(["SELF_ONLY", "FULL_PARTY", "PARTIAL", "UNKNOWN"]);
+
+const getConciergeBudgetSchema = z.object({
+  userExplicitBudgetReais: z
+    .number()
+    .positive()
+    .describe("Only set if the user stated a specific max budget (e.g. 'no máximo R$250'). Null if not stated — never invent one.")
+    .nullable()
+    .default(null),
+});
+
+const getConciergeBudgetTool = tool({
+  name: "getConciergeBudget",
+  description:
+    "Returns the deterministic recommended amount and caution ceiling for a discretionary outing today. ALWAYS call this (directly, or implicitly via searchPlaces/buildConciergePlans) before discussing how much the user can spend on an outing — never state a budget figure yourself.",
+  kind: "READ",
+  schema: getConciergeBudgetSchema,
+  execute: (ctx, args) =>
+    conciergeService.getConciergeBudget(
+      ctx.db,
+      ctx.financialProfileId,
+      ctx.asOfDate,
+      args.userExplicitBudgetReais !== null ? Math.round(args.userExplicitBudgetReais * 100) : undefined,
+    ),
+});
+
+const searchPlacesSchema = z.object({
+  activityType: activityTypeEnum,
+  location: z
+    .string()
+    .min(1)
+    .describe("City/neighborhood text, e.g. 'Campinas', 'Barão Geraldo'. If the user hasn't stated one, ASK them first in plain text — never guess a city."),
+  partySize: z.number().int().positive().nullable().default(null),
+  preferences: z.array(z.string()).describe("e.g. ['quiet', 'romantic']. Only from the user's own words.").nullable().default(null),
+  avoidances: z.array(z.string()).nullable().default(null),
+  dateTime: z.string().describe("ISO 8601 date-time, when known.").nullable().default(null),
+  userExplicitBudgetReais: z.number().positive().nullable().default(null),
+});
+
+const searchPlacesTool = tool({
+  name: "searchPlaces",
+  description:
+    "Searches for real-world venues of ONE activity type, within the user's financial envelope. Never invents a venue, price, address, or rating — only returns provider evidence. Requires a location.",
+  kind: "READ",
+  schema: searchPlacesSchema,
+  execute: (ctx, args) =>
+    conciergeService.searchConciergePlaces(ctx.db, ctx.financialProfileId, ctx.asOfDate, args.activityType, {
+      location: args.location,
+      ...(args.partySize !== null ? { partySize: args.partySize } : {}),
+      ...(args.preferences ? { preferences: args.preferences } : {}),
+      ...(args.avoidances ? { avoidances: args.avoidances } : {}),
+      ...(args.dateTime ? { dateTime: args.dateTime } : {}),
+      ...(args.userExplicitBudgetReais !== null
+        ? { userExplicitBudgetCents: Math.round(args.userExplicitBudgetReais * 100) }
+        : {}),
+    }),
+});
+
+const buildConciergePlansSchema = z.object({
+  requiredComponents: z
+    .array(activityTypeEnum)
+    .min(1)
+    .describe("Activity types the user has clearly committed to, e.g. ['DINING']. Never invent a component the user didn't mention."),
+  optionalComponents: z
+    .array(activityTypeEnum)
+    .describe("Activity types the user mentioned as maybe/possibly (e.g. 'talvez motel' -> ['LODGING']). Empty if none.")
+    .nullable()
+    .default(null),
+  location: z.string().min(1).describe("City/neighborhood. If the user hasn't stated one, ask them first instead of calling this tool."),
+  partySize: z
+    .number()
+    .int()
+    .positive()
+    .describe("Only set if inferable from the user's own words (e.g. 'vou sair com uma garota' implies 2). Never assume 2 by default.")
+    .nullable()
+    .default(null),
+  paymentResponsibility: paymentResponsibilityEnum
+    .describe("FULL_PARTY only when the user explicitly expects to pay for everyone (e.g. 'vou pagar o jantar'). UNKNOWN otherwise — never assume splitting or full payment without a stated signal.")
+    .nullable()
+    .default(null),
+  userExplicitBudgetReais: z.number().positive().describe("Only if the user stated a specific max amount. Never invent one.").nullable().default(null),
+  preferences: z.array(z.string()).nullable().default(null),
+  avoidances: z.array(z.string()).nullable().default(null),
+  dateTime: z.string().nullable().default(null),
+});
+
+const buildConciergePlansTool = tool({
+  name: "buildConciergePlans",
+  description:
+    "Given the user's decided outing intent, resolves the financial envelope, searches real venues for each required/optional component, and returns deterministic combined plans with a budget-fit classification (WITHIN_RECOMMENDED/WITHIN_CAUTION/HIGH_IMPACT/EXCEEDS_LIMIT/UNKNOWN_COST) for each. The LLM never computes cost totals or budget fit itself — only this tool's deterministic output. Requires a location; never invents required/optional components, party size, or payment responsibility beyond what the user's own words support.",
+  kind: "READ",
+  schema: buildConciergePlansSchema,
+  execute: (ctx, args) =>
+    conciergeService.buildConciergePlansForProfile(ctx.db, ctx.financialProfileId, ctx.asOfDate, {
+      requiredComponents: args.requiredComponents,
+      optionalComponents: args.optionalComponents ?? [],
+      location: args.location,
+      ...(args.partySize !== null ? { partySize: args.partySize } : {}),
+      paymentResponsibility: args.paymentResponsibility ?? "UNKNOWN",
+      ...(args.userExplicitBudgetReais !== null
+        ? { userExplicitBudgetCents: Math.round(args.userExplicitBudgetReais * 100) }
+        : {}),
+      ...(args.preferences ? { preferences: args.preferences } : {}),
+      ...(args.avoidances ? { avoidances: args.avoidances } : {}),
+      ...(args.dateTime ? { dateTime: args.dateTime } : {}),
+    }),
+});
+
+const evaluateConciergePlanSchema = z.object({
+  sessionId: z.string().min(1).describe("From a prior buildConciergePlans tool result."),
+  planId: z.string().min(1).describe("From a prior buildConciergePlans tool result."),
+});
+
+const evaluateConciergePlanTool = tool({
+  name: "evaluateConciergePlan",
+  description:
+    "Re-checks whether a previously-built plan's budget fit is still valid against the user's CURRENT financial state — use when the user returns to an old plan or asks 'isso ainda cabe no meu orçamento?'. Never assume an old plan is still valid without calling this.",
+  kind: "READ",
+  schema: evaluateConciergePlanSchema,
+  execute: (ctx, args) =>
+    conciergeService.reevaluateConciergePlan(ctx.db, ctx.financialProfileId, ctx.asOfDate, args.sessionId, args.planId),
+});
+
+const saveConciergePlanSchema = z.object({
+  sessionId: z.string().min(1).describe("From a prior buildConciergePlans tool result."),
+  planId: z.string().min(1).describe("From a prior buildConciergePlans tool result."),
+});
+
+const saveConciergePlanTool = tool({
+  name: "saveConciergePlan",
+  description:
+    "Records that the user selected/decided on a specific plan (e.g. 'vamos com a opção B'). This does NOT book anything, contact any merchant, or spend money — it only saves the user's choice for later reference. Only call this for an explicit selection.",
+  kind: "MUTATION",
+  schema: saveConciergePlanSchema,
+  execute: (ctx, args) => conciergeService.saveConciergePlan(ctx.db, ctx.financialProfileId, args.sessionId, args.planId),
+});
+
+const reservePlanBudgetSchema = z.object({
+  label: z.string().min(1),
+  amountReais: z
+    .number()
+    .positive()
+    .describe("The amount the user explicitly wants to reserve (e.g. from 'separa R$250 para isso'). Never invent this."),
+  startDate: z.string().describe("ISO 8601 date. Null defaults to today.").nullable().default(null),
+  endDate: z.string().nullable().default(null),
+});
+
+const reservePlanBudgetTool = tool({
+  name: "reservePlanBudget",
+  description:
+    "Reserves a planned budget amount for an outing (e.g. 'separa R$250 para hoje à noite') using the existing planned-event mechanism. This is a FUTURE reservation, never an actual recorded expense — use recordManualTransaction instead if the user says they already spent the money.",
+  kind: "MUTATION",
+  schema: reservePlanBudgetSchema,
+  execute: (ctx, args) =>
+    conciergeService.reservePlanBudget(ctx.db, ctx.financialProfileId, {
+      label: args.label,
+      amountCents: Math.round(args.amountReais * 100),
+      startDate: args.startDate ?? ctx.asOfDate,
+      ...(args.endDate ? { endDate: args.endDate } : {}),
+    }),
+});
+
 export const TOOL_REGISTRY: readonly ToolDefinition<never, unknown>[] = [
   getFinancialSnapshotTool,
   getSafeToSpendTool,
@@ -435,6 +606,12 @@ export const TOOL_REGISTRY: readonly ToolDefinition<never, unknown>[] = [
   acceptRecommendationTool,
   modifyRecommendationTool,
   rejectRecommendationTool,
+  getConciergeBudgetTool,
+  searchPlacesTool,
+  buildConciergePlansTool,
+  evaluateConciergePlanTool,
+  saveConciergePlanTool,
+  reservePlanBudgetTool,
 ] as unknown as readonly ToolDefinition<never, unknown>[];
 
 export function findTool(name: string): ToolDefinition<unknown, unknown> | undefined {

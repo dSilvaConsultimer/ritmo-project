@@ -14,6 +14,7 @@ import {
   getRecommendationsSummary,
   evaluateRecommendations,
   evaluateRecommendationVerifications,
+  listSavedConciergePlansForProfile,
   DEMO_PROFILE_ID,
   type RecommendationsSummary,
 } from "@money-copilot/app-services";
@@ -202,6 +203,11 @@ function LifestyleSection({ comparison }: { comparison: LifestyleComparisonResul
   );
 }
 
+function formatCentsRange(range: { min: number; max: number }): string {
+  const fmt = (cents: number) => (cents / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+  return range.min === range.max ? fmt(range.min) : `${fmt(range.min)} - ${fmt(range.max)}`;
+}
+
 function recommendationItemFromDomain(r: Recommendation): RecommendationSummaryItem {
   return {
     id: r.id,
@@ -254,6 +260,7 @@ export default async function HomePage() {
     comparison,
     connections,
     recommendationsSummary,
+    savedConciergePlans,
   ] = await Promise.all([
     getFinancialSnapshot(db, DEMO_PROFILE_ID, ASOF_DATE),
     getTransactions(db, DEMO_PROFILE_ID, ASOF_DATE),
@@ -264,6 +271,7 @@ export default async function HomePage() {
     getLifestyleComparison(db, DEMO_PROFILE_ID, ASOF_DATE),
     getConnections(db, DEMO_PROFILE_ID),
     getRecommendationsSummary(db, DEMO_PROFILE_ID),
+    listSavedConciergePlansForProfile(db, DEMO_PROFILE_ID),
   ]);
 
   const latestSync = connections[0] ? await getLatestSyncRunForConnection(db, connections[0].id) : undefined;
@@ -507,8 +515,40 @@ export default async function HomePage() {
         <RecommendationsPanel data={recommendationsData} />
       </section>
 
+      <section style={sectionStyle}>
+        <h2 style={sectionTitleStyle}>11. Saved Concierge Plans</h2>
+        <p style={{ fontSize: 13, color: "#8b93a7", marginTop: 0, marginBottom: 12 }}>
+          Selected via chat (Sprint 6) — saving a plan only records intent, it never books anything or
+          spends money. Ask Money Copilot things like &ldquo;Vou sair para jantar hoje, quanto posso
+          gastar?&rdquo; to build one.
+        </p>
+        {savedConciergePlans.length === 0 ? (
+          <p style={{ color: "#8b93a7" }}>No saved plans yet.</p>
+        ) : (
+          savedConciergePlans.map((saved) => (
+            <div
+              key={saved.id}
+              style={{
+                background: "#151821",
+                border: "1px solid #262b38",
+                borderRadius: 12,
+                padding: "14px 18px",
+                marginBottom: 10,
+              }}
+            >
+              <div style={{ fontWeight: 600 }}>{saved.plan.label}</div>
+              <div style={{ fontSize: 13, marginTop: 6 }}>
+                Total: {saved.plan.totalCostRangeCents ? `${formatCentsRange(saved.plan.totalCostRangeCents)}` : "Price incomplete"} ·
+                Fit: {saved.plan.totalBudgetFit.zone}
+              </div>
+              <div style={{ fontSize: 12, color: "#8b93a7", marginTop: 4 }}>Saved: {saved.createdAt}</div>
+            </div>
+          ))
+        )}
+      </section>
+
       <section>
-        <h2 style={sectionTitleStyle}>11. Data Confidence / Warnings</h2>
+        <h2 style={sectionTitleStyle}>12. Data Confidence / Warnings</h2>
         <Warnings warnings={snapshot.warnings} />
       </section>
     </main>

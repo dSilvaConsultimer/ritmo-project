@@ -1656,3 +1656,328 @@ DEC-063.
 **Consequences:** Any future AI-tool domain with its own natural "decision" vocabulary should audit
 `mutation-guard.ts`'s pattern coverage specifically for that vocabulary rather than assuming the
 existing patterns generalize.
+
+---
+
+### DEC-065
+
+**Date:** 2026-09-09
+**Context:** Sprint 6 (Concierge) combines two fundamentally different systems — the deterministic
+financial engine and an external real-world discovery provider. The brief is explicit and
+non-negotiable: "external search must NEVER determine Safe-to-Spend," and the mandated order is
+FINANCIAL ENVELOPE → USER INTENT → DISCOVERY REQUIREMENTS → REAL-WORLD SEARCH → ... , never reversed.
+**Decision:** Every concierge entry point (`getConciergeBudget`, `searchConciergePlaces`,
+`buildConciergePlansForProfile` — `packages/app-services/src/concierge/concierge-service.ts`) calls
+`getSpendingEnvelopeForProfile` (Sprint 4, unchanged) BEFORE any discovery-provider call, and derives
+the discovery search ceiling (`deriveSearchCeiling`) FROM that envelope — never the reverse. This is
+enforced architecturally, not just by convention: `@money-copilot/discovery` has zero dependency on
+`@money-copilot/financial-engine` (and vice versa), so a discovery provider's response literally
+cannot contain a `Money`/`SpendingEnvelope` value to begin with — it can only ever influence which
+VENUES are shown, never what the user can safely spend. Regression-tested directly
+(`concierge-service.test.ts`, "(A)": the search ceiling passed to the provider is asserted to be
+exactly the envelope's own caution ceiling; "(B)": a provider returning an absurd/adversarial price
+is proven to leave `getSafeToSpend`'s own output completely unchanged).
+**Rationale:** A financial safety guarantee enforced only by "always call this function first" is a
+convention that can be forgotten; enforcing it via the TYPE SYSTEM (discovery types structurally
+cannot represent financial data) is a much stronger guarantee, matching the same architectural
+principle already used for Open Finance (`financial-engine` has zero dependency on
+`open-finance`/Pluggy) and the AI layer (financial-engine has zero dependency on `@money-copilot/ai`).
+**Status:** Accepted.
+**Consequences:** Any future discovery-provider integration (a live adapter) inherits this guarantee
+automatically — it cannot introduce a financial-truth bypass without literally adding a
+`financial-engine` dependency to the `discovery` package, which would be an obvious, reviewable red
+flag.
+
+---
+
+### DEC-066
+
+**Date:** 2026-09-09
+**Context:** The brief requires a deterministic "does this cost fit the budget" classifier
+(`evaluateBudgetFit`) with FIVE states (`WITHIN_RECOMMENDED`/`WITHIN_CAUTION`/`HIGH_IMPACT`/
+`EXCEEDS_LIMIT`/`UNKNOWN_COST`), while explicitly warning against "creating conflicting financial-zone
+semantics" — and the financial engine already has a three-state `SpendStatus` model
+(`SAFE`/`CAUTION`/`HIGH_IMPACT`, `packages/financial-engine/src/simulation/expense-simulation.ts`)
+computed from a `SpendingEnvelope`'s `recommendedAmount`/`cautionAmount` boundaries.
+**Decision:** `evaluateBudgetFit` (`packages/financial-engine/src/simulation/budget-fit.ts`) reuses
+`SpendingEnvelope`'s EXACT SAME two boundaries — no new threshold, no second definition of
+"recommended" or "caution." `EXCEEDS_LIMIT` is a genuinely distinct concept, not a fourth financial-
+engine zone: it fires ONLY when an amount exceeds the USER'S OWN explicit stated ceiling
+(`userCeiling`), and — critically — a generous user ceiling can never loosen a `HIGH_IMPACT`
+classification into something safer (`classifyAmount` checks `userCeiling` as an ADDITIONAL, stricter
+constraint only, never a replacement for the engine's own boundaries). For a cost RANGE, both bounds
+are classified separately (`minZone`/`maxZone`) with the overall `zone` always the more conservative
+(worse) of the two — a range whose lower bound fits but whose upper bound doesn't is never presented
+as simply "safe."
+**Rationale:** Reusing the exact same two numbers `SpendStatus` already uses is what actually
+satisfies "avoid creating conflicting financial-zone semantics" — a fourth boundary would have meant
+the concierge and the existing spend-simulation flow could disagree about what "caution" means for
+the identical financial state.
+**Status:** Accepted.
+**Consequences:** If `SpendPolicy`'s `cautionCompensationRatio` (or any future policy change) shifts
+`SpendingEnvelope`'s boundaries, `evaluateBudgetFit`'s classification shifts identically and
+automatically — no concierge-specific policy to keep in sync.
+
+---
+
+### DEC-067
+
+**Date:** 2026-09-09
+**Context:** Sprint 6 needs a provider-neutral abstraction for real-world venue discovery, following
+"the same architectural principle used for Open Finance and AI providers" — plus a structured
+representation of price evidence, since "real-world prices are imperfect" and must never be treated as
+uniformly exact.
+**Decision:** New package `@money-copilot/discovery`, mirroring `@money-copilot/open-finance`'s exact
+shape: a `LocalDiscoveryProvider` interface (`searchPlaces`/`getPlaceDetails`), a deterministic
+`MockDiscoveryProvider` (obviously-synthetic venue names, e.g. "Generic Bistro" — never a real
+business, mirroring Pluggy sandbox data's own labeling discipline), and `discovery-provider-registry.ts`
+(`packages/app-services`) mirroring `provider-registry.ts` exactly. `PriceEvidence` supports six
+provenance-tagged shapes (`EXACT`/`RANGE`/`STARTING_AT`/`PRICE_LEVEL`/`ESTIMATED`/`UNKNOWN`) plus
+`basis` (`PER_PERSON`/`TOTAL`/`UNKNOWN_BASIS`), `source`, `observedAt`, and `confidence` — never a bare
+number. `PRICE_LEVEL` (a "$".."$$$$" indicator) deliberately NEVER converts to a BRL amount in V1 — no
+documented, centralized mapping policy exists, so `plan-builder.ts`'s `venueCostRangeCents`
+explicitly skips it rather than guessing (see DEC-066's sibling concern about never inventing a
+number). No live provider was implemented — see the "Live provider status" DEC-073 below.
+**Rationale:** The exact same reasoning that justified `OpenFinanceProvider`/`AIProvider` applies here
+verbatim: swappable external infrastructure must never leak into the deterministic core, and a mock
+implementation must exist so the whole system is testable and demoable without any live credential.
+**Status:** Accepted.
+**Consequences:** Adding a real live provider later (once credentials exist) is purely additive — one
+new adapter class + one new registry branch, no changes anywhere else, exactly like `PluggyProvider`
+was added alongside `MockProvider` without touching `financial-engine` or `app-services`'s other
+callers.
+
+---
+
+### DEC-068
+
+**Date:** 2026-09-09
+**Context:** `ConciergeSession`/`OutingPlan`/`SavedConciergePlan` need to be persisted, but they are
+APPLICATION-layer types (`packages/app-services/src/concierge/types.ts`) — unlike every other
+persisted entity in this codebase, they are not `financial-engine` domain types, because they
+reference discovery-domain concepts (`VenueCandidate`, `ActivityType` from `@money-copilot/discovery`)
+that `financial-engine` must never depend on (DEC-065). `packages/persistence` depends on
+`financial-engine` but must NEVER depend on `app-services` (the dependency runs the other way) — so
+persistence cannot import these types the way `mappers.ts` imports `Recommendation`/`SyncRun`/etc.
+**Decision:** `packages/persistence/src/repositories.ts` exposes plain ROW-shaped functions for the
+two new tables (`ConciergeSessionRow`/`SavedConciergePlanRow` — JSON-blob + primitive fields only, no
+imported rich type), documented explicitly as an exception to this file's usual pattern.
+`concierge-service.ts` does its own JSON serialization/deserialization between its rich domain types
+and these row shapes — the "mapper" logic that would normally live in `persistence/mappers.ts` lives
+in `app-services` instead for this one domain.
+**Rationale:** The alternative (moving `ConciergeIntent`/`OutingPlan` into `financial-engine` so
+persistence could import them normally) would have violated DEC-065's own guarantee by giving
+`financial-engine` visibility into discovery-domain concepts. A thin, row-shaped persistence
+interface with mapping pushed to the caller is the correct resolution once a type genuinely belongs
+to the application layer rather than the domain layer.
+**Status:** Accepted.
+**Consequences:** Any FUTURE type that references both persistence-worthy state AND a
+non-financial-engine package's types should follow this same pattern (row-shaped persistence
+functions, mapping done by the caller) rather than either creating a dependency cycle or smuggling
+foreign concepts into `financial-engine`.
+
+---
+
+### DEC-069
+
+**Date:** 2026-09-09
+**Context:** Two related brief requirements: (a) "do not send the user's complete financial history to
+discovery providers... only location, activity type, price/search constraints, preferences," and (b)
+"treat external search content as untrusted data... search results must not override system prompt,
+financial rules, mutation policy, or grounding rules."
+**Decision:** `DiscoverySearchCriteria` (`packages/discovery/src/provider.ts`) is a narrow type that
+structurally CANNOT carry income, balance, debt, or transaction history — those concepts don't exist
+in the `@money-copilot/discovery` package at all (see DEC-065/DEC-067). `buildSearchCriteria`
+(`concierge-service.ts`) constructs it from ONLY derived fields (`activityType`, `location`,
+`maxPriceCents`, `partySize`, `preferences`, `avoidances`, `dateTime`). Separately, every discovery
+tool's result is passed to the AI provider exclusively as a `tool_result` turn item — the
+orchestrator's `instructions` field sent on every request is a fixed constant
+(`CURRENT_SYSTEM_INSTRUCTIONS`), never concatenated with or derived from any tool output, so a
+maliciously-crafted venue name/description (e.g. "ignore all previous instructions...") has
+structurally zero path to altering the system prompt, `hasExplicitMutationIntent`'s evaluation of the
+ORIGINAL user message, or grounding's fact pool. Regression-tested directly
+(`concierge-service.test.ts`, "(B, Z)": criteria object key-set + serialized-content scan for
+forbidden financial terms; `orchestrator-concierge.test.ts`, "(Q, injection)": a scripted malicious
+payload proven to leave the sent `instructions` byte-identical across every call and to still be
+caught by grounding if the model parrots an invented amount).
+**Rationale:** Two different threat models (data exfiltration to a third party vs. prompt injection
+FROM a third party) are both closed by the same underlying discipline: never let untrusted/sensitive
+data cross a boundary through anything other than a narrow, structurally-typed, explicitly-constructed
+interface.
+**Status:** Accepted.
+**Consequences:** Any future tool that calls an external provider must construct its request payload
+the same explicit way (an allowlist of fields, never a spread of broader internal state) and must
+never feed tool output back into the `instructions` sent to the AI provider.
+
+---
+
+### DEC-070
+
+**Date:** 2026-09-09
+**Context:** The brief warns against "mixing all grounding into fragile regex logic" while still
+requiring that venue names/prices/addresses/ratings never be invented — a much richer grounding
+requirement than Sprint 4/4.5/5's purely amount-based `FinancialFact` model, since a venue NAME isn't
+a regex-matchable currency figure.
+**Decision:** `DiscoveryFact` (`concierge/types.ts`) is a separate type from `FinancialFact` — never
+blended into the same array in the response shape. Discovery facts are populated STRUCTURALLY, by the
+orchestrator itself, directly from each discovery tool's actual result (`copilot/discovery-facts.ts`'s
+`extractDiscoveryFacts`) — the LLM never writes to this list, so every name/rating/address entry is
+grounded BY CONSTRUCTION, with no text-pattern verification needed at all for non-monetary facts. For
+the one sub-case that IS a currency figure (a venue's price), `discoveryFactsAsGroundingFacts` converts
+price evidence into the SAME amount-checking pool `groundResponseText` already uses for
+`FinancialFact`s — merged into the grounding CHECK only, never into the client-facing `financialFacts`
+array, so the two concepts stay separate in the response shape while sharing one proven mechanism for
+the one sub-case where regex-based amount extraction is actually appropriate.
+**Rationale:** Attempting a generic NER-style verifier for "is this venue name/address/rating actually
+mentioned accurately in the prose" would have been exactly the "fragile regex logic" the brief warns
+against, and would have violated the established "do not over-engineer general NL verification"
+principle from Sprint 4. Grounding-by-construction (never writing unverified content into the fact
+list in the first place) sidesteps the need for such a verifier entirely.
+**Status:** Accepted.
+**Consequences:** Any future non-monetary "must not be invented" fact type (in this domain or a
+future one) should follow the same pattern — extract it structurally from tool output, never verify
+free text against it after the fact.
+
+---
+
+### DEC-071
+
+**Date:** 2026-09-09
+**Context:** The brief requires: multi-part plans (required + optional components) with deterministic
+combination arithmetic; optional components never silently inflating a "base" cost figure; and a hard
+separation between selecting/saving a plan and actually spending money (no `FinancialTransaction` on
+save; an explicit "separa R$X" reservation must reuse the existing `FinancialEvent` mechanism, never a
+new parallel one).
+**Decision:** `buildConciergePlans` (`plan-builder.ts`) builds the deterministic power-set over
+`optionalComponents` (bounded and small — one optional component means exactly 2 plans). Each
+resulting `OutingPlan` carries BOTH `baseCostRangeCents`/`baseBudgetFit` (required components only)
+and `totalCostRangeCents`/`totalBudgetFit` (required + this specific optional combination) as
+separate fields — the UI/AI can always distinguish "R$150 base" from "R$270 with optional lodging"
+rather than presenting the inflated figure as unavoidable. `sumCostRangesCents` returns `null` (not
+zero) the moment ANY included component's price is unknown — a plan with an unpriced optional
+component never gets classified as if it were free. `saveConciergePlan` writes only to
+`saved_concierge_plans` (a `SELECTED` status marker), never to `financial_transactions`.
+`reservePlanBudget` calls the EXISTING `createPlannedFinancialEvent` (Sprint 1/4) directly — no
+concierge-specific reservation table or logic exists.
+**Rationale:** Reusing `FinancialEvent` for budget reservations (rather than inventing a parallel
+"concierge reservation" concept) keeps exactly one mechanism for "money set aside for something
+planned" across the whole product, matching the brief's own explicit instruction.
+**Status:** Accepted.
+**Consequences:** Any future "set money aside for X" feature (concierge-related or not) should also
+reuse `createPlannedFinancialEvent` rather than creating another parallel mechanism.
+
+---
+
+### DEC-072
+
+**Date:** 2026-09-09
+**Context:** The brief requires deterministic, inspectable venue/plan ranking where "budget fit should
+dominate" — a highly-rated option that exceeds the user's envelope must not outrank an equally
+suitable option that safely fits, unless the user explicitly asks for higher-impact alternatives —
+while explicitly forbidding "one opaque AI score" and "scattered arbitrary weights."
+**Decision:** `ConciergeRankingPolicy` (`ranking.ts`) centralizes four named, documented weights
+(`budgetFitWeight`, `preferenceMatchWeight`, `ratingWeight`, `priceConfidenceWeight`) with
+`budgetFitWeight` set an order of magnitude higher than the others by default — `rankVenueCandidates`
+returns each candidate's full factor breakdown alongside the total score, never just a single number.
+Regression-tested directly: a lower-rated `WITHIN_RECOMMENDED` venue is proven to outrank a
+higher-rated `HIGH_IMPACT` one.
+**Rationale:** Making the dominance relationship an explicit, large weight ratio (rather than special-
+cased logic like "always sort HIGH_IMPACT last regardless of score") keeps the ranking uniform and
+inspectable while still achieving the required behavior — and remains tunable as a product policy
+default without a code change.
+**Status:** Accepted.
+**Consequences:** Any future ranking factor (e.g. real distance once a live provider supplies
+coordinates) should be added as one more named, weighted factor in this same policy object, never a
+special case bolted onto the sort comparator.
+
+---
+
+### DEC-073
+
+**Date:** 2026-09-09
+**Context:** Per the brief's Section 14/52, a live discovery provider was only to be implemented "if
+an existing product-owned credential/capability can safely support Sprint 6" — otherwise, complete the
+abstraction + mock provider and report the exact blocked status rather than stalling the sprint or
+fabricating fake production data.
+**Decision:** Inspected `apps/web/.env.example` and `.env.local` before choosing anything — confirmed
+no Google Places / web-search / any local-discovery API credential exists in this environment (only
+`OPENAI_API_KEY`/`PLUGGY_*` are configured). No live provider adapter was written.
+`LIVE_DISCOVERY_VALIDATION = BLOCKED_BY_EXTERNAL_PROVIDER_CONFIGURATION`. The running application uses
+`MockDiscoveryProvider` by default (obviously-synthetic venue data, never real business names/
+addresses), which is what live validation of the rest of the pipeline (envelope → intent → plans →
+grounding → AI explanation) was actually run against.
+**Rationale:** Writing a live adapter against a provider that can never actually be tested in this
+environment would risk shipping undiscovered bugs and violates the same "do not assume a stale API
+contract" instruction the brief itself raises — better to ship a complete, tested abstraction and
+report precisely what's needed than to guess at an untestable implementation.
+**Status:** Accepted.
+**Consequences:** The Founder/Product must provision a product-owned (never end-user-supplied)
+places/local-search API credential, server-side only, before a live adapter can be added — at that
+point, adding it is purely additive per DEC-067's consequence.
+
+---
+
+### DEC-074
+
+**Date:** 2026-09-09
+**Context:** Live validation of the Section 51 acceptance scenario ("Vou sair com uma garota em
+Campinas hoje à noite...") against the real running application and real OpenAI (not `MockAIProvider`)
+found a genuine bug: the model correctly called `getConciergeBudget`, correctly read its
+`recommendedAmountCents`/`cautionAmountCents`, and correctly cited those exact figures in prose — the
+financial-envelope-first architecture was working exactly as designed — but `groundResponseText`
+rejected the response anyway (`unsupportedAmountsCents: [129301, 159301]`), because
+`extractFinancialFacts` in `facts.ts` had no case at all for `"getConciergeBudget"`, nor for the
+`budget`/`currentBudget` fields nested inside `buildConciergePlans`/`evaluateConciergePlan` results.
+This is the same failure mode as DEC-055 (Sprint 4.5) and DEC-062 (Sprint 5) recurring a third time: "a
+correct tool result that is not exposed to grounding is a product bug," not a model bug.
+**Decision:** Added `conciergeBudgetFacts(budget, sourceTool)` to `facts.ts`, producing three facts
+(recommended amount, caution ceiling, search ceiling) per `ConciergeBudget`, and wired it into
+`extractFinancialFacts` for `"getConciergeBudget"` (direct) and `"buildConciergePlans"` /
+`"evaluateConciergePlan"` (via their nested `.budget`/`.currentBudget` field). Added two permanent
+regression tests in `facts.test.ts`. Re-ran the exact live scenario after the fix:
+`groundingStatus: "PASSED"`.
+**Rationale:** Every new AI tool this project adds must ship its fact extractor in the same change —
+this is now the third sprint in a row this exact gap has been found live rather than caught by review,
+so it is called out explicitly here (again) as a recurring risk class, not a one-off.
+**Status:** Accepted.
+**Consequences:** Any future tool whose result contains a monetary figure the model might cite must add
+a corresponding `extractFinancialFacts` (or `extractDiscoveryFacts`) case in the same PR — a new tool
+with no fact extractor should be treated as an incomplete tool, not a follow-up task.
+
+---
+
+### DEC-075
+
+**Date:** 2026-09-09
+**Context:** After fixing DEC-074, the live model still refused to call `searchPlaces` /
+`buildConciergePlans` even when explicitly and unambiguously asked ("Pode procurar opções de
+restaurante em Campinas para mim?", and separately, in a brand-new conversation with zero prior
+context, "Busque restaurantes em Campinas para hoje à noite.") — it replied that it could not search
+for specific restaurants yet. Root cause, found by reading `system-instructions.ts`: Sprint 4's
+`SYSTEM_INSTRUCTIONS_V1` contained an explicit numbered rule stating the model did not have real-world
+venue/product/travel recommendations yet, and to say so if asked "where should I go." That rule was
+completely accurate when Sprint 4 wrote it — and, unnoticed until this live test, directly contradicted
+and actively suppressed the brand-new Sprint 6 discovery tools, even though they were correctly
+registered with valid strict-mode schemas. This is a different failure class from DEC-074: not a
+grounding-coverage gap, but a stale system-prompt instruction actively telling the model a true-when-
+written fact that had since become false.
+**Decision:** Removed the stale rule from `SYSTEM_INSTRUCTIONS_V1`, renumbering the rule after it.
+Restructured the version chain so each sprint's additions are their own traceable layer:
+`V1` (Sprint 4) → `V2` (Sprint 4.5, language matching) → `V3` (Sprint 5, recommendation-lifecycle
+guidance, created retroactively during this fix so the layering stays consistent) → `V4` (Sprint 6,
+concierge guidance — explicitly states the model DOES have `getConciergeBudget`/`searchPlaces`/
+`buildConciergePlans`/`evaluateConciergePlan`, must resolve the financial envelope first, must never
+invent venue facts, must ask for a location if missing, and that `saveConciergePlan`/
+`reservePlanBudget` require an explicit decided instruction and never book/contact/spend on the user's
+behalf). `CURRENT_SYSTEM_INSTRUCTIONS = SYSTEM_INSTRUCTIONS_V4`. Re-ran the full live scenario after
+the fix in a fresh conversation: correct tool call, correct party-size/cost inference, correct
+plan/grounding results.
+**Rationale:** A capability can be fully implemented, correctly registered, and still be unreachable in
+practice if an older instruction tells the model it doesn't exist — this class of bug is invisible to
+every offline test that doesn't exercise the real system prompt end-to-end against a real model, which
+is exactly why the brief's live-validation step exists.
+**Status:** Accepted.
+**Consequences:** When a sprint adds a capability that a prior sprint's system instructions describe as
+absent or out of scope, that prior rule must be located and corrected in the same change — a version-
+chain review ("does any earlier rule claim something this sprint just made untrue?") is now a required
+step before considering a new AI capability done.

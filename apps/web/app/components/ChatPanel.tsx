@@ -16,10 +16,19 @@ interface FinancialFact {
   semanticType: string;
 }
 
+interface DiscoveryFact {
+  label: string;
+  value: string;
+  venueName: string;
+  sourceTool: string;
+  provider: string;
+}
+
 interface ChatApiResponse {
   conversationId: string;
   text: string;
   financialFacts: FinancialFact[];
+  discoveryFacts: DiscoveryFact[];
   warnings: string[];
   groundingStatus: "PASSED" | "FAILED" | "NOT_APPLICABLE";
 }
@@ -36,6 +45,8 @@ const QUICK_ACTIONS = [
   "How am I doing this month?",
   "Why is my Safe-to-Spend this amount?",
   "Am I financially ready to live alone?",
+  "Is there anything I could cut?",
+  "I want to go out for dinner tonight in Campinas, what can I spend?",
 ];
 
 function formatCents(cents: number): string {
@@ -64,6 +75,33 @@ function FactCard({ fact }: { fact: FinancialFact }) {
   );
 }
 
+/**
+ * Sprint 6: renders discovery evidence (venue name/price/rating/address)
+ * exactly as the tool returned it — never re-derived from the assistant's
+ * prose. This is what makes discovery facts "grounded by construction"
+ * (see docs/CONCIERGE.md, "Discovery grounding") rather than relying on
+ * fragile text-pattern verification.
+ */
+function DiscoveryFactCard({ fact }: { fact: DiscoveryFact }) {
+  return (
+    <div
+      style={{
+        background: "#0f1218",
+        border: "1px solid #2d3a2f",
+        borderRadius: 8,
+        padding: "8px 12px",
+        minWidth: 160,
+      }}
+    >
+      <div style={{ fontSize: 11, color: "#8b93a7", textTransform: "uppercase", letterSpacing: 0.4 }}>
+        {fact.label}
+      </div>
+      <div style={{ fontSize: 14, fontWeight: 600, marginTop: 2 }}>{fact.value}</div>
+      <div style={{ fontSize: 10, color: "#6b7280", marginTop: 2 }}>Source: {fact.provider}</div>
+    </div>
+  );
+}
+
 export function ChatPanel() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [conversationId, setConversationId] = useState<string | undefined>(undefined);
@@ -71,6 +109,7 @@ export function ChatPanel() {
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastFacts, setLastFacts] = useState<FinancialFact[]>([]);
+  const [lastDiscoveryFacts, setLastDiscoveryFacts] = useState<DiscoveryFact[]>([]);
   const [lastWarnings, setLastWarnings] = useState<string[]>([]);
 
   useEffect(() => {
@@ -116,6 +155,7 @@ export function ChatPanel() {
           { id: `assistant-${Date.now()}`, role: "ASSISTANT", content: data.text },
         ]);
         setLastFacts(data.financialFacts);
+        setLastDiscoveryFacts(data.discoveryFacts ?? []);
         setLastWarnings(data.warnings);
       } catch {
         setError("Could not reach the assistant. Please try again.");
@@ -198,6 +238,14 @@ export function ChatPanel() {
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
           {lastFacts.map((fact, index) => (
             <FactCard key={`${fact.semanticType}-${index}`} fact={fact} />
+          ))}
+        </div>
+      ) : null}
+
+      {lastDiscoveryFacts.length > 0 ? (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {lastDiscoveryFacts.map((fact, index) => (
+            <DiscoveryFactCard key={`${fact.venueName}-${fact.label}-${index}`} fact={fact} />
           ))}
         </div>
       ) : null}

@@ -1,5 +1,5 @@
 {
-  "name": "@money-copilot/app-services",
+  "name": "@money-copilot/discovery",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -13,13 +13,7 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@money-copilot/ai": "workspace:*",
-    "@money-copilot/financial-engine": "workspace:*",
-    "@money-copilot/shared": "workspace:*",
-    "@money-copilot/persistence": "workspace:*",
-    "@money-copilot/open-finance": "workspace:*",
-    "@money-copilot/discovery": "workspace:*",
-    "zod": "^4.5.4"
+    "@money-copilot/shared": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^26.4.1",

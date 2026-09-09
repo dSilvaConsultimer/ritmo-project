@@ -29,6 +29,13 @@
       "when": 1788700000000,
       "tag": "0003_workable_grim_reaper",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1788987247040,
+      "tag": "0004_tough_captain_flint",
+      "breakpoints": true
     }
   ]
 }

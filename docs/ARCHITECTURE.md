@@ -104,16 +104,33 @@ runtime dependency is the official `pluggy-sdk` npm package. **Nothing in `finan
 from this package or knows Pluggy exists** — see NON-NEGOTIABLE (Sprint 3): "Pluggy must not leak
 into the financial engine." Full account: `docs/OPEN-FINANCE.md`.
 
+## The discovery package, internally (Sprint 6)
+
+```
+packages/discovery/src/
+  provider.ts       LocalDiscoveryProvider interface, VenueCandidate, PriceEvidence, DiscoverySearchCriteria
+  mock-provider.ts  MockDiscoveryProvider — deterministic, no network, obviously-synthetic venue data
+```
+
+Mirrors `open-finance`'s exact shape for real-world venue discovery instead of bank data. Depends only
+on `@money-copilot/shared`. **Nothing in `financial-engine` imports from this package (or vice versa)
+— this is what makes "external search must never determine Safe-to-Spend" an architectural guarantee,
+not just a convention** (see DEC-065). No live provider exists yet (no credential configured — see
+`docs/CONCIERGE.md`, "Live provider status"); adding one later is purely additive, exactly like
+`PluggyProvider` was added alongside `MockProvider`. Full account: `docs/CONCIERGE.md`.
+
 ## Application service layer (Sprint 3)
 
 ```
 packages/app-services/src/
-  db.ts                     Singleton getDb() — creates/migrates/seeds one PGlite instance per process (globalThis-cached, DEC-052)
-  queries.ts                getFinancialSnapshot, getCategoryTotals, getConnections, getRecommendationsSummary, etc. — plain reads
-  sync.ts                   createConnectToken, completeConnection, syncConnection, refetchTransactionsByExternalId
-  recommendation-service.ts evaluateRecommendations, evaluateRecommendationVerifications, accept/modify/rejectRecommendation (Sprint 5)
-  webhook.ts                handleWebhookEvent — idempotent webhook dispatch
-  provider-registry.ts      getProvider(name) — resolves "pluggy" | "mock" lazily
+  db.ts                       Singleton getDb() — creates/migrates/seeds one PGlite instance per process (globalThis-cached, DEC-052)
+  queries.ts                  getFinancialSnapshot, getCategoryTotals, getConnections, getRecommendationsSummary, etc. — plain reads
+  sync.ts                     createConnectToken, completeConnection, syncConnection, refetchTransactionsByExternalId
+  recommendation-service.ts   evaluateRecommendations, evaluateRecommendationVerifications, accept/modify/rejectRecommendation (Sprint 5)
+  discovery-provider-registry.ts  getDiscoveryProvider(name) — resolves "mock" (Sprint 6, mirrors provider-registry.ts)
+  concierge/                  ConciergeIntent, OutingPlan, budget-fit-aware plan building/ranking, session persistence (Sprint 6)
+  webhook.ts                  handleWebhookEvent — idempotent webhook dispatch
+  provider-registry.ts        getProvider(name) — resolves "pluggy" | "mock" lazily
 ```
 
 `recommendation-service.ts` is the Open-Finance-independent counterpart to `sync.ts` — it orchestrates

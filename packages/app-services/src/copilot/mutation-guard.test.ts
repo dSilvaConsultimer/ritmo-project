@@ -68,6 +68,22 @@ describe("hasExplicitMutationIntent", () => {
       expect(hasExplicitMutationIntent(text)).toBe(false);
     },
   );
+
+  it.each([
+    "Vamos com a opção B.",
+    "Escolho essa.",
+    "Fico com essa opção.",
+    "Separa R$ 250 para hoje à noite.",
+  ])("(Sprint 6) returns true for explicit PT-BR concierge plan selection/reservation: %s", (text) => {
+    expect(hasExplicitMutationIntent(text)).toBe(true);
+  });
+
+  it.each(["E se eu escolhesse a opção B?", "Poderia separar R$ 250 para isso?"])(
+    "(Sprint 6) returns false for hypothetical PT-BR concierge language: %s",
+    (text) => {
+      expect(hasExplicitMutationIntent(text)).toBe(false);
+    },
+  );
 });
 
 describe("containsHypotheticalLanguage", () => {

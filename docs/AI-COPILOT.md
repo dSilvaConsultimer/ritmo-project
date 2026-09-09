@@ -131,23 +131,25 @@ never a secret, never a full banking payload.
 ## Application tool layer — the allowlist
 
 The LLM never queries Drizzle or calls `financial-engine` internals directly. Its only capability is
-calling one of the 21 named tools in `packages/app-services/src/copilot/tools.ts` (16 from Sprint 4,
-5 added in Sprint 5), each with a strict Zod argument schema, a `kind` (`READ` or `MUTATION`), and an
-`execute(ctx, args)` bound to an `app-services` function. `findTool(name)` returns `undefined` for
-anything not in this list — the orchestrator records that as an `INVALID_ARGUMENTS` execution and
-tells the model "Unknown tool," never silently ignoring or crashing.
+calling one of the 27 named tools in `packages/app-services/src/copilot/tools.ts` (16 from Sprint 4,
+5 from Sprint 5, 6 from Sprint 6), each with a strict Zod argument schema, a `kind` (`READ` or
+`MUTATION`), and an `execute(ctx, args)` bound to an `app-services` function. `findTool(name)` returns
+`undefined` for anything not in this list — the orchestrator records that as an `INVALID_ARGUMENTS`
+execution and tells the model "Unknown tool," never silently ignoring or crashing.
 
 **READ / SIMULATION tools** (execute unconditionally — they never persist anything):
 `getFinancialSnapshot`, `getSafeToSpend`, `getSafeToSpendBreakdown`, `getFinancialPosition`,
 `getLifestyleComparison`, `getGoalStatus`, `getSpendingEnvelope`, `getDailyGuidance`,
 `simulateExpense`, `getUpcomingFinancialEvents`, `getCategoryBudgetStatus`,
-`getRecentSpendingSummary`, `getRecommendations`, `getRecommendationDetails` (Sprint 5).
+`getRecentSpendingSummary`, `getRecommendations`, `getRecommendationDetails` (Sprint 5),
+`getConciergeBudget`, `searchPlaces`, `buildConciergePlans`, `evaluateConciergePlan` (Sprint 6).
 
 **MUTATION tools** (additionally gated by the explicit mutation policy below):
 `recordManualTransaction`, `createPlannedFinancialEvent`, `updatePlannedFinancialEvent`,
 `replanAfterExpense`, `acceptRecommendation`, `modifyRecommendation`, `rejectRecommendation`
-(Sprint 5). See `docs/RECOMMENDATIONS.md`, "AI tools and grounding," for the recommendation-specific
-tools' exact semantics — none of them contact any external merchant.
+(Sprint 5), `saveConciergePlan`, `reservePlanBudget` (Sprint 6). See `docs/RECOMMENDATIONS.md`/
+`docs/CONCIERGE.md`, "AI tools," for the domain-specific tools' exact semantics — none of them contact
+any external merchant, book anything, or spend money on the user's behalf.
 
 Tool arguments are expressed in human units the model naturally produces (`amountReais: 500` for
 R$500.00), converted to integer-cent `Money` inside `execute()` via `fromReais` — the model never
@@ -180,6 +182,13 @@ Extended both English and Portuguese `EXPLICIT_ACTION_PATTERNS` with accept/modi
 ("pode aceitar", "aceito", "quero cancelar", "quero reduzir", "não quero", "rejeito" / "accept it",
 "i accept", "go ahead", "i don't want this", "reject it", "i reject"), verified against zero
 collisions with the existing hypothetical patterns.
+
+**Concierge plan selection / budget reservation (Sprint 6):** the same gap recurred for a THIRD
+decision vocabulary — selecting an outing plan or reserving a budget for one. Extended
+`EXPLICIT_ACTION_PATTERNS` again with "escolho", "fico com essa", "vou/vamos com", "selecione"/
+"separe" (PT-BR) and "i'll go with", "i choose", "i pick", "select this", "set aside" (English) —
+`saveConciergePlan`/`reservePlanBudget` are gated by the identical `hasExplicitMutationIntent`
+mechanism as every other mutation tool, with no concierge-specific exception.
 
 ## `getSpendingEnvelope` and daily guidance
 
@@ -238,10 +247,27 @@ MODIFIED user target — added proactively (DEC-062), not discovered live, per t
 that a correct-but-ungrounded tool result is still a product bug. See `docs/RECOMMENDATIONS.md`, "AI
 tools and grounding."
 
+**Sprint 6:** external venue/price/rating/address facts are a SEPARATE `DiscoveryFact` type — never
+the user's own money, never blended into `financialFacts`. They are populated structurally, straight
+from each discovery tool's result (`copilot/discovery-facts.ts`), never written by the LLM, so
+non-monetary facts (name/rating/address) are grounded BY CONSTRUCTION with no regex verification
+needed at all. Only price-shaped discovery facts are merged into `groundResponseText`'s amount-
+checking pool (the check only, never the response's `financialFacts` array), so an invented venue
+price is still caught exactly like an invented financial figure. See `docs/CONCIERGE.md`, "Discovery
+grounding" (DEC-070).
+
+**Live-discovered gap (DEC-074):** the initial Sprint 6 implementation shipped `getConciergeBudget`
+(and `buildConciergePlans`/`evaluateConciergePlan`'s nested `budget`/`currentBudget` field) with NO
+`extractFinancialFacts` case at all. Live validation against the real model caught it immediately: a
+completely correct answer, citing the tool's own real numbers, was rejected by grounding as
+"unsupported." This is the third time this exact class of bug has been found (DEC-055, DEC-062,
+DEC-074) — every new tool that can produce a monetary figure the model might cite must ship its fact
+extractor in the same change, not as a follow-up.
+
 ## Structured assistant response
 
-`CopilotResponse { conversationId, text, financialFacts, warnings, toolExecutions, groundingStatus }`
-is what `runCopilotTurn` returns and `/api/chat` sends to the browser. The chat UI
+`CopilotResponse { conversationId, text, financialFacts, discoveryFacts, warnings, toolExecutions,
+groundingStatus }` is what `runCopilotTurn` returns and `/api/chat` sends to the browser. The chat UI
 (`ChatPanel.tsx`) renders `financialFacts` as small cards beneath the assistant's message rather than
 raw JSON, and shows `warnings` in a muted list — narrative text never replaces the cards; they're
 independent, both derived from the same tool executions.
@@ -261,14 +287,34 @@ propagates as a normalized `AIError` to the caller.
 ## System instructions
 
 `packages/app-services/src/copilot/system-instructions.ts` — a single version-controlled string
-(`CURRENT_SYSTEM_INSTRUCTIONS`, currently `SYSTEM_INSTRUCTIONS_V2`), never inline in a route handler.
-Covers: calculations only via tools, never inventing missing data, stating uncertainty, never
-moralizing, distinguishing hypothetical from decided actions, protecting existing priorities/never
-proposing cost-cutting, asking concise clarifying questions only when necessary, always fetching
-current data via tools rather than memory, no real-world venue/product recommendations yet, and
-explaining impact rather than a bare yes/no. **V2 (Sprint 4.5)** adds an explicit rule: respond in
-the same language the user writes in (e.g. Portuguese) — the instructions themselves stay in English
-(the model handles this fine), but the rule is now explicit rather than merely assumed.
+(`CURRENT_SYSTEM_INSTRUCTIONS`, currently `SYSTEM_INSTRUCTIONS_V4`), never inline in a route handler.
+Each version literally interpolates the previous (`` `${PREVIOUS}\n<new rule>` ``), so the full rule
+set stays traceable and additive rather than being rewritten from scratch each sprint.
+
+**V1 (Sprint 4)** covers: calculations only via tools, never inventing missing data, stating
+uncertainty, never moralizing, distinguishing hypothetical from decided actions, protecting existing
+priorities/never proposing cost-cutting, asking concise clarifying questions only when necessary,
+always fetching current data via tools rather than memory, and explaining impact rather than a bare
+yes/no. **V2 (Sprint 4.5)** adds: respond in the same language the user writes in (e.g. Portuguese) —
+the instructions themselves stay in English (the model handles this fine), but the rule is now
+explicit rather than merely assumed. **V3 (Sprint 5)** adds: recommendation-lifecycle guidance
+(proactively surface savings opportunities via the recommendation tools, but only act on the user's
+own explicit decision; accepting is intent, not confirmed savings). **V4 (Sprint 6)** adds: the model
+DOES have real-world venue discovery now — use it; always resolve the financial envelope before
+searching or presenting a plan; never invent a venue's existence/price/rating/address; ask for a
+location if missing; `saveConciergePlan`/`reservePlanBudget` require an explicit decision and never
+book, contact, or spend on the user's behalf.
+
+**Live-discovered bug (DEC-075):** V1's original rule 9 told the model it did NOT yet have real-world
+venue/product/travel recommendations — true when Sprint 4 wrote it, but left in place unnoticed
+through Sprint 5. Once Sprint 6 actually built venue discovery, that stale rule directly contradicted
+and actively suppressed the brand-new tools: live testing showed the model refusing to call
+`searchPlaces`/`buildConciergePlans` even when explicitly asked, citing that exact rule. This is a
+different failure class from a grounding-coverage gap (DEC-055/062/074) — a stale INSTRUCTION, not a
+missing extractor — and is only visible by exercising the real system prompt against a real model, not
+by any offline unit test. Fixed by removing the stale rule and adding V4's replacement above. The
+lesson generalizes: whenever a sprint adds a capability, check whether any earlier version's rules
+describe it as absent or out of scope, and correct them in the same change.
 
 ## Model configuration
 
