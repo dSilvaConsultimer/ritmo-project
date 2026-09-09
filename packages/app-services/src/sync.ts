@@ -28,6 +28,7 @@ import type { ConnectionTokenResult, OpenFinanceProvider } from "@money-copilot/
 import * as repo from "@money-copilot/persistence";
 import type { Database } from "@money-copilot/persistence";
 import { getProvider, type ProviderName } from "./provider-registry";
+import { evaluateRecommendations, evaluateRecommendationVerifications } from "./recommendation-service";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -370,6 +371,24 @@ export async function syncConnection(
   } catch (topLevelError) {
     const normalized = normalizeSyncError(topLevelError);
     errors.push(normalized.message);
+  }
+
+  // Sprint 5 (DEC-060): a successful sync is also an opportunity to
+  // discover new recommendation candidates and check whether any
+  // ACCEPTED/MODIFIED recommendation's expected change can now be
+  // verified. Deliberately isolated in its own try/catch — a problem here
+  // must never fail the sync itself (the imported financial data is the
+  // important, already-committed result). Both functions are idempotent by
+  // construction (identityKey matching; VERIFIED/FAILED are terminal), so
+  // repeated syncs never duplicate or re-transition anything.
+  if (anySucceeded) {
+    try {
+      const asOfDate = startedAt.slice(0, 10);
+      await evaluateRecommendations(db, financialProfileId, asOfDate);
+      await evaluateRecommendationVerifications(db, financialProfileId, asOfDate);
+    } catch {
+      // Never fails the sync — recommendation evaluation is best-effort here.
+    }
   }
 
   const finishedAt = nowIso();

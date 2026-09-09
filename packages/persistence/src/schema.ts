@@ -14,12 +14,15 @@ import type {
   ReconciliationMethod,
   ReconciliationStatus,
   RecommendationStatus,
+  RecommendationType,
+  RecurrenceCadence,
   RecurringCandidateConfidence,
   RecurringCandidateStatus,
   SyncRunStatus,
   TransactionDirection,
   TransactionOrigin,
   TransactionStatus,
+  VerificationAssessment,
 } from "@money-copilot/financial-engine";
 import type { CategoryRuleMatchType } from "@money-copilot/financial-engine";
 import type { ConversationStatus, MessageRole, ToolExecutionStatus } from "@money-copilot/ai";
@@ -246,24 +249,53 @@ export const protectedPreferences = pgTable("protected_preferences", {
   reason: text("reason"),
 });
 
-/** Lifecycle persistence only — recommendation discovery is future work. */
-export const recommendations = pgTable("recommendations", {
-  id: text("id").primaryKey(),
-  financialProfileId: text("financial_profile_id")
-    .notNull()
-    .references(() => financialProfiles.id),
-  title: text("title").notNull(),
-  description: text("description"),
-  estimatedMonthlySavingsCents: integer("estimated_monthly_savings_cents").notNull(),
-  status: text("status").$type<RecommendationStatus>().notNull(),
-  createdAt: text("created_at").notNull(),
-  decidedAt: text("decided_at"),
-  modifiedMonthlySavingsCents: integer("modified_monthly_savings_cents"),
-  rejectionReason: text("rejection_reason"),
-  verifiedAt: text("verified_at"),
-  actualMonthlySavingsCents: integer("actual_monthly_savings_cents"),
-  supersedesRecommendationId: text("supersedes_recommendation_id"),
-});
+/**
+ * Sprint 5 (DEC-059): full recommendation discovery/lifecycle persistence.
+ * `identityKey` is the deterministic economic-opportunity identity (see
+ * `Recommendation.identityKey`'s doc comment) — the unique constraint below
+ * is what makes generation idempotent at the database level, mirroring
+ * DEC-023's `ProviderConnection` uniqueness pattern. `evidenceTransactionIds`
+ * and `decisionHistory` are JSON-encoded text, following the existing
+ * `SyncRun.errors`/`AIRequestLog.toolNames` convention (never a raw
+ * provider payload — see docs/RECOMMENDATIONS.md, "Evidence").
+ */
+export const recommendations = pgTable(
+  "recommendations",
+  {
+    id: text("id").primaryKey(),
+    financialProfileId: text("financial_profile_id")
+      .notNull()
+      .references(() => financialProfiles.id),
+    type: text("type").$type<RecommendationType>().notNull(),
+    identityKey: text("identity_key").notNull(),
+    title: text("title").notNull(),
+    description: text("description"),
+    evidenceNormalizedMerchant: text("evidence_normalized_merchant").notNull(),
+    evidenceCategory: text("evidence_category"),
+    evidenceCadence: text("evidence_cadence").$type<RecurrenceCadence>().notNull(),
+    evidenceObservedAmountCents: integer("evidence_observed_amount_cents").notNull(),
+    evidenceMonthlyEquivalentAmountCents: integer("evidence_monthly_equivalent_amount_cents"),
+    evidenceOccurrences: integer("evidence_occurrences").notNull(),
+    /** JSON-encoded `Id<"transaction">[]`. */
+    evidenceTransactionIds: text("evidence_transaction_ids").notNull(),
+    evidencePaymentSourceId: text("evidence_payment_source_id"),
+    evidenceConfidence: text("evidence_confidence").$type<RecurringCandidateConfidence>().notNull(),
+    projectedMonthlyImpactCents: integer("projected_monthly_impact_cents").notNull(),
+    projectedAnnualImpactCents: integer("projected_annual_impact_cents").notNull(),
+    status: text("status").$type<RecommendationStatus>().notNull(),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+    userTargetAmountCents: integer("user_target_amount_cents"),
+    effectiveDate: text("effective_date"),
+    rejectionReason: text("rejection_reason"),
+    lastVerificationAssessment: text("last_verification_assessment").$type<VerificationAssessment>(),
+    lastVerificationCheckedAt: text("last_verification_checked_at"),
+    /** JSON-encoded `RecommendationDecisionEvent[]` — append-only, never rewritten in place. */
+    decisionHistory: text("decision_history").notNull(),
+    supersedesRecommendationId: text("supersedes_recommendation_id"),
+  },
+  (table) => [unique().on(table.financialProfileId, table.identityKey)],
+);
 
 export const lifestyleScenarios = pgTable("lifestyle_scenarios", {
   id: text("id").primaryKey(),

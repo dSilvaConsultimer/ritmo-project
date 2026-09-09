@@ -2,6 +2,7 @@ export * from "./copilot/index";
 export * from "./db";
 export * from "./mutations";
 export * from "./queries";
+export * from "./recommendation-service";
 export * from "./sync";
 export * from "./webhook";
 export * from "./provider-registry";

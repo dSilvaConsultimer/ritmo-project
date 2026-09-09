@@ -98,12 +98,27 @@ categories, sign conventions, and reported balances are all translated into the 
 canonical model before anything is calculated — the provider never invents a financial number any
 more than an LLM would.
 
-## Out of scope for Sprint 1–4
+## Recommendation engine (Sprint 5)
 
-Real (non-sandbox) bank/credit card connections (live Pluggy sandbox validation itself remains
-pending — see `docs/PROJECT_STATE.md`), WhatsApp, a recommendation *discovery* engine (still model-
-only, Sprint 5), and a real-world venue/product/travel concierge (no restaurant/hotel/store search —
-Sprint 6). Sprint 4 adds conversational AI (OpenAI, via a provider-neutral abstraction that a future
-Anthropic provider could also implement) strictly as an interpretation/interface layer over the
-unchanged deterministic core — see [docs/AI-COPILOT.md](./AI-COPILOT.md) and
+Money Copilot proactively identifies realistic opportunities to improve the user's finances from
+their own real recurring spending — never a generic budgeting tip, never invented savings. V1 (Sprint
+5) covers confirmed/high-confidence recurring discretionary costs only (subscriptions, memberships,
+recurring digital services — e.g. "you have a ~R$59.90/month recurring subscription; canceling would
+free up ~R$59.90/month"). The user decides — ACCEPT, MODIFY (e.g. reduce to a stated amount instead
+of canceling), or REJECT — and later imported transactions determine whether the expected change
+actually happened (VERIFIED or FAILED), never an LLM judgment call. A `ProtectedPreference` (e.g. the
+Founder's real family-support commitment) can never become a cost-cutting recommendation, evaluated
+before anything else. Accepting a recommendation is intent, not confirmed savings — it never inflates
+current Safe-to-Spend. See [docs/RECOMMENDATIONS.md](./RECOMMENDATIONS.md) for the full architecture.
+
+## Out of scope for Sprint 1–5
+
+Real (non-sandbox) bank/credit card connections (technically eligible as of Sprint 4.5's passed
+validation, but gated on separate explicit Founder approval — see `docs/PROJECT_STATE.md`), WhatsApp,
+and a real-world venue/product/travel concierge (no restaurant/hotel/store search, no external
+merchant cancellation, no location-based search — Sprint 6). Sprint 4 added conversational AI (OpenAI,
+via a provider-neutral abstraction that a future Anthropic provider could also implement) strictly as
+an interpretation/interface layer over the unchanged deterministic core; Sprint 5 added the
+recommendation engine above using that same interpretation-only AI layer — see
+[docs/AI-COPILOT.md](./AI-COPILOT.md), [docs/RECOMMENDATIONS.md](./RECOMMENDATIONS.md), and
 [docs/ROADMAP.md](./ROADMAP.md).

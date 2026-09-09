@@ -1,13 +1,18 @@
 import { describe, expect, it } from "vitest";
+import { createId } from "@money-copilot/shared";
 import {
   buildFinancialSnapshot,
   compareLifestyles,
   currentLifestyleScenario,
+  fixtureProfile,
+  fromReais,
   getDailyGuidance,
   getSpendingEnvelope,
   independentLivingScenario,
   initialUserSnapshotInput,
+  type Recommendation,
 } from "@money-copilot/financial-engine";
+import type { RecommendationsSummary } from "../queries";
 import { extractFinancialFacts } from "./facts";
 
 /**
@@ -62,5 +67,89 @@ describe("extractFinancialFacts", () => {
 
   it("returns an empty array for a tool with no wired-up extractor, rather than guessing", () => {
     expect(extractFinancialFacts("someUnknownTool", {})).toEqual([]);
+  });
+
+  function buildRecommendation(overrides: Partial<Recommendation> = {}): Recommendation {
+    return {
+      id: createId("recommendation"),
+      financialProfileId: fixtureProfile.id,
+      type: "CANCEL_RECURRING_COST",
+      identityKey: `${fixtureProfile.id}:CANCEL_RECURRING_COST:NETFLIX:MONTHLY:3990:any`,
+      title: "Recurring subscription: NETFLIX",
+      evidence: {
+        normalizedMerchant: "NETFLIX",
+        category: "Entertainment",
+        cadence: "MONTHLY",
+        observedAmount: fromReais(39.9),
+        monthlyEquivalentAmount: fromReais(39.9),
+        occurrences: 3,
+        transactionIds: [],
+        confidence: "HIGH",
+      },
+      projectedMonthlyImpact: fromReais(39.9),
+      projectedAnnualImpact: fromReais(478.8),
+      status: "PENDING",
+      createdAt: "2026-09-01T00:00:00.000Z",
+      updatedAt: "2026-09-01T00:00:00.000Z",
+      decisionHistory: [],
+      ...overrides,
+    };
+  }
+
+  it("(Sprint 5, DEC-062) getRecommendationDetails/acceptRecommendation/modifyRecommendation/rejectRecommendation all expose observed amount + monthly/annual impact", () => {
+    const recommendation = buildRecommendation();
+    for (const toolName of [
+      "getRecommendationDetails",
+      "acceptRecommendation",
+      "modifyRecommendation",
+      "rejectRecommendation",
+    ]) {
+      const facts = extractFinancialFacts(toolName, recommendation);
+      const amounts = facts.map((f) => f.amountCents);
+      expect(amounts).toContain(recommendation.evidence.observedAmount.cents);
+      expect(amounts).toContain(recommendation.projectedMonthlyImpact.cents);
+      expect(amounts).toContain(recommendation.projectedAnnualImpact.cents);
+    }
+  });
+
+  it("(Sprint 5) a MODIFIED recommendation's user target amount is exposed as a fact", () => {
+    const recommendation = buildRecommendation({
+      type: "REDUCE_RECURRING_COST",
+      status: "MODIFIED",
+      userTargetAmount: fromReais(20),
+      projectedMonthlyImpact: fromReais(19.9),
+      projectedAnnualImpact: fromReais(238.8),
+    });
+    const facts = extractFinancialFacts("modifyRecommendation", recommendation);
+    expect(facts.map((f) => f.amountCents)).toContain(2000);
+  });
+
+  it("(Sprint 5) getRecommendations exposes every recommendation plus the three aggregate figures", () => {
+    const pendingRec = buildRecommendation();
+    const verifiedRec = buildRecommendation({
+      id: createId("recommendation"),
+      status: "VERIFIED",
+      title: "Recurring subscription: SPOTIFY",
+      evidence: { ...pendingRec.evidence, normalizedMerchant: "SPOTIFY" },
+      projectedMonthlyImpact: fromReais(19.9),
+      projectedAnnualImpact: fromReais(238.8),
+    });
+    const summary: RecommendationsSummary = {
+      pending: [pendingRec],
+      awaitingVerification: [],
+      verified: [verifiedRec],
+      failed: [],
+      rejected: [],
+      potentialMonthlySavingsCents: pendingRec.projectedMonthlyImpact.cents,
+      acceptedExpectedMonthlySavingsCents: 0,
+      verifiedMonthlySavingsCents: verifiedRec.projectedMonthlyImpact.cents,
+    };
+
+    const facts = extractFinancialFacts("getRecommendations", summary);
+    const amounts = facts.map((f) => f.amountCents);
+    expect(amounts).toContain(pendingRec.projectedMonthlyImpact.cents);
+    expect(amounts).toContain(verifiedRec.projectedMonthlyImpact.cents);
+    expect(amounts).toContain(summary.potentialMonthlySavingsCents);
+    expect(amounts).toContain(summary.verifiedMonthlySavingsCents);
   });
 });

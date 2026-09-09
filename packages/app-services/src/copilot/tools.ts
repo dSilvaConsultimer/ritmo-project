@@ -3,6 +3,7 @@ import { fromReais, replanAfterExpense } from "@money-copilot/financial-engine";
 import type { Database } from "@money-copilot/persistence";
 import * as queries from "../queries";
 import * as mutations from "../mutations";
+import * as recommendationService from "../recommendation-service";
 
 /**
  * The explicit, server-validated tool allowlist the AI may invoke. The
@@ -320,6 +321,98 @@ const replanAfterExpenseTool = tool({
   },
 });
 
+// ---------- Recommendations (Sprint 5) ----------
+
+const getRecommendationsTool = tool({
+  name: "getRecommendations",
+  description:
+    "Returns the user's financial recommendations grouped by status (pending, awaiting verification, verified, failed, rejected) plus aggregate potential/accepted/verified monthly savings. Use this for questions like 'is there anything I could cut?' or 'do I have a subscription that's weighing on me?'. Read-only — never mutates anything.",
+  kind: "READ",
+  schema: emptySchema,
+  execute: (ctx) => queries.getRecommendationsSummary(ctx.db, ctx.financialProfileId),
+});
+
+const getRecommendationDetailsSchema = z.object({
+  recommendationId: z.string().min(1).describe("The recommendation's id, obtained from a prior getRecommendations call."),
+});
+
+const getRecommendationDetailsTool = tool({
+  name: "getRecommendationDetails",
+  description:
+    "Returns one recommendation's full deterministic evidence (merchant, cadence, observed amount, occurrences, confidence) and impact — use this to answer 'why are you recommending this?' or 'how much would I save?'. Read-only.",
+  kind: "READ",
+  schema: getRecommendationDetailsSchema,
+  execute: (ctx, args) => queries.getRecommendationDetails(ctx.db, args.recommendationId),
+});
+
+const acceptRecommendationSchema = z.object({
+  recommendationId: z.string().min(1).describe("The recommendation's id, obtained from a prior getRecommendations call."),
+  effectiveDate: z
+    .string()
+    .describe("Only set this if the user explicitly stated a future start date (e.g. 'starting next month'). Null defaults to today — never guess a date the user didn't state.")
+    .nullable()
+    .default(null),
+});
+
+const acceptRecommendationTool = tool({
+  name: "acceptRecommendation",
+  description:
+    "Records that the user AGREES with a recommendation exactly as proposed (e.g. 'yes, cancel it' / 'pode aceitar'). This does NOT contact any merchant or perform an external cancellation — it only records the user's intent and schedules deterministic verification against future imported transactions. It also does NOT change current Safe-to-Spend. Only call this for a PENDING recommendation the user has just explicitly agreed to.",
+  kind: "MUTATION",
+  schema: acceptRecommendationSchema,
+  execute: (ctx, args) =>
+    recommendationService.acceptRecommendation(ctx.db, {
+      recommendationId: args.recommendationId,
+      ...(args.effectiveDate ? { effectiveDate: args.effectiveDate } : {}),
+    }),
+});
+
+const modifyRecommendationSchema = z.object({
+  recommendationId: z.string().min(1).describe("The recommendation's id, obtained from a prior getRecommendations call."),
+  targetAmountReais: z
+    .number()
+    .positive()
+    .describe("Only set this if the user stated a specific new target amount to reduce to (e.g. 'reduce it to R$30'). Never invent a lower price yourself — null if not stated.")
+    .nullable()
+    .default(null),
+  effectiveDate: z
+    .string()
+    .describe("Only set this if the user explicitly stated a different start date (e.g. 'only starting next month'). Null if not stated.")
+    .nullable()
+    .default(null),
+  note: z.string().nullable().default(null),
+});
+
+const modifyRecommendationTool = tool({
+  name: "modifyRecommendation",
+  description:
+    "Records that the user accepted the CONCEPT of a recommendation but changed an actionable detail — a reduction target amount and/or a delayed start date (e.g. 'I don't want to cancel it, but reduce it to R$30' or 'cancel it, but only next month'). Never invents a target amount or date the user didn't state. Does NOT change current Safe-to-Spend.",
+  kind: "MUTATION",
+  schema: modifyRecommendationSchema,
+  execute: (ctx, args) =>
+    recommendationService.modifyRecommendation(ctx.db, {
+      recommendationId: args.recommendationId,
+      ...(args.targetAmountReais !== null ? { targetAmount: fromReais(args.targetAmountReais) } : {}),
+      ...(args.effectiveDate ? { effectiveDate: args.effectiveDate } : {}),
+      ...(args.note ? { note: args.note } : {}),
+    }),
+});
+
+const rejectRecommendationSchema = z.object({
+  recommendationId: z.string().min(1).describe("The recommendation's id, obtained from a prior getRecommendations call."),
+  reason: z.string().nullable().default(null),
+});
+
+const rejectRecommendationTool = tool({
+  name: "rejectRecommendation",
+  description:
+    "Records that the user explicitly does NOT want this recommendation (e.g. 'don't touch that subscription' / 'não quero mexer nisso'). The same unchanged recommendation will not resurface later. Only call this for an explicit rejection, never for ambiguous or hypothetical language.",
+  kind: "MUTATION",
+  schema: rejectRecommendationSchema,
+  execute: (ctx, args) =>
+    recommendationService.rejectRecommendation(ctx.db, args.recommendationId, args.reason ?? undefined),
+});
+
 export const TOOL_REGISTRY: readonly ToolDefinition<never, unknown>[] = [
   getFinancialSnapshotTool,
   getSafeToSpendTool,
@@ -337,6 +430,11 @@ export const TOOL_REGISTRY: readonly ToolDefinition<never, unknown>[] = [
   createPlannedFinancialEventTool,
   updatePlannedFinancialEventTool,
   replanAfterExpenseTool,
+  getRecommendationsTool,
+  getRecommendationDetailsTool,
+  acceptRecommendationTool,
+  modifyRecommendationTool,
+  rejectRecommendationTool,
 ] as unknown as readonly ToolDefinition<never, unknown>[];
 
 export function findTool(name: string): ToolDefinition<unknown, unknown> | undefined {

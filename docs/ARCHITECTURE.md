@@ -108,12 +108,20 @@ into the financial engine." Full account: `docs/OPEN-FINANCE.md`.
 
 ```
 packages/app-services/src/
-  db.ts                Singleton getDb() — creates/migrates/seeds one PGlite instance per process
-  queries.ts           getFinancialSnapshot, getCategoryTotals, getConnections, etc. — plain reads
-  sync.ts              createConnectToken, completeConnection, syncConnection, refetchTransactionsByExternalId
-  webhook.ts           handleWebhookEvent — idempotent webhook dispatch
-  provider-registry.ts getProvider(name) — resolves "pluggy" | "mock" lazily
+  db.ts                     Singleton getDb() — creates/migrates/seeds one PGlite instance per process (globalThis-cached, DEC-052)
+  queries.ts                getFinancialSnapshot, getCategoryTotals, getConnections, getRecommendationsSummary, etc. — plain reads
+  sync.ts                   createConnectToken, completeConnection, syncConnection, refetchTransactionsByExternalId
+  recommendation-service.ts evaluateRecommendations, evaluateRecommendationVerifications, accept/modify/rejectRecommendation (Sprint 5)
+  webhook.ts                handleWebhookEvent — idempotent webhook dispatch
+  provider-registry.ts      getProvider(name) — resolves "pluggy" | "mock" lazily
 ```
+
+`recommendation-service.ts` is the Open-Finance-independent counterpart to `sync.ts` — it orchestrates
+the pure `@money-copilot/financial-engine` recommendation functions (candidate generation, impact,
+verification) against persisted state, exactly the same "application service" role `sync.ts` plays
+for provider data. `syncConnection` calls into it after every successful import (DEC-060); nothing in
+`recommendation-service.ts` imports `@money-copilot/open-finance` or knows about any specific
+provider. See `docs/RECOMMENDATIONS.md`.
 
 This is the boundary the Sprint 3 brief calls for: `UI -> application/query service ->
 repositories/read models -> financial engine`. `apps/web` never imports `@money-copilot/persistence`

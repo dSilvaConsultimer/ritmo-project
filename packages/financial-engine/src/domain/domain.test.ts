@@ -80,26 +80,52 @@ describe("recommendation model", () => {
   it("supports the full lifecycle of statuses", () => {
     const base: Recommendation = {
       id: createId("recommendation"),
+      financialProfileId: createId("financial-profile"),
+      type: "CANCEL_RECURRING_COST",
+      identityKey: "profile-1:CANCEL_RECURRING_COST:SUBSCRIPTION X:MONTHLY:4000:any",
       title: "Cancel subscription X",
-      estimatedMonthlySavings: M.fromReais(39.9),
+      evidence: {
+        normalizedMerchant: "SUBSCRIPTION X",
+        category: "Entertainment",
+        cadence: "MONTHLY",
+        observedAmount: M.fromReais(39.9),
+        monthlyEquivalentAmount: M.fromReais(39.9),
+        occurrences: 3,
+        transactionIds: [],
+        confidence: "HIGH",
+      },
+      projectedMonthlyImpact: M.fromReais(39.9),
+      projectedAnnualImpact: M.fromReais(478.8),
       status: "PENDING",
       createdAt: "2026-09-01",
+      updatedAt: "2026-09-01",
+      decisionHistory: [],
     };
 
-    const accepted: Recommendation = { ...base, status: "ACCEPTED", decidedAt: "2026-09-02" };
+    const accepted: Recommendation = {
+      ...base,
+      status: "ACCEPTED",
+      updatedAt: "2026-09-02",
+      decisionHistory: [{ status: "ACCEPTED", at: "2026-09-02" }],
+    };
     const verified: Recommendation = {
       ...accepted,
       status: "VERIFIED",
-      verification: { verifiedAt: "2026-10-01", actualMonthlySavings: M.fromReais(39.9) },
+      updatedAt: "2026-10-20",
+      lastVerificationAssessment: "CONFIRMED_SUCCESS",
+      lastVerificationCheckedAt: "2026-10-20",
+      decisionHistory: [...accepted.decisionHistory, { status: "VERIFIED", at: "2026-10-20" }],
     };
     const rejected: Recommendation = {
       ...base,
       status: "REJECTED",
       rejectionReason: "User wants to keep it",
+      decisionHistory: [{ status: "REJECTED", at: "2026-09-02", note: "User wants to keep it" }],
     };
 
     expect(accepted.status).toBe("ACCEPTED");
-    expect(verified.verification?.actualMonthlySavings.cents).toBe(3_990);
+    expect(verified.lastVerificationAssessment).toBe("CONFIRMED_SUCCESS");
+    expect(verified.decisionHistory).toHaveLength(2);
     expect(rejected.rejectionReason).toBeDefined();
   });
 });

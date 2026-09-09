@@ -153,6 +153,31 @@ occurrences with cadence, or 3+ without), or LOW. Every candidate carries an `ev
 reappearing; a materially different amount produces a different key and may resurface. Nothing is
 ever auto-declared `CONFIRMED` — a human decides.
 
+## Recommendation engine (Sprint 5)
+
+`packages/financial-engine/src/domain/recommendation*.ts` — see `docs/RECOMMENDATIONS.md` for the
+full architecture; summarized here for calculation detail.
+
+- `recommendation-generation.ts`'s `generateRecommendationCandidates` reuses
+  `detectRecurringCandidates` above unchanged, after filtering to `financialEffect === "CONSUMPTION"`,
+  categorized, non-protected (`preference.ts`'s `protectedCategories`), non-excluded-by-policy
+  transactions. `RecommendationType` is `CANCEL_RECURRING_COST` only for HIGH confidence + a
+  recognized cadence; otherwise `REVIEW_RECURRING_COST`.
+- `recommendation-cadence.ts` classifies an observed interval into `WEEKLY` (5–9 days), `MONTHLY`
+  (20–40 days — identical bounds to `recurring.ts`'s own "monthly" definition above), `YEARLY`
+  (340–390 days), or `UNKNOWN` (never guessed), and converts to a monthly-equivalent `Money` — `null`
+  for `UNKNOWN`.
+- `recommendation-impact.ts`'s `computeReductionImpact(current, target)` returns `null` (never a
+  zero/negative figure) when `target >= current`.
+- `recommendation-verification.ts`'s `assessVerification` is the deterministic replacement for "did
+  the cancellation/reduction actually happen" — never an LLM judgment. Returns one of `NOT_DUE` /
+  `INCONCLUSIVE` / `CONFIRMED_SUCCESS` / `CONFIRMED_FAILURE`, kept separate from
+  `RecommendationStatus` so insufficient evidence can never falsely resolve either way.
+- `Recommendation.identityKey` (built by `buildRecommendationIdentityKey`) is the deterministic
+  economic-opportunity identity that makes generation idempotent — see `docs/RECOMMENDATIONS.md`,
+  "Identity and idempotency," for why this single mechanism also implements suppression and
+  material-change resurfacing.
+
 ## Installments
 
 `packages/financial-engine/src/domain/installment.ts`

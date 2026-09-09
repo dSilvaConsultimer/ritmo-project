@@ -20,6 +20,8 @@ import type {
   ProviderConnection,
   SyncRun,
   CreditCardBill,
+  Recommendation,
+  RecommendationDecisionEvent,
 } from "@money-copilot/financial-engine";
 import { EMPTY_SYNC_RUN_METRICS } from "@money-copilot/financial-engine";
 import type { AIRequestLog, AIToolExecution, Conversation, ConversationMessage } from "@money-copilot/ai";
@@ -795,5 +797,83 @@ export function rowToAIRequest(row: AIRequestRow): AIRequestLog {
     ...(row.outputTokens !== null ? { outputTokens: row.outputTokens } : {}),
     ...(row.groundingStatus ? { groundingStatus: row.groundingStatus } : {}),
     ...(row.providerResponseId ? { providerResponseId: row.providerResponseId } : {}),
+  };
+}
+
+// ---------- Recommendation (Sprint 5) ----------
+
+type RecommendationRow = typeof schema.recommendations.$inferSelect;
+
+/** JSON-encoded, deterministic-only fields — never a raw provider payload. See docs/RECOMMENDATIONS.md, "Evidence." */
+export function recommendationToRow(r: Recommendation): typeof schema.recommendations.$inferInsert {
+  return {
+    id: r.id,
+    financialProfileId: r.financialProfileId,
+    type: r.type,
+    identityKey: r.identityKey,
+    title: r.title,
+    description: r.description ?? null,
+    evidenceNormalizedMerchant: r.evidence.normalizedMerchant,
+    evidenceCategory: r.evidence.category,
+    evidenceCadence: r.evidence.cadence,
+    evidenceObservedAmountCents: r.evidence.observedAmount.cents,
+    evidenceMonthlyEquivalentAmountCents: r.evidence.monthlyEquivalentAmount?.cents ?? null,
+    evidenceOccurrences: r.evidence.occurrences,
+    evidenceTransactionIds: JSON.stringify(r.evidence.transactionIds),
+    evidencePaymentSourceId: r.evidence.paymentSourceId ?? null,
+    evidenceConfidence: r.evidence.confidence,
+    projectedMonthlyImpactCents: r.projectedMonthlyImpact.cents,
+    projectedAnnualImpactCents: r.projectedAnnualImpact.cents,
+    status: r.status,
+    createdAt: r.createdAt,
+    updatedAt: r.updatedAt,
+    userTargetAmountCents: r.userTargetAmount?.cents ?? null,
+    effectiveDate: r.effectiveDate ?? null,
+    rejectionReason: r.rejectionReason ?? null,
+    lastVerificationAssessment: r.lastVerificationAssessment ?? null,
+    lastVerificationCheckedAt: r.lastVerificationCheckedAt ?? null,
+    decisionHistory: JSON.stringify(r.decisionHistory),
+    supersedesRecommendationId: r.supersedesRecommendationId ?? null,
+  };
+}
+
+export function rowToRecommendation(row: RecommendationRow): Recommendation {
+  return {
+    id: row.id as Id<"recommendation">,
+    financialProfileId: row.financialProfileId as Id<"financial-profile">,
+    type: row.type,
+    identityKey: row.identityKey,
+    title: row.title,
+    ...(row.description ? { description: row.description } : {}),
+    evidence: {
+      normalizedMerchant: row.evidenceNormalizedMerchant,
+      category: row.evidenceCategory,
+      cadence: row.evidenceCadence,
+      observedAmount: M.fromCents(row.evidenceObservedAmountCents),
+      monthlyEquivalentAmount:
+        row.evidenceMonthlyEquivalentAmountCents !== null
+          ? M.fromCents(row.evidenceMonthlyEquivalentAmountCents)
+          : null,
+      occurrences: row.evidenceOccurrences,
+      transactionIds: JSON.parse(row.evidenceTransactionIds) as Id<"transaction">[],
+      ...(row.evidencePaymentSourceId
+        ? { paymentSourceId: row.evidencePaymentSourceId as Id<"payment-source"> }
+        : {}),
+      confidence: row.evidenceConfidence,
+    },
+    projectedMonthlyImpact: M.fromCents(row.projectedMonthlyImpactCents),
+    projectedAnnualImpact: M.fromCents(row.projectedAnnualImpactCents),
+    status: row.status,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    ...(row.userTargetAmountCents !== null ? { userTargetAmount: M.fromCents(row.userTargetAmountCents) } : {}),
+    ...(row.effectiveDate ? { effectiveDate: row.effectiveDate } : {}),
+    ...(row.rejectionReason ? { rejectionReason: row.rejectionReason } : {}),
+    ...(row.lastVerificationAssessment ? { lastVerificationAssessment: row.lastVerificationAssessment } : {}),
+    ...(row.lastVerificationCheckedAt ? { lastVerificationCheckedAt: row.lastVerificationCheckedAt } : {}),
+    decisionHistory: JSON.parse(row.decisionHistory) as RecommendationDecisionEvent[],
+    ...(row.supersedesRecommendationId
+      ? { supersedesRecommendationId: row.supersedesRecommendationId as Id<"recommendation"> }
+      : {}),
   };
 }

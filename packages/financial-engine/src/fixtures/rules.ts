@@ -65,6 +65,27 @@ export const merchantNormalizationRules: readonly MerchantNormalizationRule[] = 
     normalizedMerchant: "RODEO INGRESSOS",
     priority: 100,
   },
+  // Sprint 5: real Pluggy sandbox data (Sprint 4.5 live validation)
+  // included recurring NETFLIX.COM/SPOTIFY AB charges with no matching
+  // rule, leaving them UNCATEGORIZED and therefore invisible to the
+  // recommendation engine's category-based eligibility check (RULE: never
+  // recommend against an uncategorized/ambiguous transaction). These are
+  // exactly the kind of "clearly recurring discretionary service" the
+  // Sprint 5 brief names as the primary V1 example.
+  {
+    id: "merchant-rule_fixture-netflix" as Id<"merchant-rule">,
+    matchType: "CONTAINS",
+    pattern: "NETFLIX",
+    normalizedMerchant: "NETFLIX",
+    priority: 100,
+  },
+  {
+    id: "merchant-rule_fixture-spotify" as Id<"merchant-rule">,
+    matchType: "CONTAINS",
+    pattern: "SPOTIFY",
+    normalizedMerchant: "SPOTIFY",
+    priority: 100,
+  },
   // Deliberately NO rule for "PAGSEGURO" — it demonstrates a transaction
   // that stays UNCATEGORIZED rather than being guessed at (see RULE:
   // "do not guess aggressively").
@@ -127,6 +148,22 @@ export const categoryRules: readonly CategoryRule[] = [
     matchType: "CONTAINS_MERCHANT",
     pattern: "RODEO",
     category: "Entertainment",
+    priority: 100,
+  },
+  {
+    id: "category-rule_fixture-netflix" as Id<"category-rule">,
+    matchType: "CONTAINS_MERCHANT",
+    pattern: "NETFLIX",
+    category: "Entertainment",
+    subcategory: "Streaming",
+    priority: 100,
+  },
+  {
+    id: "category-rule_fixture-spotify" as Id<"category-rule">,
+    matchType: "CONTAINS_MERCHANT",
+    pattern: "SPOTIFY",
+    category: "Entertainment",
+    subcategory: "Streaming",
     priority: 100,
   },
   // No rule matches "PAGSEGURO" — it stays UNCATEGORIZED.

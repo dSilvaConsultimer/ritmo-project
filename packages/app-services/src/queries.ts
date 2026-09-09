@@ -1,4 +1,5 @@
 import type { Id } from "@money-copilot/shared";
+import type { Recommendation } from "@money-copilot/financial-engine";
 import {
   buildFinancialSnapshot,
   buildFinancialPositionFromAccounts,
@@ -385,4 +386,61 @@ export async function getRecentSpendingSummaryForProfile(
     total: relevant.length > 0 ? sum(relevant.map((t) => t.amount)) : ZERO,
     byCategory: monthlyCategoryTotals(relevant, input.reconciliationLinks, asOfDate),
   };
+}
+
+// ---------- Recommendations (Sprint 5) ----------
+
+export interface RecommendationsSummary {
+  readonly pending: readonly Recommendation[];
+  readonly awaitingVerification: readonly Recommendation[];
+  readonly verified: readonly Recommendation[];
+  readonly failed: readonly Recommendation[];
+  readonly rejected: readonly Recommendation[];
+  /**
+   * Sum of PENDING `CANCEL_RECURRING_COST`/`REDUCE_RECURRING_COST`
+   * `projectedMonthlyImpact` — deliberately EXCLUDES `REVIEW_RECURRING_COST`
+   * (never a guaranteed saving, RULE section 3) and anything already
+   * decided. A wholly distinct concept from Safe-to-Spend — see
+   * docs/RECOMMENDATIONS.md, "Safe-to-Spend separation": accepting a
+   * recommendation NEVER moves money from here into actual spendable cash.
+   */
+  readonly potentialMonthlySavingsCents: number;
+  /** Sum of ACCEPTED/MODIFIED `projectedMonthlyImpact` — the user's stated intent, not yet confirmed by evidence. */
+  readonly acceptedExpectedMonthlySavingsCents: number;
+  /** Sum of VERIFIED `projectedMonthlyImpact` — the only figure backed by confirmed financial evidence. */
+  readonly verifiedMonthlySavingsCents: number;
+}
+
+export async function getRecommendationsSummary(
+  db: Database,
+  financialProfileId: string,
+): Promise<RecommendationsSummary> {
+  const all = await repo.listRecommendationsForProfile(db, financialProfileId);
+
+  const pending = all.filter((r) => r.status === "PENDING");
+  const awaitingVerification = all.filter((r) => r.status === "ACCEPTED" || r.status === "MODIFIED");
+  const verified = all.filter((r) => r.status === "VERIFIED");
+  const failed = all.filter((r) => r.status === "FAILED");
+  const rejected = all.filter((r) => r.status === "REJECTED");
+
+  const centsSum = (recs: readonly Recommendation[]): number =>
+    recs.reduce((total, r) => total + r.projectedMonthlyImpact.cents, 0);
+
+  return {
+    pending,
+    awaitingVerification,
+    verified,
+    failed,
+    rejected,
+    potentialMonthlySavingsCents: centsSum(pending.filter((r) => r.type !== "REVIEW_RECURRING_COST")),
+    acceptedExpectedMonthlySavingsCents: centsSum(awaitingVerification),
+    verifiedMonthlySavingsCents: centsSum(verified),
+  };
+}
+
+export async function getRecommendationDetails(
+  db: Database,
+  recommendationId: string,
+): Promise<Recommendation | undefined> {
+  return repo.getRecommendationById(db, recommendationId);
 }

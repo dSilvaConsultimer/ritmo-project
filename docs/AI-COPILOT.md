@@ -131,21 +131,23 @@ never a secret, never a full banking payload.
 ## Application tool layer — the allowlist
 
 The LLM never queries Drizzle or calls `financial-engine` internals directly. Its only capability is
-calling one of the 16 named tools in `packages/app-services/src/copilot/tools.ts`, each with a
-strict Zod argument schema, a `kind` (`READ` or `MUTATION`), and an `execute(ctx, args)` bound to an
-`app-services` function. `findTool(name)` returns `undefined` for anything not in this list — the
-orchestrator records that as an `INVALID_ARGUMENTS` execution and tells the model "Unknown tool,"
-never silently ignoring or crashing.
+calling one of the 21 named tools in `packages/app-services/src/copilot/tools.ts` (16 from Sprint 4,
+5 added in Sprint 5), each with a strict Zod argument schema, a `kind` (`READ` or `MUTATION`), and an
+`execute(ctx, args)` bound to an `app-services` function. `findTool(name)` returns `undefined` for
+anything not in this list — the orchestrator records that as an `INVALID_ARGUMENTS` execution and
+tells the model "Unknown tool," never silently ignoring or crashing.
 
 **READ / SIMULATION tools** (execute unconditionally — they never persist anything):
 `getFinancialSnapshot`, `getSafeToSpend`, `getSafeToSpendBreakdown`, `getFinancialPosition`,
 `getLifestyleComparison`, `getGoalStatus`, `getSpendingEnvelope`, `getDailyGuidance`,
 `simulateExpense`, `getUpcomingFinancialEvents`, `getCategoryBudgetStatus`,
-`getRecentSpendingSummary`.
+`getRecentSpendingSummary`, `getRecommendations`, `getRecommendationDetails` (Sprint 5).
 
 **MUTATION tools** (additionally gated by the explicit mutation policy below):
 `recordManualTransaction`, `createPlannedFinancialEvent`, `updatePlannedFinancialEvent`,
-`replanAfterExpense`.
+`replanAfterExpense`, `acceptRecommendation`, `modifyRecommendation`, `rejectRecommendation`
+(Sprint 5). See `docs/RECOMMENDATIONS.md`, "AI tools and grounding," for the recommendation-specific
+tools' exact semantics — none of them contact any external merchant.
 
 Tool arguments are expressed in human units the model naturally produces (`amountReais: 500` for
 R$500.00), converted to integer-cent `Money` inside `execute()` via `fromReais` — the model never
@@ -169,6 +171,15 @@ the assistant can tell the user nothing was recorded.
 hypothetical). Portuguese frequently drops the subject pronoun ("Poderia reservar...?" means "Could
 [I] reserve...?" with no "eu") — patterns match the verb alone rather than requiring "eu poderia"/
 "poderia eu", a real nuance discovered while writing the PT-BR test cases in `mutation-guard.test.ts`.
+
+**Recommendation decisions (Sprint 5, DEC-064):** a brand-new domain has its own decision vocabulary
+that the Sprint 4 patterns (tuned for recording an expense) did not cover at all — found while
+building this sprint's own tests: neither "Pode aceitar essa recomendação." nor "Não quero mexer
+nessa assinatura." (both straight from the brief's own examples) were recognized as explicit.
+Extended both English and Portuguese `EXPLICIT_ACTION_PATTERNS` with accept/modify/reject language
+("pode aceitar", "aceito", "quero cancelar", "quero reduzir", "não quero", "rejeito" / "accept it",
+"i accept", "go ahead", "i don't want this", "reject it", "i reject"), verified against zero
+collisions with the existing hypothetical patterns.
 
 ## `getSpendingEnvelope` and daily guidance
 
@@ -220,6 +231,12 @@ the orchestrator replaces the draft text with `buildFallbackResponseText(facts)`
 template-rendered list of the facts actually available — and adds a warning. This is deliberately
 narrow (regex-based currency extraction, not general NL verification) — see NON-NEGOTIABLE (Sprint 4):
 "do not over-engineer general NL verification, protect only important monetary values."
+
+**Sprint 5:** `recommendationFacts(recommendation, sourceTool)` extends this coverage to every
+recommendation tool — observed amount, monthly-equivalent amount, projected monthly/annual impact, a
+MODIFIED user target — added proactively (DEC-062), not discovered live, per the Sprint 4.5 lesson
+that a correct-but-ungrounded tool result is still a product bug. See `docs/RECOMMENDATIONS.md`, "AI
+tools and grounding."
 
 ## Structured assistant response
 

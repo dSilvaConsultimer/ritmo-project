@@ -59,6 +59,21 @@ const EXPLICIT_ACTION_PATTERNS: readonly RegExp[] = [
   /\bconfirm(o|ado|a|ar|ei)\b/i,
   /\bdefinitivamente\b/i,
   /\bdefin(a|e|ir|i)\s+(o\s+)?or[çc]amento\b/i,
+  // Sprint 5: recommendation decisions (accept/modify/reject) — English
+  /\baccept it\b/i,
+  /\bi accept\b/i,
+  /\bgo ahead\b/i,
+  /\bi (don'?t|do not) want (this|it)\b/i,
+  /\breject (it|this)\b/i,
+  /\bi reject\b/i,
+  // Português (PT-BR)
+  /\bpode aceitar\b/i,
+  /\baceito\b/i,
+  /\bquero aceitar\b/i,
+  /\bquero cancelar\b/i,
+  /\bquero reduzir\b/i,
+  /\bn[ãa]o quero\b/i,
+  /\brejeito\b/i,
 ];
 
 /** True when the text contains a hypothetical/exploratory marker — a strong signal the message is NOT reporting a completed or decided action. */

@@ -1,4 +1,4 @@
-import type { FinancialConfidence, FinancialSnapshot } from "@money-copilot/financial-engine";
+import type { FinancialConfidence, FinancialSnapshot, Recommendation } from "@money-copilot/financial-engine";
 import type {
   CategoryBudgetStatus,
   DailyGuidance,
@@ -9,7 +9,7 @@ import type {
   SafeToSpend,
   SpendingEnvelope,
 } from "@money-copilot/financial-engine";
-import type { UpcomingFinancialEvent } from "../queries";
+import type { RecommendationsSummary, UpcomingFinancialEvent } from "../queries";
 
 /**
  * A single deterministic monetary fact, always traceable back to the tool
@@ -29,7 +29,12 @@ export type FinancialFactSemanticType =
   | "INCOME"
   | "COMMITMENT"
   | "DISCRETIONARY_CASH"
-  | "FUTURE_COMMITMENT";
+  | "FUTURE_COMMITMENT"
+  | "RECOMMENDATION_OBSERVED_AMOUNT"
+  | "RECOMMENDATION_MONTHLY_IMPACT"
+  | "RECOMMENDATION_ANNUAL_IMPACT"
+  | "RECOMMENDATION_TARGET_AMOUNT"
+  | "RECOMMENDATION_AGGREGATE";
 
 export interface FinancialFact {
   readonly label: string;
@@ -144,6 +149,64 @@ function financialSnapshotFacts(
       certainty: snapshot.confidence,
       sourceTool,
       semanticType: "SAFE_TO_SPEND",
+    });
+  }
+
+  return facts;
+}
+
+/**
+ * Every monetary figure ONE `Recommendation` carries — shared by
+ * `getRecommendations` (one call per recommendation in the summary),
+ * `getRecommendationDetails`, and the three decision tools (whose result IS
+ * the updated `Recommendation`). Sprint 5 (DEC-062): added specifically
+ * because the Sprint 4.5 lesson (a correct tool result not exposed to
+ * grounding is still a product bug) applies just as much to a brand-new
+ * domain as it did to `getLifestyleComparison` — every one of these fields
+ * (current recurring amount, monthly/annual impact, a MODIFIED target) is
+ * exactly the kind of number a live model will naturally cite.
+ */
+function recommendationFacts(r: Recommendation, sourceTool: string): FinancialFact[] {
+  const facts: FinancialFact[] = [
+    {
+      label: `${r.title}: observed amount`,
+      amountCents: r.evidence.observedAmount.cents,
+      certainty: "HIGH",
+      sourceTool,
+      semanticType: "RECOMMENDATION_OBSERVED_AMOUNT",
+    },
+    {
+      label: `${r.title}: projected monthly impact`,
+      amountCents: r.projectedMonthlyImpact.cents,
+      certainty: "HIGH",
+      sourceTool,
+      semanticType: "RECOMMENDATION_MONTHLY_IMPACT",
+    },
+    {
+      label: `${r.title}: projected annual impact`,
+      amountCents: r.projectedAnnualImpact.cents,
+      certainty: "HIGH",
+      sourceTool,
+      semanticType: "RECOMMENDATION_ANNUAL_IMPACT",
+    },
+  ];
+
+  if (r.evidence.monthlyEquivalentAmount) {
+    facts.push({
+      label: `${r.title}: monthly-equivalent amount`,
+      amountCents: r.evidence.monthlyEquivalentAmount.cents,
+      certainty: "HIGH",
+      sourceTool,
+      semanticType: "RECOMMENDATION_OBSERVED_AMOUNT",
+    });
+  }
+  if (r.userTargetAmount) {
+    facts.push({
+      label: `${r.title}: user target amount`,
+      amountCents: r.userTargetAmount.cents,
+      certainty: "HIGH",
+      sourceTool,
+      semanticType: "RECOMMENDATION_TARGET_AMOUNT",
     });
   }
 
@@ -351,6 +414,41 @@ export function extractFinancialFacts(toolName: string, result: unknown): Financ
           semanticType: "PROJECTED_SAVINGS",
         },
       ];
+    }
+    case "getRecommendations": {
+      const r = result as RecommendationsSummary;
+      const all = [...r.pending, ...r.awaitingVerification, ...r.verified, ...r.failed, ...r.rejected];
+      return [
+        ...all.flatMap((rec) => recommendationFacts(rec, toolName)),
+        {
+          label: "Potential monthly savings (pending, not yet decided)",
+          amountCents: r.potentialMonthlySavingsCents,
+          certainty: "HIGH",
+          sourceTool: toolName,
+          semanticType: "RECOMMENDATION_AGGREGATE",
+        },
+        {
+          label: "Accepted/modified expected monthly savings (not yet verified)",
+          amountCents: r.acceptedExpectedMonthlySavingsCents,
+          certainty: "HIGH",
+          sourceTool: toolName,
+          semanticType: "RECOMMENDATION_AGGREGATE",
+        },
+        {
+          label: "Verified monthly savings (confirmed by financial evidence)",
+          amountCents: r.verifiedMonthlySavingsCents,
+          certainty: "HIGH",
+          sourceTool: toolName,
+          semanticType: "RECOMMENDATION_AGGREGATE",
+        },
+      ];
+    }
+    case "getRecommendationDetails":
+    case "acceptRecommendation":
+    case "modifyRecommendation":
+    case "rejectRecommendation": {
+      if (!result) return [];
+      return recommendationFacts(result as Recommendation, toolName);
     }
     default:
       return [];

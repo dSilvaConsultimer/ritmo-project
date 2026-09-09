@@ -11,10 +11,16 @@ import {
   getLifestyleComparison,
   getConnections,
   getLatestSyncRunForConnection,
+  getRecommendationsSummary,
+  evaluateRecommendations,
+  evaluateRecommendationVerifications,
   DEMO_PROFILE_ID,
+  type RecommendationsSummary,
 } from "@money-copilot/app-services";
+import { toReais, type Recommendation } from "@money-copilot/financial-engine";
 import { ConnectedAccountsPanel } from "./components/ConnectedAccountsPanel";
 import { ChatPanel } from "./components/ChatPanel";
+import { RecommendationsPanel, type RecommendationsData, type RecommendationSummaryItem } from "./components/RecommendationsPanel";
 import { warningKey } from "./lib/warning-key";
 
 // This page reads live, DB-backed data (connections, synced transactions,
@@ -196,8 +202,47 @@ function LifestyleSection({ comparison }: { comparison: LifestyleComparisonResul
   );
 }
 
+function recommendationItemFromDomain(r: Recommendation): RecommendationSummaryItem {
+  return {
+    id: r.id,
+    title: r.title,
+    ...(r.description ? { description: r.description } : {}),
+    type: r.type,
+    status: r.status,
+    evidence: {
+      normalizedMerchant: r.evidence.normalizedMerchant,
+      cadence: r.evidence.cadence,
+      observedAmountReais: toReais(r.evidence.observedAmount),
+      occurrences: r.evidence.occurrences,
+      confidence: r.evidence.confidence,
+    },
+    projectedMonthlyImpactReais: toReais(r.projectedMonthlyImpact),
+    projectedAnnualImpactReais: toReais(r.projectedAnnualImpact),
+    ...(r.lastVerificationAssessment ? { lastVerificationAssessment: r.lastVerificationAssessment } : {}),
+  };
+}
+
+function recommendationsDataFromSummary(summary: RecommendationsSummary): RecommendationsData {
+  return {
+    pending: summary.pending.map(recommendationItemFromDomain),
+    awaitingVerification: summary.awaitingVerification.map(recommendationItemFromDomain),
+    verified: summary.verified.map(recommendationItemFromDomain),
+    failed: summary.failed.map(recommendationItemFromDomain),
+    rejected: summary.rejected.map(recommendationItemFromDomain),
+    potentialMonthlySavingsReais: summary.potentialMonthlySavingsCents / 100,
+    acceptedExpectedMonthlySavingsReais: summary.acceptedExpectedMonthlySavingsCents / 100,
+    verifiedMonthlySavingsReais: summary.verifiedMonthlySavingsCents / 100,
+  };
+}
+
 export default async function HomePage() {
   const db = await getDb();
+
+  // Sprint 5: cheap, deterministic, and idempotent — safe to re-run on
+  // every page load rather than requiring a separate manual trigger. See
+  // docs/RECOMMENDATIONS.md, "Sync integration."
+  await evaluateRecommendations(db, DEMO_PROFILE_ID, ASOF_DATE);
+  await evaluateRecommendationVerifications(db, DEMO_PROFILE_ID, ASOF_DATE);
 
   const [
     snapshot,
@@ -208,6 +253,7 @@ export default async function HomePage() {
     pendingReconciliation,
     comparison,
     connections,
+    recommendationsSummary,
   ] = await Promise.all([
     getFinancialSnapshot(db, DEMO_PROFILE_ID, ASOF_DATE),
     getTransactions(db, DEMO_PROFILE_ID, ASOF_DATE),
@@ -217,11 +263,13 @@ export default async function HomePage() {
     getReconciliationCandidates(db, DEMO_PROFILE_ID, ASOF_DATE),
     getLifestyleComparison(db, DEMO_PROFILE_ID, ASOF_DATE),
     getConnections(db, DEMO_PROFILE_ID),
+    getRecommendationsSummary(db, DEMO_PROFILE_ID),
   ]);
 
   const latestSync = connections[0] ? await getLatestSyncRunForConnection(db, connections[0].id) : undefined;
   const future = snapshot.futureInstallmentCommitments;
   const isDemoMode = connections.length === 0;
+  const recommendationsData = recommendationsDataFromSummary(recommendationsSummary);
 
   return (
     <main style={{ maxWidth: 1040, margin: "0 auto", padding: "32px 20px 64px" }}>
@@ -454,8 +502,13 @@ export default async function HomePage() {
 
       <LifestyleSection comparison={comparison} />
 
+      <section style={sectionStyle}>
+        <h2 style={sectionTitleStyle}>10. Recommendations</h2>
+        <RecommendationsPanel data={recommendationsData} />
+      </section>
+
       <section>
-        <h2 style={sectionTitleStyle}>10. Data Confidence / Warnings</h2>
+        <h2 style={sectionTitleStyle}>11. Data Confidence / Warnings</h2>
         <Warnings warnings={snapshot.warnings} />
       </section>
     </main>

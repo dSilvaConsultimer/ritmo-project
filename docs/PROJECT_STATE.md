@@ -2,19 +2,21 @@
 
 **This file is the canonical persistent project memory.** Before every future sprint, read this
 file, plus `docs/PRODUCT.md`, `docs/ARCHITECTURE.md`, `docs/FINANCIAL-ENGINE.md`,
-`docs/ROADMAP.md`, and `docs/DECISIONS.md` (and, from Sprint 3 on, `docs/OPEN-FINANCE.md` for
-provider-integration detail), in that order. This documentation is more authoritative than
-assumptions carried over from a chat session. If a new request conflicts with a rule documented here:
-identify the conflict, explain the existing rule, do not silently change it, implement the new
-behavior only if it clearly supersedes the old decision, and record the change in
-`docs/DECISIONS.md` (mark the old decision superseded, add a new one — never rewrite history).
+`docs/ROADMAP.md`, and `docs/DECISIONS.md` (`docs/OPEN-FINANCE.md` from Sprint 3 on for
+provider-integration detail, `docs/AI-COPILOT.md` from Sprint 4 on for the AI copilot layer, and
+`docs/RECOMMENDATIONS.md` from Sprint 5 on for the recommendation engine), in that order. This
+documentation is more authoritative than assumptions carried over from a chat session. If a new
+request conflicts with a rule documented here: identify the conflict, explain the existing rule, do
+not silently change it, implement the new behavior only if it clearly supersedes the old decision,
+and record the change in `docs/DECISIONS.md` (mark the old decision superseded, add a new one — never
+rewrite history).
 
-Last updated: **2026-09-09, Sprint 4.5 FULLY CLOSED.** Both external validations PASSED: Pluggy live
-sandbox validation APPROVED by the Founder; live OpenAI PT-BR validation PASSED (7/7 scenarios,
-confirmed stable across 3 live runs) once the Founder confirmed OpenAI organization prepaid credit was
-available — see "Integration status." `REAL_PERSONAL_FINANCIAL_DATA_ALLOWED` remains
-`TRUE_PENDING_FOUNDER_APPROVAL` (technical eligibility only — see rule 20 below); Product's prior
-recommendation to wait for OpenAI validation before real-data approval has now been satisfied.
+Last updated: **2026-09-09, Sprint 5 complete.** Deterministic recommendation engine (discovery,
+ACCEPT/MODIFY/REJECT/VERIFIED/FAILED lifecycle, idempotent identity-based suppression, Safe-to-Spend
+separation, AI tools + grounding) — see `docs/RECOMMENDATIONS.md` and `docs/DECISIONS.md` DEC-056
+through DEC-064. Sprint 4.5 (both external validations PASSED) remains fully closed;
+`REAL_PERSONAL_FINANCIAL_DATA_ALLOWED` remains `TRUE_PENDING_FOUNDER_APPROVAL` — Sprint 5 did not
+change the release gate and did not connect any real institution.
 
 ---
 
@@ -37,12 +39,16 @@ recommendation to wait for OpenAI validation before real-data approval has now b
    (Sprint 3) incomplete account **coverage** (a subset of connected accounts is never presented as
    the user's complete financial picture).
 10. Accepted future recommendations must eventually be verifiable against imported financial data.
-    Real imported data now exists (Sprint 3) but no recommendation-discovery engine does yet (Sprint
-    5) — this rule remains modeled, not operational.
+    **Fully operational as of Sprint 5** — `assessVerification` deterministically confirms or
+    disconfirms an ACCEPTED/MODIFIED recommendation against real imported transactions, with a
+    separate `VerificationAssessment` ensuring insufficient evidence never falsely resolves either
+    way. See `docs/RECOMMENDATIONS.md`, "Verification."
 11. Rejected recommendations should not repeatedly return unless material context changes — the same
     principle governs rejected recurring-expense candidates (Sprint 2) and, in spirit, old-debt
     installment match candidates (Sprint 3, which are never even auto-confirmed in the first place —
-    see rule 9-adjacent DEC-032).
+    see rule 9-adjacent DEC-032). **Fully operational as of Sprint 5** for actual recommendations:
+    `Recommendation.identityKey` is the single mechanism providing both suppression and
+    material-change resurfacing — see `docs/RECOMMENDATIONS.md`, "Identity and idempotency."
 12. Manual transactions and later Open Finance imported transactions must eventually support
     deduplication. **Fully implemented and exercised against real-provider-shaped data in Sprint 3**
     — see `docs/OPEN-FINANCE.md`, "Manual + provider reconciliation."
@@ -80,6 +86,12 @@ recommendation to wait for OpenAI validation before real-data approval has now b
     the user's own input.** An amount the model invents and cannot be traced is never silently shown
     as financial truth — `groundResponseText` enforces this, falling back to a deterministic template
     on failure.
+23. **(Sprint 5) The LLM never invents a recommendation's eligibility, recurring amount, monthly/
+    annual impact, effective date, transaction evidence, or verification result.** Every recommendation
+    is discovered, calculated, and verified by `packages/financial-engine`; a MODIFY's target amount
+    must be the user's own explicit figure, never a lower price the model suggests on its own.
+    Accepting/modifying a recommendation never inflates current Safe-to-Spend — see
+    `docs/RECOMMENDATIONS.md`.
 
 These are enforced today by: `Money` (rule 3), `PaymentSource`/`FinancialEffect` +
 `pluggy/mappers.ts`'s direction-from-`type`-not-sign mapping (rule 4, 18), `FixedExpense.protected` +
@@ -110,30 +122,101 @@ abstraction + Pluggy adapter + MockProvider), and `packages/persistence` (Drizzl
 `packages/financial-engine` (zero framework/database/provider/AI dependencies, the priority package)
 → `packages/shared` (generic `Id`/id-generation only). Full detail: `docs/ARCHITECTURE.md`.
 Calculation detail: `docs/FINANCIAL-ENGINE.md`. Provider integration detail: `docs/OPEN-FINANCE.md`.
-AI copilot detail: `docs/AI-COPILOT.md`.
+AI copilot detail: `docs/AI-COPILOT.md`. Recommendation engine detail: `docs/RECOMMENDATIONS.md`.
 
 ## Current sprint
 
-**Sprint 4.5 — external-validation + PT-BR hardening pass on top of Sprint 4. FULLY CLOSED.** Both
-Pluggy and OpenAI portions APPROVED/PASSED. Real credentials were used throughout — eight real,
-previously-untested bugs were found and fixed live (not simulated): an OpenAI strict-schema bug
-(DEC-043), a fixture-id-stability bug that also caused a real React rendering error (DEC-047, DEC-049
-— two rounds), a bill-deduplication bug (DEC-048), a connection-recovery architectural gap (DEC-046),
-a connection-deletion capability gap (DEC-050), a Next.js RSC/Route-Handler database-singleton
-divergence bug (DEC-052) that made a real, successfully-persisted connection invisible on the
-dashboard until fixed, and a grounding-coverage gap (DEC-055) that made several entirely-correct live
-model answers look unsupported because their underlying tools' monetary fields had never been wired
-into `extractFinancialFacts`. A read-only diagnostic endpoint (`GET /api/debug/counts`,
+**Sprint 5 — Recommendation engine with ACCEPT / MODIFY / REJECT / VERIFIED / FAILED lifecycle.
+COMPLETE.** Extended (not replaced) Sprint 1's `Recommendation` data model into a full deterministic
+discovery/decision/verification system: candidate generation from confirmed recurring discretionary
+spending (reusing `detectRecurringCandidates` unchanged), `ProtectedPreference` evaluated before
+anything else, a centralized `RecommendationPolicy` (no hidden magic numbers), a single
+`identityKey`-based mechanism that provides idempotency AND suppression AND material-change
+resurfacing all at once, an append-only decision history, a `VerificationAssessment` kept separate
+from lifecycle `status` so insufficient evidence never falsely resolves to VERIFIED/FAILED, full
+Safe-to-Spend separation (accepting a recommendation never inflates current spendable cash), a UI
+panel, and 5 new AI tools with complete grounding coverage. Found and fixed 4 real bugs along the way
+(DEC-061 verification date-parsing bug, DEC-063 Netflix/Spotify left uncategorized, DEC-064
+mutation-guard missing recommendation-decision language, plus the DEC-056 domain-model refactor
+itself). See `docs/RECOMMENDATIONS.md` for the full architecture and `docs/DECISIONS.md` DEC-056
+through DEC-064.
+
+**Sprint 4.5 — external-validation + PT-BR hardening pass on top of Sprint 4. FULLY CLOSED** (both
+Pluggy and OpenAI portions APPROVED/PASSED; unchanged by Sprint 5). Eight real, previously-untested
+bugs were found and fixed live: an OpenAI strict-schema bug (DEC-043), a fixture-id-stability bug
+that also caused a real React rendering error (DEC-047, DEC-049 — two rounds), a bill-deduplication
+bug (DEC-048), a connection-recovery architectural gap (DEC-046), a connection-deletion capability
+gap (DEC-050), a Next.js RSC/Route-Handler database-singleton divergence bug (DEC-052), and a
+grounding-coverage gap (DEC-055). A read-only diagnostic endpoint (`GET /api/debug/counts`,
 dev-only-gated, DEC-053) was added specifically to let live validation inspect entity counts and
 payment-source identities through the running application itself rather than a second process against
 the file-backed PGlite database (forbidden — DEC-051). Both Safe-to-Spend numbers now in play — the
 permanent fixture-only regression (BRL 2,171.11) and the live sandbox-connected runtime figure
-(BRL 1,293.01) — are formally distinguished and reconciled component-by-component in DEC-054, so a
-future session never mistakes one for a bug in the other. See the Sprint 4.5 final report delivered to
-the founder for the full account; this file carries forward only what a
-future sprint needs to know.
+(BRL 1,293.01) — are formally distinguished and reconciled component-by-component in DEC-054. See the
+Sprint 4.5 final report delivered to the founder for the full account.
 
 ## Completed capabilities
+
+**New in Sprint 5** (see `docs/DECISIONS.md` DEC-056–064 and `docs/RECOMMENDATIONS.md` for the full
+account):
+
+- **Deterministic recommendation candidate generation** (`generateRecommendationCandidates`,
+  `packages/financial-engine/src/domain/recommendation-generation.ts`): reuses
+  `detectRecurringCandidates` unchanged; a transaction is eligible only when `financialEffect ===
+  "CONSUMPTION"`, categorized, not in a protected category, and not in the policy's default-excluded
+  category list. `CANCEL_RECURRING_COST` only for HIGH confidence + a recognized cadence;
+  everything else real becomes `REVIEW_RECURRING_COST` (never framed as guaranteed savings).
+- **`ProtectedPreference` evaluated first, generically** (`protectedCategories`,
+  `packages/financial-engine/src/domain/preference.ts`): resolves both `CATEGORY`-scoped and
+  `EXPENSE`-scoped preferences to a category set, checked before any other filter. Regression-tested
+  against the Founder's real family-support fixture with a transaction constructed to pass every
+  OTHER filter, proving category protection works on its own.
+- **`RecommendationPolicy`** (`recommendation-policy.ts`): every threshold (confidence minimums,
+  evidence count, eligible financial effects, excluded categories, identity amount-bucket width,
+  verification grace period, sync-staleness tolerance, reduction amount tolerance) centralized, named,
+  documented, and passed as a plain parameter — never a scattered magic number.
+- **Cadence-normalized impact calculation** (`recommendation-cadence.ts`, `recommendation-impact.ts`):
+  `WEEKLY`/`MONTHLY`/`YEARLY`/`UNKNOWN` classification; a weekly/yearly charge is never multiplied as
+  if monthly; `UNKNOWN` cadence never produces a monthly-equivalent figure at all.
+  `computeReductionImpact` returns `null` (never zero/negative) when a target isn't actually less
+  than the current amount.
+- **One identity mechanism = idempotency + suppression + material-change resurfacing**
+  (`Recommendation.identityKey`, unique per profile at the DB level, mirroring DEC-023's
+  `ProviderConnection` pattern): repeated generation over unchanged data never duplicates a row; a
+  REJECTED recommendation's identity never gets a new PENDING sibling (suppression); a genuinely
+  different opportunity (price/cadence/merchant/type change) gets a NEW identity and becomes eligible
+  again automatically — no separate resurfacing code exists or is needed.
+- **Full lifecycle with append-only decision history**
+  (`packages/app-services/src/recommendation-service.ts`): `acceptRecommendation`/
+  `modifyRecommendation`/`rejectRecommendation`, each validating its own valid source statuses and
+  appending a `RecommendationDecisionEvent` rather than overwriting history.
+- **Safe-to-Spend separation**: accepting/modifying a recommendation never writes to any table
+  `buildFinancialSnapshot` reads from — regression-tested directly. `getRecommendationsSummary`
+  exposes three distinct, never-blended aggregates: potential (PENDING), accepted-expected
+  (ACCEPTED/MODIFIED), and verified (VERIFIED) monthly savings.
+- **Verification engine** (`assessVerification`,
+  `packages/financial-engine/src/domain/recommendation-verification.ts`): a separate
+  `VerificationAssessment` (`NOT_DUE`/`INCONCLUSIVE`/`CONFIRMED_SUCCESS`/`CONFIRMED_FAILURE`) keeps
+  "insufficient evidence" from ever falsely resolving to VERIFIED/FAILED — only a CONFIRMED result
+  transitions lifecycle status. Wired into `syncConnection` (idempotent — VERIFIED/FAILED are
+  terminal and never re-evaluated) and into every homepage load.
+- **UI**: a new "Recommendations" dashboard section (`RecommendationsPanel.tsx`) with
+  Accept/Modify/Reject actions, an explicit no-external-cancellation disclaimer, and
+  non-shaming status copy for rejected/failed outcomes.
+- **5 new AI tools + full grounding coverage**: `getRecommendations`/`getRecommendationDetails`
+  (READ), `acceptRecommendation`/`modifyRecommendation`/`rejectRecommendation` (MUTATION, gated by
+  the same `hasExplicitMutationIntent` mechanism as every other mutation tool).
+  `recommendationFacts` exposes every monetary field to grounding, added proactively per the Sprint
+  4.5 lesson rather than discovered live.
+- **4 real bugs found and fixed during implementation** (not simulated): a `daysBetween` date-parsing
+  bug that silently defeated sync-staleness verification checks (DEC-061); real Pluggy sandbox
+  NETFLIX.COM/SPOTIFY AB charges left permanently UNCATEGORIZED, invisible to this sprint's own
+  headline example (DEC-063); `mutation-guard.ts` missing recommendation-decision language in both
+  English and PT-BR, incorrectly blocking the brief's own example accept/reject phrases (DEC-064); and
+  the Sprint 1 `Recommendation` shape being completely unwired (zero repository/mapper/seed code) —
+  refactored in place rather than duplicated (DEC-056).
+- 426 automated tests passing in the default suite (up from 354 at end of Sprint 4.5), plus the same
+  7 opt-in live-OpenAI tests (unchanged, still passing when run live).
 
 **New in Sprint 4.5** (see `docs/DECISIONS.md` DEC-043–054, `docs/AI-COPILOT.md`, and
 `docs/OPEN-FINANCE.md` for the full account):
@@ -305,10 +388,13 @@ enriched fixture (7 September transactions, old debt as an `InstallmentPlan`).
 - **Recommendation lifecycle**: still model-only (Sprint 1/2 state unchanged) — real imported data
   now exists to eventually verify against, but no discovery engine exists yet (Sprint 5). Sprint 4's
   `replanAfterExpense` deliberately exposes only deterministic facts (compensation required, category
-  headroom), never an optimization suggestion of its own — that remains Sprint 5's job.
+  headroom); Sprint 5's actual discovery/decision engine covers RECURRING COSTS only — see
+  `docs/RECOMMENDATIONS.md`, "Known limitations."
 - **Old-debt reconciliation**: candidates are computed (`getInstallmentPlanMatchCandidates`) and
-  exposed, but there is no UI/flow to act on one (accept/reject) — deliberately deferred (DEC-032),
-  likely bundled into Sprint 5's recommendation lifecycle UI.
+  exposed, but there is no UI/flow to act on one (accept/reject) — deliberately deferred (DEC-032).
+  NOT bundled into Sprint 5 (which built a real, general accept/modify/reject/verify lifecycle for
+  recurring-cost recommendations specifically) — reusing that same lifecycle machinery for old-debt
+  candidates remains a candidate for a future sprint, not yet done.
 - ~~Live Pluggy sandbox validation~~ — **COMPLETE as of Sprint 4.5** (see "Integration status"): a
   real sandbox Item was connected, synced, and reflected in the dashboard end to end. Moved out of
   this section; kept only historically relevant items below it.
@@ -517,49 +603,47 @@ testing (all are process/design corrections, documented as decisions rather than
 
 ## Test status
 
-**354 automated tests passing** in the default suite, zero failing, across seven packages/apps (up
-from 288 at end of Sprint 4), plus **7 additional opt-in live-OpenAI tests** that skip automatically
-without `OPENAI_API_KEY` (never part of the default suite, and now confirmed PASSING live — see
-"Integration status"). The increase since the 349 count earlier in Sprint 4.5 is
-`packages/app-services/src/copilot/facts.test.ts` (5 tests, DEC-055's grounding-coverage regression),
-plus one more live-only scenario in `live-openai-smoke.test.ts` (the outing-budget/no-invented-price
-scenario, also DEC-055).
+**426 automated tests passing** in the default suite, zero failing, across seven packages/apps (up
+from 354 at end of Sprint 4.5, 288 at end of Sprint 4), plus the same **7 opt-in live-OpenAI tests**
+(unchanged by Sprint 5, still skip automatically without `OPENAI_API_KEY`).
 
-- `packages/financial-engine`: **126** (`stable-ids.test.ts` — DEC-047's `vi.resetModules()`-based
-  fixture-id-stability regression test — included).
-- `packages/ai`: **11** (unchanged from Sprint 4).
-- `packages/open-finance`: **46** (unchanged from Sprint 3 — `MockProvider`'s `getConnection` gained
-  an optional `clientUserId` lookup for connection-recovery testability, no behavior change for
-  existing callers).
-- `packages/persistence`: **22** (a `vi.resetModules()`-based TRIPLE-reset idempotent-seed regression
-  test — DEC-047/DEC-049 — asserting every entity count, including `reconciliation_links`, stays
-  identical across all three resets; `migration.test.ts` verifies forward migration onto an existing
-  Sprint-2-shaped database).
-- `apps/web`: **6** — `warningKey`'s uniqueness/stability/no-content-loss properties (4, the
-  regression test for the React duplicate-key bug this sprint's live validation surfaced), plus
-  `api/debug/counts/route.test.ts`'s production-gate proof (2, DEC-053: 404 without ever calling
-  `getDb()` in production; 200 with real counts otherwise). Now included in the root `pnpm run test`
-  script (previously only `packages/*` — fixed this sprint since `apps/web` had no tests before it).
-- `packages/app-services`: **143** — Sprint 4's 86, plus Sprint 4.5: PT-BR mutation-guard explicit/
-  hypothetical cases mirroring the brief's examples, PT-BR grounding pass/fail cases, a full PT-BR
-  conversation-loop suite in `orchestrator.test.ts` (Safe-to-Spend regression, hypothetical-vs-
-  explicit mutation gating, grounding fallback, independent-living question — all in Portuguese),
-  `tool-schema-strict-mode.test.ts` asserting every one of the 16 tools' JSON Schemas satisfy OpenAI's
-  strict-mode `required` constraint, `connection-recovery.test.ts`'s 10 tests covering the 6 required
-  scenarios (onSuccess normally, frontend closes before onSuccess, webhook later confirms the Item,
-  missing connection recovered, both onSuccess and webhook arrive in either order, repeated recovery
-  stays idempotent) plus two defensive cases (no `clientUserId` reported; `clientUserId` matching no
-  known profile), a bill-deduplication regression test (DEC-048, syncing the same mock connection
-  twice and asserting exactly one bill row persists), `connection-deletion.test.ts`'s 3 tests
-  (DEC-050: a cross-connection reconciliation link removed correctly while the kept connection's data
-  stays untouched; a connection with no imported data at all deletes cleanly; an unknown connection id
-  throws rather than silently no-op-ing), and `facts.test.ts`'s 5 tests (DEC-055: `getFinancialSnapshot`,
-  `getDailyGuidance`, `getSpendingEnvelope`, and `getLifestyleComparison` each expose their real,
-  deterministic monetary fields as groundable facts; an unknown tool name still returns `[]`) — plus
-  7 skipped-by-default (now confirmed PASSING live) tests in `live-openai-smoke.test.ts`.
+- `packages/financial-engine`: **160** (up from 126) — Sprint 5 adds `recommendation-generation.test.ts`
+  (11: high-confidence subscription → exactly one candidate; identical `identityKey` across repeated
+  generation; the protected family-support fixture produces zero candidates even when an otherwise-
+  eligible transaction shares its category; TRANSFER/CARD_PAYMENT/DEBT_PAYMENT/REFUND excluded;
+  uncategorized excluded; a default-excluded category excluded; MEDIUM confidence → REVIEW not CANCEL;
+  a weekly cadence never multiplied as monthly), `recommendation-impact.test.ts` (10: X−Y reduction
+  math; target ≥ current → null; cadence classification; monthly-equivalent conversion; annual = 
+  monthly×12), `recommendation-verification.test.ts` (11: VERIFIED/FAILED/INCONCLUSIVE/NOT_DUE for
+  both CANCEL and REDUCE, plus the DEC-061 full-ISO-timestamp regression), and a `category.test.ts`
+  addition (DEC-063: NETFLIX/SPOTIFY now categorize instead of staying UNCATEGORIZED).
+- `packages/ai`: **11** (unchanged).
+- `packages/open-finance`: **46** (unchanged).
+- `packages/persistence`: **26** (up from 22) — `recommendation-repository.test.ts`'s 4 tests
+  (round-trip preserves evidence/decision history exactly; upsert is idempotent by id; identityKey
+  lookup finds the persisted row; a different identityKey is a distinct row).
+- `apps/web`: **6** (unchanged — no new apps/web tests this sprint; the new `RecommendationsPanel`/
+  `/api/recommendations` route are covered by app-services' integration tests plus manual live
+  validation).
+- `packages/app-services`: **177** (up from 143) — `recommendation-service.test.ts`'s 11 integration
+  tests (a real sync of recurring Netflix charges produces exactly one recommendation; three identical
+  syncs never duplicate it; a rejected recommendation stays suppressed across repeated evaluation; a
+  materially different amount becomes eligible again after rejection; accepting does NOT change
+  current Safe-to-Spend; MODIFY recalculates impact as exactly X−Y with a decision-history entry;
+  modifying to a target ≥ current throws; accepted cancellation + no continuing charge → VERIFIED;
+  accepted cancellation + continuing charge → FAILED; stale sync coverage → INCONCLUSIVE, never
+  falsely VERIFIED; repeated verification never re-transitions an already-VERIFIED recommendation),
+  `orchestrator-recommendations.test.ts`'s 6 tests (a read question never mutates; explicit PT-BR
+  acceptance mutates exactly once; hypothetical PT-BR wording does not mutate; an explicit PT-BR
+  rejection does mutate; grounding fails on an invented amount; grounding passes on the exact returned
+  monthly/annual impact), `facts.test.ts`'s 3 additional cases (every recommendation tool exposes
+  observed amount + monthly/annual impact; a MODIFIED target amount is exposed; `getRecommendations`
+  exposes every recommendation plus the three aggregate figures), `mutation-guard.test.ts`'s 2
+  additional PT-BR recommendation-decision cases (DEC-064), and `tools.test.ts` updated for the 5 new
+  tools — plus the same 7 skipped-by-default live tests in `live-openai-smoke.test.ts`.
 
-Run with `pnpm run test` from the repo root (now covers `packages/*` and `apps/*`), or per-package
-with `--filter`.
+Run with `pnpm run test` from the repo root (covers `packages/*` and `apps/*`), or per-package with
+`--filter`.
 
 ## Integration status
 
@@ -686,13 +770,13 @@ methodology), plus:
 
 ## Next recommended sprint
 
-**Sprint 5 — Recommendation engine with ACCEPT / MODIFY / REJECT / VERIFY lifecycle.** See
-`docs/ROADMAP.md` for detailed scope. The AI copilot's tool layer (`packages/app-services/src/
-copilot/`) and the `Recommendation` domain model (Sprint 1) are both already in place — Sprint 5's
-job is the actual discovery logic, respecting `ProtectedPreference` and never resurfacing a rejected
-recommendation absent material context change. Both live Pluggy sandbox validation and live OpenAI
-validation are now APPROVED/PASSED (DEC-033/DEC-045 through DEC-055) — the validation precondition
-Product previously wanted before Sprint 5 is satisfied. **Sprint 5 has explicitly not been started.**
+**Sprint 6 — Financial concierge.** See `docs/ROADMAP.md` for detailed scope: budget-aware
+recommendations for restaurants, dates, shopping, travel, built on top of `simulateExpense`/
+`getSpendingEnvelope` plus category-specific intent parsing from Sprint 4. Sprint 5's recommendation
+lifecycle machinery (identity, decision history, verification) is available to reuse if Sprint 6 ever
+needs its own accept/reject flow, but Sprint 6's actual job — real-world price discovery,
+concierge/search — is explicitly a NEW capability, not an extension of Sprint 5's recurring-cost
+engine. **Sprint 5 is complete; Sprint 6 has explicitly not been started.**
 
 ## Risks
 

@@ -51,6 +51,23 @@ describe("hasExplicitMutationIntent", () => {
   it("never treats a pure PT-BR affordability question as explicit", () => {
     expect(hasExplicitMutationIntent("Posso gastar R$ 500 hoje?")).toBe(false);
   });
+
+  it.each([
+    "Pode aceitar essa recomendação.",
+    "Aceito, pode cancelar.",
+    "Na verdade quero reduzir para R$ 30.",
+    "Não quero mexer nessa assinatura.",
+    "Rejeito essa recomendação.",
+  ])("(Sprint 5) returns true for explicit PT-BR recommendation decisions: %s", (text) => {
+    expect(hasExplicitMutationIntent(text)).toBe(true);
+  });
+
+  it.each(["E se eu cancelasse essa assinatura?", "Será que eu deveria cancelar a Netflix?"])(
+    "(Sprint 5) returns false for hypothetical PT-BR recommendation language: %s",
+    (text) => {
+      expect(hasExplicitMutationIntent(text)).toBe(false);
+    },
+  );
 });
 
 describe("containsHypotheticalLanguage", () => {

@@ -19,6 +19,7 @@ import type {
   ProviderConnection,
   SyncRun,
   CreditCardBill,
+  Recommendation,
 } from "@money-copilot/financial-engine";
 import type { AIRequestLog, AIToolExecution, Conversation, ConversationMessage } from "@money-copilot/ai";
 import type { Database } from "./db";
@@ -812,4 +813,52 @@ export async function deleteSyncRunsByConnectionId(db: Database, connectionId: s
 
 export async function deleteProviderConnectionById(db: Database, connectionId: string): Promise<void> {
   await db.delete(schema.providerConnections).where(eq(schema.providerConnections.id, connectionId));
+}
+
+// ---------- Recommendation (Sprint 5) ----------
+
+export async function upsertRecommendation(db: Database, recommendation: Recommendation): Promise<void> {
+  const row = mappers.recommendationToRow(recommendation);
+  await db
+    .insert(schema.recommendations)
+    .values(row)
+    .onConflictDoUpdate({ target: schema.recommendations.id, set: row });
+}
+
+export async function getRecommendationById(db: Database, id: string): Promise<Recommendation | undefined> {
+  const [row] = await db.select().from(schema.recommendations).where(eq(schema.recommendations.id, id));
+  return row ? mappers.rowToRecommendation(row) : undefined;
+}
+
+/**
+ * The idempotency lookup: a `financialProfileId` + `identityKey` pair maps
+ * to AT MOST one recommendation (enforced by the unique constraint on the
+ * table) — see `Recommendation.identityKey`'s doc comment and DEC-059.
+ */
+export async function findRecommendationByIdentityKey(
+  db: Database,
+  financialProfileId: string,
+  identityKey: string,
+): Promise<Recommendation | undefined> {
+  const [row] = await db
+    .select()
+    .from(schema.recommendations)
+    .where(
+      and(
+        eq(schema.recommendations.financialProfileId, financialProfileId),
+        eq(schema.recommendations.identityKey, identityKey),
+      ),
+    );
+  return row ? mappers.rowToRecommendation(row) : undefined;
+}
+
+export async function listRecommendationsForProfile(
+  db: Database,
+  financialProfileId: string,
+): Promise<Recommendation[]> {
+  const rows = await db
+    .select()
+    .from(schema.recommendations)
+    .where(eq(schema.recommendations.financialProfileId, financialProfileId));
+  return rows.map(mappers.rowToRecommendation);
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createId } from "@money-copilot/shared";
 import * as M from "../money/index";
+import { categoryRules } from "../fixtures/rules";
 import type { FinancialTransaction, PaymentSource } from "./transaction";
 import { categorize, UNCATEGORIZED, type CategoryRule } from "./category";
 
@@ -95,5 +96,20 @@ describe("categorize", () => {
     ];
     expect(() => categorize(tx(), rules)).not.toThrow();
     expect(categorize(tx(), rules).category).toBe(UNCATEGORIZED);
+  });
+
+  it("(Sprint 5, DEC-063) categorizes real Pluggy sandbox streaming merchants instead of leaving them UNCATEGORIZED", () => {
+    // Sprint 4.5's live sandbox validation imported real NETFLIX.COM/SPOTIFY
+    // AB charges, but no category rule matched them — they stayed
+    // UNCATEGORIZED, which silently made them invisible to Sprint 5's
+    // recommendation engine (RULE: never recommend against an ambiguous/
+    // uncategorized transaction). Fixed by adding merchant + category
+    // rules for both, matching the exact real merchant strings observed.
+    expect(categorize(tx({ normalizedMerchant: "NETFLIX", rawMerchant: "NETFLIX.COM" }), categoryRules).category).toBe(
+      "Entertainment",
+    );
+    expect(categorize(tx({ normalizedMerchant: "SPOTIFY", rawMerchant: "SPOTIFY AB" }), categoryRules).category).toBe(
+      "Entertainment",
+    );
   });
 });

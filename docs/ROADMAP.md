@@ -56,15 +56,24 @@ both **not executed** in this sprint — no credentials were available in this e
 for both is complete and automated-test-covered regardless. WhatsApp (or another conversational
 surface) remains unscheduled — text chat via the web UI is the only surface built so far.
 
-## Sprint 5 — Recommendation engine with ACCEPT / MODIFY / REJECT / VERIFY lifecycle
+## Sprint 5 — Recommendation engine with ACCEPT / MODIFY / REJECT / VERIFY lifecycle ✅ (complete)
 
-- Actual recommendation *discovery* (Sprint 1 only defined the data model in
-  `domain/recommendation.ts`).
-- Must respect `ProtectedPreference` (RULE #5, #11) and must not resurface `REJECTED`
-  recommendations absent material context change.
-- Verification against Sprint 3's imported transaction data.
-- Likely also where the Sprint 3 old-debt installment-match candidates (`DEC-032`, never
-  auto-applied) get an actual accept/reject UI flow, using the same lifecycle machinery.
+Actual recommendation *discovery*, built on the Sprint 1 data model (extended, not replaced —
+`domain/recommendation.ts`): deterministic candidate generation from confirmed recurring
+discretionary spending (`detectRecurringCandidates`, reused unchanged), cadence-normalized impact
+calculation (`CANCEL_RECURRING_COST`/`REDUCE_RECURRING_COST`/`REVIEW_RECURRING_COST`), a centralized
+`RecommendationPolicy` (no hidden thresholds), deterministic-identity-based idempotency and
+suppression (one mechanism handles both), a full ACCEPT/MODIFY/REJECT/VERIFIED/FAILED lifecycle with
+append-only decision history, verification against Sprint 3's imported transaction data (a separate
+`VerificationAssessment` keeps "insufficient evidence" from corrupting lifecycle status), a
+Recommendations UI panel, and 5 new AI tools with full grounding coverage. `ProtectedPreference` is
+evaluated before anything else (RULE #5, #11) — the Founder's real family-support fixture is
+regression-tested as never producing a recommendation. See `docs/RECOMMENDATIONS.md` for the full
+architecture and `docs/DECISIONS.md` DEC-056 through DEC-064.
+
+Old-debt installment-match candidates (`DEC-032`) were NOT bundled into this sprint's UI — they still
+have no accept/reject flow; this remains a candidate for a future sprint using the same lifecycle
+machinery, not yet done.
 
 ## Sprint 6 — Financial concierge
 

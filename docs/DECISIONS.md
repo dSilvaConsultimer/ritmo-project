@@ -1389,3 +1389,270 @@ needed — exactly as instructed.
 should reuse `financialSnapshotFacts` rather than hand-picking fields, to avoid reintroducing this
 exact gap. Tools returning some other rich domain object should still get a dedicated, complete case
 rather than a partial one, per this same lesson.
+
+---
+
+### DEC-056
+
+**Date:** 2026-09-09
+**Context:** Sprint 5 (Recommendation engine) required actual candidate discovery, evidence,
+impact calculation, and a verification lifecycle — none of which existed. Sprint 1 had only modeled
+`Recommendation`'s SHAPE (`docs/ROADMAP.md`: "Sprint 1 only defined the data model in
+domain/recommendation.ts"), with `estimatedMonthlySavings`/`modifiedMonthlySavings`/`verification`
+fields that were never wired to any repository, mapper, or seed code (confirmed by search before
+changing anything, per the brief's explicit "do not create a second parallel recommendation model —
+extend/refactor the existing one cleanly").
+**Decision:** Refactored `packages/financial-engine/src/domain/recommendation.ts` in place (not a new
+parallel file) to the full Sprint 5 shape: `type: RecommendationType` (`CANCEL_RECURRING_COST` /
+`REDUCE_RECURRING_COST` / `REVIEW_RECURRING_COST` — `REDIRECT_FREED_CASHFLOW` deliberately NOT added,
+per the brief's own "do not expand the sprint unnecessarily"), `identityKey` (the deterministic
+economic-opportunity identity — see DEC-059), a full `RecommendationEvidence` (merchant, category,
+cadence, observed + monthly-equivalent amount, occurrences, transaction ids, payment source,
+confidence), `projectedMonthlyImpact`/`projectedAnnualImpact` (replacing the old single
+`estimatedMonthlySavings`), an append-only `decisionHistory: RecommendationDecisionEvent[]` (never
+overwriting prior states), and a separate `VerificationAssessment` type (`NOT_DUE` / `INCONCLUSIVE` /
+`CONFIRMED_SUCCESS` / `CONFIRMED_FAILURE`) kept OUT of `RecommendationStatus` so "we checked and
+evidence is insufficient" never corrupts the lifecycle status itself — only `CONFIRMED_SUCCESS`/
+`CONFIRMED_FAILURE` ever transition status to VERIFIED/FAILED (see DEC-061/DEC-013's verification
+engine). `RecommendationStatus` itself (`PENDING`/`ACCEPTED`/`MODIFIED`/`REJECTED`/`VERIFIED`/
+`FAILED`) is UNCHANGED from Sprint 1 — it already matched the brief's target naming exactly.
+**Rationale:** Since the old shape was never persisted anywhere in practice (verified empty/unused
+before touching it), a clean in-place refactor was safe and preferable to bolting Sprint 5 concepts
+onto a shape that never fit them, or maintaining two competing `Recommendation` types.
+**Status:** Accepted.
+**Consequences:** `domain.test.ts`'s recommendation-lifecycle test was rewritten to the new shape (it
+previously constructed the Sprint 1 shape directly). Any earlier documentation referencing
+`estimatedMonthlySavings` or a single `RecommendationVerification` object is superseded by this entry.
+
+---
+
+### DEC-057
+
+**Date:** 2026-09-09
+**Context:** The Sprint 5 brief's Section 4 ("Protected Preferences") is explicit and non-negotiable:
+`ProtectedPreference` must exclude a category from recommendation generation BEFORE any ranking or
+presentation, generically — "any future ProtectedPreference receives the same treatment," specifically
+naming the Founder's real family-support fixture (`motherSupport`/`motherSupportPreference`,
+`packages/financial-engine/src/fixtures/initial-user.ts`) as the concrete case to protect. That
+fixture protects a `FixedExpense` (`scope.type === "EXPENSE"`), not a transaction category directly —
+but the recommendation engine only ever evaluates `FinancialTransaction`s, which carry a `category`
+string, not a link to any `FixedExpense`.
+**Decision:** Added `protectedCategories(preferences, fixedExpenses): ReadonlySet<string>`
+(`packages/financial-engine/src/domain/preference.ts`) — for each preference, either use its
+declared `CATEGORY` directly, or resolve the referenced `FixedExpense`'s own category. The
+recommendation engine (DEC-058) excludes any transaction whose category is in this set BEFORE
+anything else runs — before recurring-pattern detection, before confidence scoring, before impact
+calculation. A live regression test constructs a transaction that WOULD otherwise pass every other
+filter (CONSUMPTION effect, categorized, recurring, high confidence) but shares the protected
+`FixedExpense`'s category, and asserts zero recommendations are produced — proving category
+protection works on its own, not merely incidentally via the separate financial-effect filter.
+**Rationale:** A generic, preference-driven mechanism (rather than a hardcoded check for "the mother
+support case" specifically) is what makes this correct for ANY future `ProtectedPreference` without
+an engine change — exactly the brief's own requirement.
+**Status:** Accepted.
+**Consequences:** A `ProtectedPreference` scoped to a category with no matching transactions today
+still costs nothing (the set is simply not hit) — this mechanism scales to future protected
+preferences with no code change, only fixture/user data.
+
+---
+
+### DEC-058
+
+**Date:** 2026-09-09
+**Context:** Needed deterministic recommendation candidate discovery (reusing, never duplicating,
+Sprint 2's `detectRecurringCandidates`) plus a cadence-aware, non-invented impact calculation — the
+brief explicitly warns against multiplying a weekly/yearly charge as if it were monthly, against
+inventing a lower "reduced" price, and against scattering magic thresholds through the code.
+**Decision:** `packages/financial-engine/src/domain/recommendation-policy.ts` centralizes every
+threshold as one `RecommendationPolicy` object with named, documented fields and one
+`DEFAULT_RECOMMENDATION_POLICY` (minimum confidence for CANCEL vs. REVIEW, minimum evidence
+occurrences, eligible financial effects — CONSUMPTION only — excluded categories, the identity
+amount-bucket width, verification grace period, sync-staleness tolerance, reduction amount
+tolerance) — explicitly documented as product defaults, not derived financial law.
+`recommendation-cadence.ts` classifies an observed interval into `WEEKLY`/`MONTHLY`/`YEARLY`/`UNKNOWN`
+(mirroring `recurring.ts`'s own 20-40-day "monthly" bounds rather than inventing a second definition)
+and converts to a monthly-equivalent amount ONLY for a recognized cadence — `UNKNOWN` returns `null`,
+which `recommendation-generation.ts`'s `generateRecommendationCandidates` treats as "not confident
+enough to CANCEL," falling back to `REVIEW_RECURRING_COST` (impact shown, when available, explicitly
+framed as informational, never a guaranteed saving). `recommendation-impact.ts`'s
+`computeReductionImpact(current, target)` returns `null` — not a zero or negative figure — whenever
+`target >= current`, per the brief's explicit "never allow negative savings."
+A transaction is eligible evidence only when its `financialEffect === "CONSUMPTION"` (excludes
+TRANSFER/CARD_PAYMENT/DEBT_PAYMENT/REFUND/FEE/INCOME by construction, satisfying the brief's exclusion
+list without a separate check), it has a non-null category, and that category is in neither
+`protectedCategories` (DEC-057) nor the policy's own `excludedCategories` default list (Housing,
+Family Support, Insurance, Utilities, Healthcare, Taxes, Debt — a defense-in-depth product default,
+never a substitute for actual `ProtectedPreference` evaluation).
+**Rationale:** Centralizing every threshold in one named, documented, parameter-passed object (never
+a module-level magic constant) is what the brief's Section 23 explicitly requires, and is what makes
+this genuinely configurable later without an engine change.
+**Status:** Accepted.
+**Consequences:** `docs/RECOMMENDATIONS.md` documents every default and its rationale. A future
+per-profile policy override only requires threading a different `RecommendationPolicy` value through
+existing function parameters — no branching logic needs to change.
+
+---
+
+### DEC-059
+
+**Date:** 2026-09-09
+**Context:** Recommendation generation must be idempotent — repeated evaluation over unchanged data
+must never create a duplicate row, per the brief's explicit "do not simply use transaction ID because
+each monthly transaction may have a new provider transaction ID" and "Open Finance deduplication and
+recommendation deduplication are separate concerns. Both must remain idempotent."
+**Decision:** `Recommendation.identityKey` (computed once, at generation time, by
+`buildRecommendationIdentityKey` — profile + type + normalized merchant + cadence + an
+amount-bucketed representative amount + payment source, joined deterministically) is enforced UNIQUE
+per `financialProfileId` at the database level
+(`packages/persistence/src/schema.ts`'s `recommendations` table, a composite unique constraint —
+mirroring DEC-023's `ProviderConnection` uniqueness pattern exactly). The Sprint 1 `recommendations`
+table (created in migration 0000, confirmed completely unused — zero repository/mapper/seed code ever
+touched it) was replaced via a hand-authored migration (`0003_workable_grim_reaper.sql`, DROP+CREATE
+— `drizzle-kit generate`'s interactive rename-disambiguation prompt cannot run non-interactively in
+this environment, so the migration SQL and its `meta/0003_snapshot.json`/`_journal.json` entries were
+authored directly, verified by running the full migration test suite against a fresh database).
+`evaluateRecommendations` (`packages/app-services/src/recommendation-service.ts`) is strictly
+ADD-ONLY: for each freshly-generated candidate, `findRecommendationByIdentityKey` decides whether to
+insert a new PENDING row or do nothing — an existing row of ANY status (including REJECTED) means
+"nothing to do," which is simultaneously what makes generation idempotent AND what implements REJECTED
+suppression (DEC-060's "sync integration" note) — no separate suppression mechanism was needed.
+**Rationale:** A DB-level uniqueness guarantee (not just an application-level check) is the same
+defense-in-depth pattern already established for provider connections — a genuine invariant, not
+merely a convention callers must remember to honor.
+**Status:** Accepted.
+**Consequences:** A future session running `drizzle-kit generate` again should reconcile against the
+hand-authored `0003_snapshot.json` — the CLI will treat it as the current baseline correctly, but the
+interactive-prompt limitation will recur for any further large `recommendations`-shape change unless
+this environment gains TTY support for that command.
+
+---
+
+### DEC-060
+
+**Date:** 2026-09-09
+**Context:** Per the brief: "After a successful provider sync, the application should be capable of
+evaluating recommendations that are due for verification... Three repeated identical syncs must not
+duplicate recommendations, duplicate decision events, duplicate verification records, or repeatedly
+transition VERIFIED -> VERIFIED / FAILED -> FAILED."
+**Decision:** `syncConnection` (`packages/app-services/src/sync.ts`) calls `evaluateRecommendations`
+then `evaluateRecommendationVerifications` immediately after a successful import, wrapped in its own
+try/catch so a recommendation-evaluation problem can NEVER fail the sync itself (the imported
+financial data is the already-committed, important result). Idempotency for verification specifically
+comes from `evaluateRecommendationVerifications` only ever considering recommendations currently
+ACCEPTED or MODIFIED — VERIFIED/FAILED are terminal and are never re-selected, so a third identical
+sync literally has nothing left to re-evaluate for an already-decided outcome. The same evaluation
+also runs on every homepage load (`apps/web/app/page.tsx`) so fixture/demo-mode users (no provider
+connection at all) still see recommendations generated from any recurring MANUAL-origin transactions,
+not only from synced ones.
+**Rationale:** Making sync trigger evaluation automatically (rather than only exposing a capability
+some caller might invoke) is what actually satisfies "the application should be capable of" as an
+observed behavior, not just unused code.
+**Status:** Accepted.
+**Consequences:** Every `syncConnection`/homepage-load call now does slightly more work
+(recommendation generation + verification pass) — both are simple, bounded, in-process computations
+over already-loaded data (no additional network calls), so this was judged an acceptable cost.
+
+---
+
+### DEC-061
+
+**Date:** 2026-09-09
+**Context:** While writing the app-services integration tests for verification (accept a
+cancellation, advance time, confirm VERIFIED), a test using a stale `lastSuccessfulSyncAt` to prove
+`INCONCLUSIVE` unexpectedly produced `CONFIRMED_SUCCESS` instead. Root cause:
+`recommendation-verification.ts`'s `daysBetween` helper assumed both inputs were plain `YYYY-MM-DD`
+dates and unconditionally appended `T00:00:00Z` — but `ProviderConnection.lastSuccessfulSyncAt` is
+always a FULL ISO timestamp already (e.g. `"2026-09-09T18:27:26.329Z"`). Concatenating produced a
+malformed string (`"...329ZT00:00:00Z"`), `Date.parse` returned `NaN`, and every comparison against
+`NaN` (`daysSinceSync > policy.maxSyncStalenessDaysForVerification`) silently evaluated `false` — the
+sync-staleness check became a permanent no-op, meaning a real connection that had NEVER synced
+recently would still be treated as fresh evidence.
+**Decision:** `daysBetween`'s inputs now go through `toEpochMillis`, which only appends a synthetic
+midnight time when the string does NOT already contain a `"T"` (i.e., is a plain date, not a full
+timestamp) — both forms are now handled correctly and unambiguously. Added two permanent regression
+tests using a real full-ISO-timestamp `lastSuccessfulSyncAt`, one stale (must be `INCONCLUSIVE`) and
+one fresh (must reach a real verdict) — this specific bug class (a `NaN` silently defeating a numeric
+comparison) would otherwise be very easy to reintroduce.
+**Rationale:** This is exactly the kind of defect the brief's own closing instruction anticipates —
+found while writing tests for Sprint 5's OWN new code, not inherited from elsewhere — so it is fixed
+here with a regression test rather than deferred.
+**Status:** Accepted.
+**Consequences:** Any future function accepting "either a date or a timestamp" as a string parameter
+should use the same `toEpochMillis`-style guard rather than assuming a single format.
+
+---
+
+### DEC-062
+
+**Date:** 2026-09-09
+**Context:** The Sprint 4.5 lesson (DEC-055: "a correct tool result that is not exposed to grounding
+is still a product bug") applies identically to every new Sprint 5 tool — `getRecommendations`,
+`getRecommendationDetails`, and the three decision tools all return real, deterministic monetary
+figures (observed amount, monthly-equivalent amount, monthly/annual impact, a MODIFIED user target)
+that a live model would naturally cite.
+**Decision:** Added `recommendationFacts(recommendation, sourceTool)`
+(`packages/app-services/src/copilot/facts.ts`) — one shared helper covering every monetary field a
+single `Recommendation` carries — wired into all five new tool cases in `extractFinancialFacts`, plus
+three new aggregate facts (potential/accepted/verified monthly savings) for `getRecommendations`.
+Added permanent offline tests (`facts.test.ts`) proving every one of these fields is present, before
+any live call was made — closing this gap proactively rather than rediscovering it live as happened
+in Sprint 4.5.
+**Rationale:** Given the exact prior lesson, shipping a new domain's tools without grounding coverage
+from day one would have been a known, avoidable repeat of the same defect class.
+**Status:** Accepted.
+**Consequences:** Any future recommendation-related tool should extend `recommendationFacts` rather
+than hand-rolling a new fact list.
+
+---
+
+### DEC-063
+
+**Date:** 2026-09-09
+**Context:** Sprint 5's V1 scope example transactions are explicitly Netflix/Spotify-style recurring
+subscriptions — and Sprint 4.5's live Pluggy sandbox validation had already imported real
+`NETFLIX.COM`/`SPOTIFY AB` recurring charges. Neither had a matching category rule
+(`packages/financial-engine/src/fixtures/rules.ts`), so both stayed `UNCATEGORIZED` — which, per the
+recommendation engine's own conservative design (DEC-058: never recommend against an
+ambiguous/uncategorized transaction), made them silently invisible to the entire feature this sprint
+built, despite being its own headline example.
+**Decision:** Added merchant-normalization and category rules for `NETFLIX` and `SPOTIFY`
+(→ "Entertainment"/"Streaming"), matching the exact real merchant substrings observed live. Added a
+permanent regression test (`category.test.ts`) asserting both categorize correctly using the actual
+fixture rule set, not just an inline test-only rule.
+**Rationale:** Found while building the live-validation Netflix test scenario for this sprint —
+without this fix, the sprint's own primary example would have produced zero recommendations against
+the exact real data this project already validated live in Sprint 4.5.
+**Status:** Accepted.
+**Consequences:** Any other recurring discretionary merchant discovered in future live/sandbox
+validation should get the same treatment (a rule addition, not a special case in the recommendation
+engine itself).
+
+---
+
+### DEC-064
+
+**Date:** 2026-09-09
+**Context:** Building the live-validation and offline orchestrator tests for accepting/rejecting a
+recommendation in PT-BR (using the brief's own example phrases — "Pode aceitar essa recomendação.",
+"Não quero mexer nessa assinatura.") revealed that `hasExplicitMutationIntent`
+(`packages/app-services/src/copilot/mutation-guard.ts`) did not recognize EITHER phrase as explicit —
+its pattern list was tuned for Sprint 4's financial-transaction phrases ("gastei," "paguei,"
+"reserve") and had no concept of a recommendation DECISION at all. Both example acceptance/rejection
+tool calls were incorrectly blocked as not-explicit.
+**Decision:** Extended both `EXPLICIT_ACTION_PATTERNS` lists (English and Portuguese, maintaining the
+established DEC-044 two-language parity convention) with recommendation-decision language: "pode
+aceitar," "aceito," "quero aceitar," "quero cancelar," "quero reduzir," "não quero," "rejeito" (PT-BR)
+and "accept it," "i accept," "go ahead," "i don't want this/it," "reject it/this," "i reject"
+(English). Verified none of these collide with any existing `HYPOTHETICAL_PATTERNS` entry (e.g. "não
+quero" does not match "poderia"/"deveria"/"e se eu"/"seria possível"). Added permanent offline test
+cases (`mutation-guard.test.ts`) for both the new explicit phrases and confirmed the brief's own
+hypothetical counter-example ("E se eu cancelasse essa assinatura?") still correctly returns `false`
+via the pre-existing "e se eu" pattern.
+**Rationale:** A brand-new domain's decision vocabulary (accept/modify/reject a recommendation) is
+not automatically covered by patterns written for a different domain's vocabulary (recording an
+expense) — this is a real, found-during-implementation gap, not a hypothetical one, exactly like
+DEC-063.
+**Status:** Accepted.
+**Consequences:** Any future AI-tool domain with its own natural "decision" vocabulary should audit
+`mutation-guard.ts`'s pattern coverage specifically for that vocabulary rather than assuming the
+existing patterns generalize.
