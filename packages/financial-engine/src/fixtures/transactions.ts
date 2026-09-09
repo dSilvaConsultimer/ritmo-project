@@ -1,4 +1,4 @@
-import { createId } from "@money-copilot/shared";
+import type { Id } from "@money-copilot/shared";
 import * as M from "../money/index";
 import type { FinancialTransaction, PaymentSource, TransactionDirection } from "../domain/transaction";
 import type { FinancialEffect } from "../domain/financial-effect";
@@ -8,8 +8,25 @@ import { categorize } from "../domain/category";
 import { merchantNormalizationRules, categoryRules } from "./rules";
 import { FIXTURE_PROFILE_ID } from "./profile";
 
+/**
+ * All fixture ids in this file are stable string literals, never
+ * `createId()` — see `profile.ts`'s `FIXTURE_PROFILE_ID` for why: a
+ * `createId()` call re-evaluated in a SEPARATE process or module registry
+ * (e.g. Next.js dev mode instantiating this module once per RSC vs. Route
+ * Handler "layer", or a plain dev-server restart) produces a DIFFERENT
+ * random id each time, which silently defeats `seed()`'s upsert-by-id
+ * idempotency — see docs/DECISIONS.md DEC-047 for the real duplicate-row
+ * bug this caused in Sprint 4.5's live Pluggy validation.
+ */
+function slugify(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
 export const nubankCreditCard: PaymentSource = {
-  id: createId("payment-source"),
+  id: "payment-source_fixture-nubank" as Id<"payment-source">,
   label: "Nubank",
   type: "CREDIT_CARD",
 };
@@ -42,7 +59,7 @@ function buildTransaction(raw: RawTransactionInput): FinancialTransaction {
   const paymentSource = raw.paymentSource ?? nubankCreditCard;
 
   const partial: FinancialTransaction = {
-    id: createId("transaction"),
+    id: `transaction_fixture-${slugify(raw.rawMerchant)}-${raw.date}` as Id<"transaction">,
     financialProfileId: FIXTURE_PROFILE_ID,
     paymentSource,
     date: raw.date,

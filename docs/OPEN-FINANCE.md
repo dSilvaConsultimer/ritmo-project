@@ -307,12 +307,14 @@ real user data (NON-NEGOTIABLE, Sprint 3).
 
 ## Known provider limitations
 
-- The amount-sign/effect classification table above is a documented best-effort heuristic, not a
-  formally verified mapping — it was built from Pluggy's public documentation and SDK source, not
-  from observing real transaction data (no sandbox credentials were available). Real Pluggy sandbox
-  data may surface description patterns the current keyword lists don't recognize; when that
-  happens, extend `FEE_KEYWORDS`/`REFUND_KEYWORDS`/`CARD_PAYMENT_KEYWORDS`/
-  `OWN_ACCOUNT_TRANSFER_KEYWORDS` in `pluggy/mappers.ts` rather than adding a parallel heuristic.
+- The amount-sign/effect classification table above was built from Pluggy's public documentation and
+  SDK source, and (Sprint 4.5) has now been exercised against real sandbox transaction data for the
+  first time — several CREDIT-direction credit-card transactions were classified `REFUND`, which is
+  plausible but has not been manually cross-checked against Pluggy's own documented intent for those
+  specific sandbox fixtures. Still not a formally verified mapping. Real Pluggy sandbox data may
+  surface description patterns the current keyword lists don't recognize; when that happens, extend
+  `FEE_KEYWORDS`/`REFUND_KEYWORDS`/`CARD_PAYMENT_KEYWORDS`/`OWN_ACCOUNT_TRANSFER_KEYWORDS` in
+  `pluggy/mappers.ts` rather than adding a parallel heuristic.
 - `normalizePluggyError`'s HTTP-status-to-`ProviderErrorCode` mapping is similarly unverified against
   real Pluggy error responses.
 - `reconciliation_links` has no `financialProfileId` column (a Sprint 2 schema gap) — reconciliation
@@ -325,17 +327,30 @@ real user data (NON-NEGOTIABLE, Sprint 3).
   all — it reads through `@money-copilot/app-services`'s existing query functions, which already sit
   on top of whichever provider (`MockProvider` today) is registered, so nothing here needs to change
   once real sandbox credentials arrive.
-- **Sprint 4.5 (partial progress)**: with real `PLUGGY_CLIENT_ID`/`PLUGGY_CLIENT_SECRET` configured,
-  live authentication and Connect Token creation both succeeded (`POST /api/token` → a real Pluggy
-  sandbox `accessToken`, verified via an HTTP 200 from the running app). The interactive Connect
-  widget step (choosing a sandbox/test connector and completing its fake login) did not result in a
-  persisted `provider_connections` row on this app's side — the dev server's request log showed no
-  `POST /api/connections` call reaching it, so either the widget's `onSuccess` callback didn't fire
-  (commonly because the tab/widget was closed before Pluggy's own success confirmation appeared,
-  rather than right after submitting the sandbox test credentials) or the flow was exercised outside
-  this app entirely (e.g. directly against Pluggy's own dashboard tooling). No account/transaction/
-  bill data was imported. This sprint's scope items — validating real Pluggy data shapes/sign
-  semantics and re-confirming card-payment/bill double-counting protection against real sandbox data
-  — therefore remain unexecuted; the amount-sign/effect mapping above is still a documentation-derived
-  heuristic, not one validated against an observed real payload. A retry should keep the Pluggy
-  Connect widget open until it shows its own success confirmation and closes on its own.
+- **Sprint 4.5 — first attempt (partial)**: with real `PLUGGY_CLIENT_ID`/`PLUGGY_CLIENT_SECRET`
+  configured, live authentication and Connect Token creation both succeeded (`POST /api/token` → a
+  real Pluggy sandbox `accessToken`, verified via an HTTP 200 from the running app). The interactive
+  Connect widget step did not result in a persisted `provider_connections` row on this app's side —
+  the dev server's request log showed no `POST /api/connections` call reaching it. This directly
+  motivated the connection-recovery hardening (DEC-046, "Connection recovery" above) before retrying.
+- **Sprint 4.5 — second attempt (COMPLETE)**: a fresh sandbox Connect succeeded end to end: a real
+  `ProviderConnection` (`connectorName: "Pluggy Bank"`, a sandbox/test institution) was persisted,
+  status `CONNECTED`; 2 real accounts were imported (a checking account and a credit card); multiple
+  real transactions were imported and correctly deduplicated by `externalTransactionId` across repeat
+  syncs; 2 real credit card bills were imported (initially duplicated on repeat sync — a real,
+  separate bug, fixed — see DEC-048 below); `FinancialPosition` liquidity coverage changed from
+  `UNKNOWN` to `PARTIAL`; the dashboard's Safe-to-Spend recalculated to include the real data and its
+  banner correctly switched from "DEMO / FIXTURE DATA" to "PROVIDER DATA CONNECTED (SANDBOX)". The
+  amount-sign/effect mapping table was exercised against real sandbox data for the first time: several
+  CREDIT-direction credit-card transactions (Netflix, Spotify, a gym subscription) were classified
+  `REFUND` — plausible, but not manually cross-checked against Pluggy's own documented intent for
+  those specific sandbox fixtures. No credit-card-bill-payment transaction happened to be present in
+  this dataset, so the `CARD_PAYMENT` classification path specifically remains validated only against
+  fixtures/mocks, not real data.
+- **DEC-048 (bill deduplication)**: `billFromExternalInput` always generated a fresh id — unlike
+  transactions and payment sources, nothing looked up an existing bill by `(provider, externalBillId)`
+  first, so every repeat sync of the same connection created a NEW row for the same real external
+  bill. Fixed by adding `findBillByExternalId` and giving `billFromExternalInput` an optional `id`
+  parameter to reuse, matching the existing pattern. Never affected `FinancialSnapshot` math (bills
+  are never summed into it — see "Credit card bills" above) — a persistence/observability bug, not a
+  double-counting one.

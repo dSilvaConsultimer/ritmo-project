@@ -1,4 +1,4 @@
-import { createId } from "@money-copilot/shared";
+import type { Id } from "@money-copilot/shared";
 import * as M from "../money/index";
 import { TAX_CATEGORY, type FixedExpense, type VariableBudget } from "../domain/expense";
 import type { Income } from "../domain/income";
@@ -19,8 +19,17 @@ import { septemberTransactions } from "./transactions";
  */
 export const FIXTURE_AS_OF_DATE = "2026-09-05";
 
+// Every id below is a stable string literal, never `createId()` — see
+// `transactions.ts`'s comment and docs/DECISIONS.md DEC-047. `createId()`
+// embeds `Date.now()`, so a fresh evaluation of this module (a dev-server
+// restart, or Next.js instantiating separate module registries per
+// RSC/Route-Handler "layer" — both observed in Sprint 4.5's live
+// validation) produces DIFFERENT ids for "the same" fixture entity every
+// time, which silently defeats `seed()`'s upsert-by-id idempotency and
+// piles up duplicate rows (and duplicate warnings) on every restart.
+
 export const pjRevenue: Income = {
-  id: createId("income"),
+  id: "income_fixture-pj-revenue" as Id<"income">,
   label: "PJ gross revenue",
   grossAmount: M.fromReais(15_000),
   certainty: "CONFIRMED",
@@ -28,7 +37,7 @@ export const pjRevenue: Income = {
 };
 
 const taxes: FixedExpense = {
-  id: createId("fixed-expense"),
+  id: "fixed-expense_fixture-taxes" as Id<"fixed-expense">,
   label: "Monthly taxes",
   category: TAX_CATEGORY,
   amount: M.fromReais(870),
@@ -37,7 +46,7 @@ const taxes: FixedExpense = {
 };
 
 const housing: FixedExpense = {
-  id: createId("fixed-expense"),
+  id: "fixed-expense_fixture-housing" as Id<"fixed-expense">,
   label: "Rent + condominium",
   category: "Housing",
   amount: M.fromReais(1_600),
@@ -47,7 +56,7 @@ const housing: FixedExpense = {
 
 /** Protected and non-negotiable — see NON-NEGOTIABLE RULE #6. */
 export const motherSupport: FixedExpense = {
-  id: createId("fixed-expense"),
+  id: "fixed-expense_fixture-mother-support" as Id<"fixed-expense">,
   label: "Support to mother",
   category: "Family Support",
   amount: M.fromReais(1_000),
@@ -56,7 +65,7 @@ export const motherSupport: FixedExpense = {
 };
 
 const carSubscription: FixedExpense = {
-  id: createId("fixed-expense"),
+  id: "fixed-expense_fixture-car-subscription" as Id<"fixed-expense">,
   label: "Localiza / Fiat Pulse subscription",
   category: "Transportation",
   amount: M.fromReais(2_715),
@@ -65,7 +74,7 @@ const carSubscription: FixedExpense = {
 };
 
 const lifeInsurance: FixedExpense = {
-  id: createId("fixed-expense"),
+  id: "fixed-expense_fixture-life-insurance" as Id<"fixed-expense">,
   label: "Life insurance",
   category: "Insurance",
   amount: M.fromReais(360),
@@ -74,7 +83,7 @@ const lifeInsurance: FixedExpense = {
 };
 
 const gym: FixedExpense = {
-  id: createId("fixed-expense"),
+  id: "fixed-expense_fixture-gym" as Id<"fixed-expense">,
   label: "Gym",
   category: "Health",
   amount: M.fromReais(150),
@@ -83,7 +92,7 @@ const gym: FixedExpense = {
 };
 
 const footvolley: FixedExpense = {
-  id: createId("fixed-expense"),
+  id: "fixed-expense_fixture-footvolley" as Id<"fixed-expense">,
   label: "Footvolley",
   category: "Health",
   amount: M.fromReais(155),
@@ -109,7 +118,7 @@ export const fixedExpenses: readonly FixedExpense[] = [
 ];
 
 const foodBudget: VariableBudget = {
-  id: createId("variable-budget"),
+  id: "variable-budget_fixture-food" as Id<"variable-budget">,
   label: "Food",
   category: "Food",
   targetAmount: M.fromReais(1_500),
@@ -127,7 +136,7 @@ export const variableBudgets: readonly VariableBudget[] = [foodBudget];
  * data, per RULE #9/#16/#17.
  */
 export const oldCreditCardDebtPlan: InstallmentPlan = {
-  id: createId("installment-plan"),
+  id: "installment-plan_fixture-old-card-debt" as Id<"installment-plan">,
   financialProfileId: FIXTURE_PROFILE_ID,
   description: "Existing credit card bill installment",
   totalOriginalAmount: null,
@@ -160,27 +169,27 @@ export const transactions = septemberTransactions;
  * below links the two so the snapshot counts it exactly once.
  */
 const rodeo: FinancialEvent = {
-  id: createId("financial-event"),
+  id: "financial-event_fixture-rodeo" as Id<"financial-event">,
   label: "Rodeo",
   startDate: "2026-09-04",
   endDate: "2026-09-04",
   lineItems: [
     {
-      id: createId("event-line-item"),
+      id: "event-line-item_fixture-rodeo-ticket" as Id<"event-line-item">,
       label: "Ticket",
       amount: M.fromReais(476.1),
       certainty: "ACTUAL",
       status: "ALREADY_PAID",
     },
     {
-      id: createId("event-line-item"),
+      id: "event-line-item_fixture-rodeo-transportation" as Id<"event-line-item">,
       label: "Transportation / van",
       amount: M.fromReais(100),
       certainty: "CONFIRMED",
       status: "PLANNED",
     },
     {
-      id: createId("event-line-item"),
+      id: "event-line-item_fixture-rodeo-drinks" as Id<"event-line-item">,
       label: "Drinks",
       amount: M.fromReais(150),
       certainty: "ESTIMATED",
@@ -195,13 +204,13 @@ const rodeo: FinancialEvent = {
  * see NON-NEGOTIABLE RULE #9.
  */
 const beachTrip: FinancialEvent = {
-  id: createId("financial-event"),
+  id: "financial-event_fixture-beach-trip" as Id<"financial-event">,
   label: "Beach trip (Sep 25-27)",
   startDate: "2026-09-25",
   endDate: "2026-09-27",
   lineItems: [
     {
-      id: createId("event-line-item"),
+      id: "event-line-item_fixture-beach-trip-budget" as Id<"event-line-item">,
       label: "Trip budget",
       amount: null,
       certainty: "UNKNOWN",
@@ -225,13 +234,13 @@ export const reconciliationLinks: readonly ReconciliationLink[] = [
 ];
 
 export const independentLivingGoal: FinancialGoal = {
-  id: createId("financial-goal"),
+  id: "financial-goal_fixture-independent-living" as Id<"financial-goal">,
   label: "Become financially ready to live independently",
   monthlySavingsTarget: M.fromReais(2_000),
 };
 
 export const motherSupportPreference: ProtectedPreference = {
-  id: createId("protected-preference"),
+  id: "protected-preference_fixture-mother-support" as Id<"protected-preference">,
   label: "Never reduce support to mother",
   scope: { type: "EXPENSE", expenseId: motherSupport.id },
   reason: "Non-negotiable family commitment.",
@@ -240,7 +249,7 @@ export const motherSupportPreference: ProtectedPreference = {
 export const protectedPreferences: readonly ProtectedPreference[] = [motherSupportPreference];
 
 export const currentLifestyleScenario: LifestyleScenario = {
-  id: createId("lifestyle-scenario"),
+  id: "lifestyle-scenario_fixture-current" as Id<"lifestyle-scenario">,
   type: "CURRENT_LIFESTYLE",
   label: "Current lifestyle (living with mother)",
   additionalMonthlyExpenses: [],
@@ -251,24 +260,24 @@ export const currentLifestyleScenario: LifestyleScenario = {
  * confirmed facts — see RULE #13, #14 and docs/PRODUCT.md.
  */
 export const independentLivingScenario: LifestyleScenario = {
-  id: createId("lifestyle-scenario"),
+  id: "lifestyle-scenario_fixture-independent-living" as Id<"lifestyle-scenario">,
   type: "INDEPENDENT_LIVING",
   label: "Independent living simulation",
   additionalMonthlyExpenses: [
     {
-      id: createId("lifestyle-delta"),
+      id: "lifestyle-delta_fixture-food" as Id<"lifestyle-delta">,
       label: "Additional dinner/food responsibility",
       amount: M.fromReais(500),
       certainty: "ESTIMATED",
     },
     {
-      id: createId("lifestyle-delta"),
+      id: "lifestyle-delta_fixture-cleaning" as Id<"lifestyle-delta">,
       label: "Cleaning",
       amount: M.fromReais(300),
       certainty: "ESTIMATED",
     },
     {
-      id: createId("lifestyle-delta"),
+      id: "lifestyle-delta_fixture-household-supplies" as Id<"lifestyle-delta">,
       label: "Household supplies",
       amount: M.fromReais(125),
       certainty: "ESTIMATED",

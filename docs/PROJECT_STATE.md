@@ -9,7 +9,7 @@ identify the conflict, explain the existing rule, do not silently change it, imp
 behavior only if it clearly supersedes the old decision, and record the change in
 `docs/DECISIONS.md` (mark the old decision superseded, add a new one — never rewrite history).
 
-Last updated: **2026-09-09, end of Sprint 4.5 (connection-recovery hardening addendum).**
+Last updated: **2026-09-09, end of Sprint 4.5 (Pluggy live validation completed + fixture-id/bill-dedup hardening).**
 
 ---
 
@@ -56,8 +56,11 @@ Last updated: **2026-09-09, end of Sprint 4.5 (connection-recovery hardening add
     originates from `packages/financial-engine` via the `packages/app-services/src/copilot/tools.ts`
     allowlist.
 20. **(Sprint 4) `REAL_PERSONAL_FINANCIAL_DATA_ALLOWED = false` remains in effect.** No AI feature
-    connects to or uses the Founder's real Santander/Nubank accounts — only seeded/mock/fixture data
-    — until live Pluggy sandbox validation passes (still pending; see "Integration status").
+    connects to or uses the Founder's real Santander/Nubank accounts — only seeded/mock/fixture data,
+    or (Sprint 4.5) a Pluggy SANDBOX test connector. Live Pluggy sandbox validation itself is now
+    COMPLETE (see "Integration status"), but this gate stays `false` regardless until a SEPARATE,
+    explicit Founder/Product decision allows real personal accounts — sandbox validation passing is a
+    precondition for that decision, not the decision itself.
 21. **(Sprint 4) A mutation tool only executes on the user's own explicit, decided action.**
     Hypothetical/exploratory language ("what if", "could I", "should I") must never result in a
     persisted financial change — enforced independently of the LLM's own judgment by
@@ -101,15 +104,19 @@ AI copilot detail: `docs/AI-COPILOT.md`.
 ## Current sprint
 
 **Sprint 4.5 — external-validation + PT-BR hardening pass on top of Sprint 4. Engineering complete;
-both live validations PARTIAL** (real credentials were available and used this time — a real,
-previously-untested bug was found and fixed live, see DEC-043 — but neither validation reached a
-fully-passing live scenario run; see "Integration status" below for the exact blockers, both of which
-require a Founder action, not a code fix). See the Sprint 4.5 final report delivered to the founder
-for the full account; this file carries forward only what a future sprint needs to know.
+live Pluggy sandbox validation COMPLETE; live OpenAI validation PARTIAL** (real credentials were used
+throughout — three real, previously-untested bugs were found and fixed live: an OpenAI strict-schema
+bug (DEC-043), a fixture-id-stability bug that also caused a real React rendering error (DEC-047),
+and a bill-deduplication bug (DEC-048); the connection-recovery architectural gap DEC-046 identified
+was also fixed and then validated by a second, successful sandbox Connect. OpenAI's actual scenario
+calls remain blocked by an account-level `credit_balance_exhausted` error unrelated to this
+engineering — see "Integration status" for the exact status of both). See the Sprint 4.5 final report
+delivered to the founder for the full account; this file carries forward only what a future sprint
+needs to know.
 
 ## Completed capabilities
 
-**New in Sprint 4.5** (see `docs/DECISIONS.md` DEC-043–046, `docs/AI-COPILOT.md`, and
+**New in Sprint 4.5** (see `docs/DECISIONS.md` DEC-043–048, `docs/AI-COPILOT.md`, and
 `docs/OPEN-FINANCE.md` for the full account):
 
 - Fixed a real, live-discovered bug: every optional AI tool argument is now `.nullable().default(
@@ -232,11 +239,9 @@ enriched fixture (7 September transactions, old debt as an `InstallmentPlan`).
 - **Old-debt reconciliation**: candidates are computed (`getInstallmentPlanMatchCandidates`) and
   exposed, but there is no UI/flow to act on one (accept/reject) — deliberately deferred (DEC-032),
   likely bundled into Sprint 5's recommendation lifecycle UI.
-- **Live Pluggy sandbox validation**: PARTIAL as of Sprint 4.5 — real authentication and Connect
-  Token creation succeeded live; the interactive Connect-widget step did not persist a connection on
-  this app's side, so no real account/transaction/bill data was imported (see "Integration status").
-  All engineering is complete and contract-tested against `MockProvider`/injected fakes/sanitized
-  fixtures regardless.
+- ~~Live Pluggy sandbox validation~~ — **COMPLETE as of Sprint 4.5** (see "Integration status"): a
+  real sandbox Item was connected, synced, and reflected in the dashboard end to end. Moved out of
+  this section; kept only historically relevant items below it.
 - **Live OpenAI validation**: PARTIAL as of Sprint 4.5 — the configured model was confirmed
   available and a real, previously-untested schema bug was found and fixed live (DEC-043), but actual
   scenario calls are blocked by `429 credit_balance_exhausted` even after credits were added (see
@@ -384,7 +389,7 @@ plus:
 
 ## Known bugs
 
-None open at end of Sprint 4.5. Three found and fixed across Sprints 3-4.5's own live/integration
+None open at end of Sprint 4.5. Five found and fixed across Sprints 3-4.5's own live/integration
 testing (all are process/design corrections, documented as decisions rather than silent fixes):
 
 1. The incremental sync's date-filtered fetch would miss a status update (PENDING → POSTED) on an
@@ -398,59 +403,102 @@ testing (all are process/design corrections, documented as decisions rather than
    `properties` key to appear in `required`, which plain Zod `.optional()` does not produce. Fixed by
    converting every optional tool argument to `.nullable().default(null)`, plus a permanent offline
    regression test (`tool-schema-strict-mode.test.ts`) — see DEC-043.
+4. (Sprint 4.5) Every fixture id except the profile id was `createId()`-generated, not stable across
+   a fresh module evaluation — silently defeating `seed()`'s idempotency across dev-server restarts
+   (and Next.js's separate RSC-vs-Route-Handler module registries) and piling up duplicate fixture
+   rows, which in turn produced a real React "two children with the same key" console error (the
+   duplicated "Beach trip budget unknown" warning). Fixed by making every fixture id a stable string
+   literal, plus `vi.resetModules()`-based regression tests that reproduce the actual failure mode —
+   see DEC-047. The React rendering itself was separately hardened too (composite `text:index` keys,
+   `apps/web/app/lib/warning-key.ts`) so repeated-but-legitimate warnings never break rendering again
+   regardless of the data layer.
+5. (Sprint 4.5) `CreditCardBill` rows were duplicated on every repeat sync of the same connection —
+   found via real Pluggy sandbox data. Fixed to match the existing idempotent-upsert pattern already
+   used for transactions/payment sources — see DEC-048.
 
 ## Test status
 
-**336 automated tests passing** in the default suite, zero failing, across five packages (up from
+**344 automated tests passing** in the default suite, zero failing, across six packages (up from
 288 at end of Sprint 4), plus **6 additional opt-in live-OpenAI tests** that skip automatically
 without `OPENAI_API_KEY` (never part of the default suite — see "Integration status"):
 
-- `packages/financial-engine`: **124** (unchanged from Sprint 4).
+- `packages/financial-engine`: **126** (124 from earlier in Sprint 4.5, plus `stable-ids.test.ts` —
+  DEC-047's `vi.resetModules()`-based fixture-id-stability regression test).
 - `packages/ai`: **11** (unchanged from Sprint 4).
 - `packages/open-finance`: **46** (unchanged from Sprint 3 — `MockProvider`'s `getConnection` gained
   an optional `clientUserId` lookup for connection-recovery testability, no behavior change for
   existing callers).
-- `packages/persistence`: **21** (unchanged from Sprint 4 — `getProfileById` added, not yet exercised
-  by a dedicated persistence-level test since it's covered end-to-end via
-  `connection-recovery.test.ts`).
-- `packages/app-services`: **134** (Sprint 4's 86, plus Sprint 4.5: PT-BR mutation-guard explicit/
+- `packages/persistence`: **22** (21 from earlier in Sprint 4.5, plus a `vi.resetModules()`-based
+  cross-module-reset idempotent-seed regression test — the persistence-level half of DEC-047).
+- `apps/web` (new test runner, Sprint 4.5): **4** (`warningKey`'s uniqueness/stability/no-content-
+  loss properties — the regression test for the React duplicate-key bug this sprint's live validation
+  surfaced).
+- `packages/app-services`: **135** (Sprint 4's 86, plus Sprint 4.5: PT-BR mutation-guard explicit/
   hypothetical cases mirroring the brief's examples, PT-BR grounding pass/fail cases, a full PT-BR
   conversation-loop suite in `orchestrator.test.ts` (Safe-to-Spend regression, hypothetical-vs-
   explicit mutation gating, grounding fallback, independent-living question — all in Portuguese),
   `tool-schema-strict-mode.test.ts` asserting every one of the 16 tools' JSON Schemas satisfy OpenAI's
-  strict-mode `required` constraint, and `connection-recovery.test.ts`'s 10 tests covering the 6
-  required scenarios (onSuccess normally, frontend closes before onSuccess, webhook later confirms
-  the Item, missing connection recovered, both onSuccess and webhook arrive in either order, repeated
-  recovery stays idempotent) plus two defensive cases (no `clientUserId` reported; `clientUserId`
-  matching no known profile) — plus 6 skipped-by-default live tests in `live-openai-smoke.test.ts`.
+  strict-mode `required` constraint, `connection-recovery.test.ts`'s 10 tests covering the 6 required
+  scenarios (onSuccess normally, frontend closes before onSuccess, webhook later confirms the Item,
+  missing connection recovered, both onSuccess and webhook arrive in either order, repeated recovery
+  stays idempotent) plus two defensive cases (no `clientUserId` reported; `clientUserId` matching no
+  known profile), and a bill-deduplication regression test (DEC-048, syncing the same mock connection
+  twice and asserting exactly one bill row persists) — plus 6 skipped-by-default live tests in
+  `live-openai-smoke.test.ts`.
 
 Run with `pnpm run test` from the repo root, or per-package with `--filter`.
 
 ## Integration status
 
-**Pluggy sandbox: engineering complete, live validation PARTIAL.** Real
-`PLUGGY_CLIENT_ID`/`PLUGGY_CLIENT_SECRET` were used in Sprint 4.5. Real authentication and Connect
-Token creation both succeeded (`POST /api/token` → HTTP 200 with a real sandbox `accessToken`, via the
-running app against the real Pluggy API). The Founder reported completing the interactive Connect
-widget, but the dev server's request log shows no corresponding `POST /api/connections` call, and
-`GET /api/connections` still returns an empty list — no connection was persisted, and no account/
-transaction/bill data was imported. Likely cause: the widget's `onSuccess` callback fires only once
-Pluggy's own success confirmation appears and the widget closes on its own — closing the tab/window
-right after submitting sandbox test credentials (before that confirmation) would not trigger it.
-**Next attempt should**: open the currently-running dev server's page, click "Connect institution,"
-choose a sandbox/test connector only (never a real institution), and keep the widget open until it
-explicitly shows success and closes itself; then confirm `GET /api/connections` shows a new row
-before considering the flow complete. Once a connection actually persists, the remaining validation
-steps are: account retrieval, transaction retrieval, persistence, and snapshot recalculation — per
-the original checklist, still unexecuted.
+**Pluggy sandbox: engineering complete, live validation COMPLETE.** A first attempt (below) found a
+real architectural gap; a second sandbox Connect attempt, after hardening, succeeded end to end and
+was independently verified against the live database and the running dashboard:
 
-**Architectural hardening completed as a result of this finding** (DEC-046,
-`docs/OPEN-FINANCE.md` "Connection recovery"): `onSuccess` is no longer treated as the sole
-mechanism for discovering/persisting a connection — the webhook dispatcher now recovers an orphaned
-Item deterministically via its `clientUserId` if `onSuccess` never fires. This does NOT itself
-constitute live validation (it's tested via `MockProvider` only, `connection-recovery.test.ts`) — a
-further live sandbox Connect attempt is still needed and remains pending per the Founder's explicit
-instruction to hold off retrying until they complete another one.
+1. **Connect Token creation** — `POST /api/token` → HTTP 200 with a real sandbox `accessToken`.
+2. **Real Connect flow through a sandbox test connector** — `ProviderConnection.connectorName =
+   "Pluggy Bank"` (a Pluggy sandbox/test institution, never a real bank), `status: "CONNECTED"`.
+3. **Account retrieval** — 2 real accounts imported ("GOLD Conta Corrente" checking, "PLUGGY UNICLASS
+   MASTERCARD BLACK" credit card).
+4. **Transaction retrieval** — multiple real sandbox transactions imported (NETFLIX.COM, SPOTIFY AB,
+   SMART FIT ACADEMIA, a "Pagamento de boleto" checking-account debit, …), correctly deduplicated by
+   `externalTransactionId` across repeated syncs (unlike bills — see DEC-048 below).
+5. **Bill retrieval** — 2 real credit-card bills imported; found and fixed a duplication bug on
+   repeat sync (DEC-048).
+6. **Persistence + snapshot recalculation** — `GET /api/connections` and the dashboard's "Connected
+   Accounts" section both show the real connection; `FinancialPosition` liquidity coverage changed
+   from `UNKNOWN` to `PARTIAL` (real account balances now known); Safe-to-Spend recalculated to
+   include the real imported data. The dashboard banner correctly switched from "DEMO / FIXTURE DATA"
+   to "PROVIDER DATA CONNECTED (SANDBOX)".
+7. **Card-payment/bill double-counting protection** — confirmed with real data: bills remain stored
+   separately and are never summed into `FinancialSnapshot` (unchanged architecture). The sandbox
+   dataset's own transactions didn't happen to include a "pay off this credit card from my checking
+   account" transaction specifically, so the `CARD_PAYMENT` classification path itself is still only
+   validated against fixtures/mocks, not real data — a residual, narrow gap, not a known failure.
+
+**First attempt (for the record)**: real authentication and Connect Token creation succeeded, but the
+Connect widget's `onSuccess` callback never reached `/api/connections` — no connection was persisted.
+This directly motivated the connection-recovery hardening below (DEC-046) before the Founder retried.
+
+**Architectural findings from this validation, all fixed and regression-tested**:
+- **DEC-046**: `onSuccess` is no longer the sole mechanism for discovering/persisting a connection —
+  the webhook dispatcher recovers an orphaned Item via its `clientUserId` if `onSuccess` never fires.
+- **DEC-047**: every fixture id (except the profile id) was `createId()`-generated, not stable across
+  a fresh module evaluation (a dev-server restart, or Next.js's separate RSC-vs-Route-Handler module
+  registries — both observed live) — silently defeating `seed()`'s idempotency and piling up
+  duplicate fixture rows on every restart. This was the actual cause of a React "two children with
+  the same key" console error the Founder hit (the duplicated "Beach trip budget unknown" warning was
+  real, not a rendering artifact) — see "Known bugs" and the web app fix below. Fixed by making every
+  fixture id a stable literal.
+- **DEC-048**: `CreditCardBill` rows were duplicated on every repeat sync of the same connection
+  (unlike transactions/payment sources, nothing looked up an existing bill by external id first).
+  Fixed to match the existing idempotent-upsert pattern.
+
+**Known residual state**: the LOCAL DEV DATABASE used during this validation still contains the
+duplicate fixture rows accumulated BEFORE the DEC-047 fix (7x copies of several fixture entities) —
+the fix prevents any NEW duplication but does not retroactively clean up what already accumulated.
+The real Pluggy-imported connection/accounts/transactions are unaffected (they were always keyed by
+stable external ids). A `.data` wipe + fresh reseed + a new sandbox Connect would give a fully clean
+baseline; this was left for the Founder to decide given it requires redoing the interactive step.
 
 No Belvo, no real (non-sandbox) bank connections, no WhatsApp — all correctly out of scope for
 Sprint 1–4.5.
@@ -475,22 +523,22 @@ run to completion yet.
 Carried forward from Sprint 2 (caution threshold, viability thresholds, protected savings target
 methodology), plus:
 
-- When can the Founder obtain Pluggy sandbox credentials, and is he willing to complete a real
-  Connect flow through a Pluggy sandbox test connector once they're available (a short, one-time
-  interactive step)?
-- Is the current amount-sign/effect mapping table (`docs/OPEN-FINANCE.md`) good enough to trust with
-  a real sandbox connector's data, or should it be revisited once real transactions are observed?
+- Is the current amount-sign/effect mapping table (`docs/OPEN-FINANCE.md`) — now exercised against
+  real sandbox data for the first time (Sprint 4.5) — producing semantically correct classifications,
+  or should any of it be revisited? (Several CREDIT-direction credit-card transactions were classified
+  `REFUND`; this was not manually cross-checked against Pluggy's own intended meaning for those
+  specific sandbox fixture transactions.)
 - Should old-debt installment match candidates get a lightweight accept/reject affordance before
   Sprint 5's full recommendation lifecycle UI, or wait?
 - (Sprint 4.5) Does the OpenAI key's specific PROJECT have a $0 (or otherwise insufficient) budget
   limit separate from the organization's overall credit balance? This is the leading suspect for the
   persistent `credit_balance_exhausted` error even after credits were added at the org level.
-- (Sprint 4.5) Was the Pluggy Connect flow the Founder completed actually run against this app's own
-  `/api/token`-issued Connect Token (via the running dev server's widget), or through some other
-  means (e.g. Pluggy's own dashboard tooling)? A retry against the app's own UI, keeping the widget
-  open to its own success confirmation, is the next step either way.
-- (Sprint 4) Should Sprint 5 (Recommendation Engine) happen before or after live Pluggy sandbox
-  validation finally lands, given both remain pending?
+- (Sprint 4.5) Does the Founder want the local dev database wiped and freshly reseeded (clearing the
+  duplicate fixture rows accumulated before DEC-047's fix) before further local testing? This requires
+  redoing the sandbox Connect step once more, so it was left as the Founder's call rather than done
+  unilaterally.
+- (Sprint 4) Should Sprint 5 (Recommendation Engine) happen before or after live OpenAI validation
+  finally completes (Pluggy's is now done)?
 
 ## Next recommended sprint
 
@@ -498,26 +546,34 @@ methodology), plus:
 `docs/ROADMAP.md` for detailed scope. The AI copilot's tool layer (`packages/app-services/src/
 copilot/`) and the `Recommendation` domain model (Sprint 1) are both already in place — Sprint 5's
 job is the actual discovery logic, respecting `ProtectedPreference` and never resurfacing a rejected
-recommendation absent material context change. Live Pluggy sandbox validation and live OpenAI
-validation both remain PARTIAL (DEC-033, DEC-045) and should be completed before or alongside
-Sprint 5 once the two open blockers above are resolved. **Sprint 5 has explicitly not been started.**
+recommendation absent material context change. Live Pluggy sandbox validation is now COMPLETE
+(DEC-033/DEC-045/DEC-046 through DEC-048); live OpenAI validation remains PARTIAL and should complete
+before or alongside Sprint 5 once the account-level billing question above is resolved. **Sprint 5
+has explicitly not been started.**
 
 ## Risks
 
 Carried forward from Sprint 2 (threshold drift, version currency, reconciliation false negatives —
-now somewhat validated by real Pluggy-shaped fixture testing, though not live data), plus:
+now validated against real live Pluggy sandbox data as of Sprint 4.5, not just fixtures), plus:
 
 - **(Sprint 4.5) Live OpenAI scenario validation still unexecuted**: the schema-level bug (DEC-043)
   is fixed and confirmed live, but no PT-BR scenario has actually completed against a real model
   response — `hasExplicitMutationIntent`'s and `groundResponseText`'s behavior against a live model's
   actual prose variety (as opposed to `MockAIProvider`-scripted text) remains unverified.
   `AIRequestLog` has similarly never recorded a real call's actual latency/token usage.
-- **(Sprint 4.5) Live Pluggy data validation still unexecuted**: the amount-sign/effect mapping table
-  and the card-payment/bill double-counting protection remain validated only against documentation-
-  derived fixtures, never an observed real sandbox payload — see `docs/OPEN-FINANCE.md`.
+- **(Sprint 4.5) The amount-sign/effect mapping table was exercised against real sandbox data for the
+  first time**, and produced plausible-looking results (e.g. `REFUND` for CREDIT-direction credit-card
+  entries), but this was not manually cross-checked against Pluggy's own documentation of what each
+  specific sandbox fixture transaction is meant to represent — see `docs/OPEN-FINANCE.md`, "Known
+  provider limitations." The `CARD_PAYMENT` classification path specifically was not exercised by this
+  particular sandbox dataset (it happened not to include a credit-card-bill-payment transaction).
 - **(Sprint 4.5) Two-language maintenance burden**: the mutation-guard's pattern list must now be
   kept in sync across English and Portuguese — a behavior change in one language's patterns could
   silently not be mirrored in the other without a deliberate check.
+- **(Sprint 4.5) The local dev database still contains pre-DEC-047 duplicate fixture rows** (7x
+  copies of several entities, accumulated before the fix) — harmless to the fix's correctness going
+  forward, but noisy for any further local testing until a `.data` wipe + reseed + fresh sandbox
+  Connect is done (left as the Founder's call).
 - **Unvalidated provider mapping**: the sign/effect mapping table and error-code mapping are built
   from documentation and SDK source, not observed real data. A real sandbox connection could reveal a
   transaction shape the current keyword heuristics misclassify — see `docs/OPEN-FINANCE.md`, "Known

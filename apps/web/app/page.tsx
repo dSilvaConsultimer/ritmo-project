@@ -15,6 +15,7 @@ import {
 } from "@money-copilot/app-services";
 import { ConnectedAccountsPanel } from "./components/ConnectedAccountsPanel";
 import { ChatPanel } from "./components/ChatPanel";
+import { warningKey } from "./lib/warning-key";
 
 // This page reads live, DB-backed data (connections, synced transactions,
 // manual-sync results) — it must be server-rendered per request, never
@@ -156,8 +157,8 @@ function Warnings({ warnings }: { warnings: readonly string[] }) {
   }
   return (
     <ul style={{ margin: 0, paddingLeft: 20, color: "#e0b64f" }}>
-      {warnings.map((w) => (
-        <li key={w} style={{ marginBottom: 6 }}>
+      {warnings.map((w, index) => (
+        <li key={warningKey(w, index)} style={{ marginBottom: 6 }}>
           {w}
         </li>
       ))}

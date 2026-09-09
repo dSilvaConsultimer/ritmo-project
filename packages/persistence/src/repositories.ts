@@ -505,6 +505,24 @@ export async function upsertBill(db: Database, bill: CreditCardBill): Promise<vo
   await db.insert(schema.bills).values(row).onConflictDoUpdate({ target: schema.bills.id, set: row });
 }
 
+/**
+ * Finds a previously-imported bill by provider + external bill id — used
+ * by the sync pipeline to reuse the existing internal id (matching the
+ * `findTransactionByExternalId`/`findPaymentSourceByExternalId` pattern)
+ * rather than creating a duplicate row on every sync. See DEC-048.
+ */
+export async function findBillByExternalId(
+  db: Database,
+  provider: string,
+  externalBillId: string,
+): Promise<CreditCardBill | undefined> {
+  const [row] = await db
+    .select()
+    .from(schema.bills)
+    .where(and(eq(schema.bills.provider, provider), eq(schema.bills.externalBillId, externalBillId)));
+  return row ? mappers.rowToBill(row) : undefined;
+}
+
 export async function listBillsForPaymentSource(
   db: Database,
   paymentSourceId: string,

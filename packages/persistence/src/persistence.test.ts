@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { buildFinancialSnapshot, initialUserSnapshotInput, fixtureProfile } from "@money-copilot/financial-engine";
 import { createDatabase } from "./db";
 import { runMigrations } from "./migrate";
@@ -86,6 +86,40 @@ describe("idempotent seed", () => {
     await seed(db);
     await seed(db);
     await seed(db);
+    const goals = await db.select().from(schema.financialGoals);
+    expect(goals).toHaveLength(1);
+  });
+
+  /**
+   * Regression test for a real Sprint 4.5 bug (DEC-047): the tests above
+   * only prove idempotency when `seed` and its fixture imports stay in ONE
+   * already-running process — which is exactly what masked the bug in the
+   * wild. `vi.resetModules()` + a fresh dynamic `import()` forces the
+   * fixtures module to re-evaluate from scratch between seed calls, the
+   * same as a real dev-server restart (or Next.js instantiating a separate
+   * module registry per RSC-vs-Route-Handler "layer", both observed live)
+   * — this is what actually caught the duplicate-row bug.
+   */
+  it("stays idempotent even when the fixtures module is freshly re-evaluated between seed calls", async () => {
+    const db = await freshDb();
+
+    vi.resetModules();
+    const { seed: seedFirst } = await import("./seed");
+    await seedFirst(db);
+
+    vi.resetModules();
+    const { seed: seedSecond } = await import("./seed");
+    await seedSecond(db);
+
+    const events = await db.select().from(schema.financialEvents);
+    expect(events).toHaveLength(2); // Rodeo + Beach trip, not 4.
+
+    const installmentPlans = await db.select().from(schema.installmentPlans);
+    expect(installmentPlans).toHaveLength(1);
+
+    const fixedExpenses = await db.select().from(schema.fixedExpenses);
+    expect(fixedExpenses).toHaveLength(7);
+
     const goals = await db.select().from(schema.financialGoals);
     expect(goals).toHaveLength(1);
   });

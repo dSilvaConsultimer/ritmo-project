@@ -1017,3 +1017,72 @@ webhooks to `localhost` at all — this is a genuine constraint of Pluggy's deli
 copied from Pluggy's own dashboard) as a manual fallback in that environment. Live Pluggy sandbox
 validation remains pending a further sandbox Connect attempt from the Founder — this hardening does
 not itself constitute that validation.
+
+
+---
+
+### DEC-047
+
+**Date:** 2026-09-09
+**Context:** A real Sprint 4.5 live Pluggy sandbox Connect completed successfully, but the founder
+observed a React warning ("Encountered two children with the same key") on the dashboard, tracing to
+the Safe-to-Spend "Beach trip budget is still unknown" warning appearing multiple times. Investigation
+found the underlying `FinancialSnapshot.warnings` array genuinely contained the same warning text
+multiple times — not just a rendering artifact. Root cause: every fixture entity id in
+`packages/financial-engine/src/fixtures/*.ts` (except `FIXTURE_PROFILE_ID`, already a stable literal)
+was generated via `createId()`, which embeds `Date.now()` and a per-module counter. `seed()`'s
+idempotency is an upsert keyed by id, and its own doc comment claims "every write is an upsert keyed
+by the fixture's own stable ids" — but those ids are NOT stable across a fresh evaluation of the
+fixtures module, which happens on every dev-server restart, and (confirmed live) separately for
+Next.js's RSC vs. Route Handler module "layers" in Turbopack dev mode — each one calls `getDb()` →
+`seed()` independently against the SAME persistent file-backed database. Live inspection of the local
+dev database found 7 duplicate copies of the Rodeo/Beach-trip events, the old-debt installment plan,
+and the manual "Nubank" payment source (49 fixed-expense rows instead of 7) — one set per historical
+restart, each with a different random id.
+**Decision:** Converted every fixture id to a stable string literal (e.g.
+`"financial-event_fixture-beach-trip"`), matching `FIXTURE_PROFILE_ID`'s existing pattern, across
+`fixtures/initial-user.ts`, `fixtures/transactions.ts`, and `fixtures/rules.ts`. Added
+`stable-ids.test.ts` (financial-engine) and a new persistence test, both using `vi.resetModules()` +
+a fresh dynamic `import()` to faithfully reproduce "a separate module registry" within a single test
+run — the exact scenario that let this bug through undetected: the pre-existing "idempotent seed"
+tests only ever called `seed()` within one already-running process, where the fixtures module's ids
+were computed once and reused, masking the cross-instantiation instability entirely.
+**Rationale:** `createId()`'s own doc comment already says it is "not cryptographically unique" and
+implicitly assumes single-process stability; fixture/seed data specifically needs TRUE cross-process
+stability, which only a literal constant provides.
+**Status:** Accepted.
+**Consequences:** Any future fixture addition must use a stable literal id, never `createId()` — the
+new `vi.resetModules()`-based tests catch a regression automatically. The already-corrupted local dev
+database (accumulated duplicate rows from before this fix) is not automatically cleaned up by this
+decision — a fresh `.data` wipe + reseed (or a future one-time repair script, not implemented here)
+is needed to fully clear it; the real Pluggy-imported connection/accounts/transactions are unaffected
+(they were already keyed by stable external provider ids, never by `createId()`).
+
+---
+
+### DEC-048
+
+**Date:** 2026-09-09
+**Context:** While validating real Pluggy account/transaction/bill shapes against the live sandbox
+connection (Sprint 4.5, continuing the pending live validation), inspection of the local database
+found each of the two real Pluggy `CreditCardBill` rows duplicated — same `externalBillId`, two
+different internal ids — after the same connection was synced more than once (an initial sync plus a
+manual `/api/sync` call). Unlike transactions (`findTransactionByExternalId`) and payment sources
+(`findPaymentSourceByExternalId`), `billFromExternalInput`'s caller never looked up an existing bill
+by `(provider, externalBillId)` before generating a fresh id — every sync therefore created a new
+bill row for the same real external bill.
+**Decision:** Added `findBillByExternalId` (`packages/persistence`), and gave
+`billFromExternalInput` an optional `id` parameter (defaulting to a fresh `createId()`, matching the
+existing `paymentSourceFromExternalAccount(input, connectionId, id = createId(...))` pattern) so the
+sync pipeline (`packages/app-services/src/sync.ts`) can look up and reuse an existing bill's id —
+preserving its original `createdAt` too. Added a regression test (`sync.test.ts`) syncing the same
+mock connection twice and asserting exactly one bill row persists with a stable id.
+**Rationale:** Matches the established idempotent-upsert pattern already used for every other
+provider-sourced entity in this pipeline; `CreditCardBill` was the one entity that had drifted from
+it. Never fed into `FinancialSnapshot` math (see `domain/bill.ts`'s own doc comment), so this bug
+never caused a financial double-counting error — but it did violate the sync pipeline's general
+idempotency guarantee and would have caused unbounded row growth on every sync of a credit card
+account.
+**Status:** Accepted.
+**Consequences:** None beyond the fix — the pattern now matches every other external-entity import in
+the pipeline.

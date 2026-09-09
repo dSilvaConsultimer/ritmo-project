@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { fixtureProfile } from "@money-copilot/financial-engine";
-import type { ExternalAccountInput, ExternalTransactionInput } from "@money-copilot/financial-engine";
+import type { ExternalAccountInput, ExternalBillInput, ExternalTransactionInput } from "@money-copilot/financial-engine";
 import * as repo from "@money-copilot/persistence";
 import { createId } from "@money-copilot/shared";
 import {
@@ -280,5 +280,38 @@ describe("getFinancialSnapshot — fixture/provider path equivalence", () => {
     const db = await freshSeededDb();
     const totals = await getCategoryTotals(db, fixtureProfile.id, ASOF);
     expect(totals.length).toBeGreaterThan(0);
+  });
+});
+
+describe("bill deduplication (Sprint 4.5, DEC-048)", () => {
+  it("never creates a duplicate CreditCardBill row when the same connection is synced twice", async () => {
+    const db = await freshSeededDb();
+    const externalBill: ExternalBillInput = {
+      provider: "mock",
+      externalBillId: "mock-bill-1",
+      externalAccountId: mockNubankAccount.externalAccountId,
+      dueDate: "2026-10-10",
+      closingDate: "2026-10-03",
+      totalAmountCents: 500_000,
+      minimumPaymentCents: 100_000,
+      allowsInstallments: true,
+      certainty: "ACTUAL",
+    };
+    installMockProvider({
+      accounts: [mockNubankAccount],
+      transactionsByAccount: new Map(),
+      billsByAccount: new Map([[mockNubankAccount.externalAccountId, [externalBill]]]),
+    });
+
+    const connection = await setUpConnection(db);
+    await syncConnection(db, fixtureProfile.id, connection.id);
+    const afterFirstSync = await repo.listBillsForProfile(db, fixtureProfile.id);
+    expect(afterFirstSync).toHaveLength(1);
+
+    await syncConnection(db, fixtureProfile.id, connection.id);
+    const afterSecondSync = await repo.listBillsForProfile(db, fixtureProfile.id);
+    expect(afterSecondSync).toHaveLength(1);
+    expect(afterSecondSync[0]?.id).toBe(afterFirstSync[0]?.id);
+    expect(afterSecondSync[0]?.createdAt).toBe(afterFirstSync[0]?.createdAt);
   });
 });

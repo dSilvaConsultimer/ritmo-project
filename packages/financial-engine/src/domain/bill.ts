@@ -43,14 +43,25 @@ export interface ExternalBillInput {
   readonly certainty: Certainty;
 }
 
+/**
+ * `id` defaults to a fresh `createId()` for a bill never seen before, but
+ * callers that already found an existing bill for this
+ * (provider, externalBillId) — see `findBillByExternalId` — must pass its
+ * id here to reuse it, the same way `paymentSourceFromExternalAccount` and
+ * `draftTransactionFromExternalInput`'s callers reuse an existing internal
+ * id. Sprint 4.5 live validation found this was NOT being done (DEC-048):
+ * every sync re-created a brand new bill row for the same real Pluggy
+ * bill, since nothing looked up an existing one by `externalBillId` first.
+ */
 export function billFromExternalInput(
   input: ExternalBillInput,
   financialProfileId: Id<"financial-profile">,
   paymentSourceId: Id<"payment-source">,
   now: string,
+  id: Id<"credit-card-bill"> = createId("credit-card-bill"),
 ): CreditCardBill {
   return {
-    id: createId("credit-card-bill"),
+    id,
     financialProfileId,
     paymentSourceId,
     provider: input.provider,

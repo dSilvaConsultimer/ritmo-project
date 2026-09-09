@@ -1,6 +1,10 @@
-import { createId } from "@money-copilot/shared";
+import type { Id } from "@money-copilot/shared";
 import type { MerchantNormalizationRule } from "../domain/merchant";
 import type { CategoryRule } from "../domain/category";
+
+// Stable string-literal ids, never `createId()` — see `transactions.ts` for
+// why (DEC-047: a fixture id must survive being re-evaluated in a separate
+// process/module registry, which `createId()` cannot guarantee).
 
 /**
  * Deterministic merchant normalization rules. "LOCALIZAGF42", "LOCALIZA
@@ -13,49 +17,49 @@ import type { CategoryRule } from "../domain/category";
  */
 export const merchantNormalizationRules: readonly MerchantNormalizationRule[] = [
   {
-    id: createId("merchant-rule"),
+    id: "merchant-rule_fixture-localiza" as Id<"merchant-rule">,
     matchType: "CONTAINS",
     pattern: "LOCALIZA",
     normalizedMerchant: "LOCALIZA",
     priority: 100,
   },
   {
-    id: createId("merchant-rule"),
+    id: "merchant-rule_fixture-ifood" as Id<"merchant-rule">,
     matchType: "CONTAINS",
     pattern: "IFOOD",
     normalizedMerchant: "IFOOD",
     priority: 100,
   },
   {
-    id: createId("merchant-rule"),
+    id: "merchant-rule_fixture-mineiros-dog" as Id<"merchant-rule">,
     matchType: "EXACT",
     pattern: "MINEIROS DOG",
     normalizedMerchant: "MINEIROS DOG",
     priority: 100,
   },
   {
-    id: createId("merchant-rule"),
+    id: "merchant-rule_fixture-adega-do-rai" as Id<"merchant-rule">,
     matchType: "CONTAINS",
     pattern: "ADEGA DO RAI",
     normalizedMerchant: "ADEGA DO RAI",
     priority: 100,
   },
   {
-    id: createId("merchant-rule"),
+    id: "merchant-rule_fixture-oxxo" as Id<"merchant-rule">,
     matchType: "CONTAINS",
     pattern: "OXXO",
     normalizedMerchant: "OXXO",
     priority: 100,
   },
   {
-    id: createId("merchant-rule"),
+    id: "merchant-rule_fixture-tiktok" as Id<"merchant-rule">,
     matchType: "CONTAINS",
     pattern: "TIKTOK",
     normalizedMerchant: "TIKTOK SHOP",
     priority: 100,
   },
   {
-    id: createId("merchant-rule"),
+    id: "merchant-rule_fixture-rodeo" as Id<"merchant-rule">,
     matchType: "CONTAINS",
     pattern: "RODEO",
     normalizedMerchant: "RODEO INGRESSOS",
@@ -73,7 +77,7 @@ export const merchantNormalizationRules: readonly MerchantNormalizationRule[] = 
  */
 export const categoryRules: readonly CategoryRule[] = [
   {
-    id: createId("category-rule"),
+    id: "category-rule_fixture-localiza" as Id<"category-rule">,
     matchType: "CONTAINS_MERCHANT",
     pattern: "LOCALIZA",
     category: "Transportation",
@@ -81,14 +85,14 @@ export const categoryRules: readonly CategoryRule[] = [
     priority: 100,
   },
   {
-    id: createId("category-rule"),
+    id: "category-rule_fixture-ifood" as Id<"category-rule">,
     matchType: "CONTAINS_MERCHANT",
     pattern: "IFOOD",
     category: "Food",
     priority: 100,
   },
   {
-    id: createId("category-rule"),
+    id: "category-rule_fixture-mineiros-dog" as Id<"category-rule">,
     matchType: "EXACT_MERCHANT",
     pattern: "MINEIROS DOG",
     category: "Food",
@@ -96,7 +100,7 @@ export const categoryRules: readonly CategoryRule[] = [
     priority: 100,
   },
   {
-    id: createId("category-rule"),
+    id: "category-rule_fixture-adega" as Id<"category-rule">,
     matchType: "CONTAINS_MERCHANT",
     pattern: "ADEGA",
     category: "Food",
@@ -104,7 +108,7 @@ export const categoryRules: readonly CategoryRule[] = [
     priority: 100,
   },
   {
-    id: createId("category-rule"),
+    id: "category-rule_fixture-oxxo" as Id<"category-rule">,
     matchType: "CONTAINS_MERCHANT",
     pattern: "OXXO",
     category: "Food",
@@ -112,14 +116,14 @@ export const categoryRules: readonly CategoryRule[] = [
     priority: 100,
   },
   {
-    id: createId("category-rule"),
+    id: "category-rule_fixture-tiktok" as Id<"category-rule">,
     matchType: "CONTAINS_MERCHANT",
     pattern: "TIKTOK",
     category: "Shopping",
     priority: 100,
   },
   {
-    id: createId("category-rule"),
+    id: "category-rule_fixture-rodeo" as Id<"category-rule">,
     matchType: "CONTAINS_MERCHANT",
     pattern: "RODEO",
     category: "Entertainment",

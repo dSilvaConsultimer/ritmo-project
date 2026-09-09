@@ -344,13 +344,22 @@ export async function syncConnection(
           const bills = await provider.listBills(account.externalAccountId);
           metrics.billsReceived += bills.length;
           for (const billInput of bills) {
+            const existingBill = await repo.findBillByExternalId(
+              db,
+              connection.provider,
+              billInput.externalBillId,
+            );
             const bill = billFromExternalInput(
               billInput,
               financialProfileId as Id<"financial-profile">,
               paymentSource.id,
               nowIso(),
+              existingBill?.id,
             );
-            await repo.upsertBill(db, bill);
+            await repo.upsertBill(db, {
+              ...bill,
+              ...(existingBill ? { createdAt: existingBill.createdAt } : {}),
+            });
           }
         }
 
