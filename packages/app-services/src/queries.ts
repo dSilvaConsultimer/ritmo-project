@@ -139,6 +139,89 @@ export async function getInstallmentCommitments(
   return snapshot.futureInstallmentCommitments;
 }
 
+export interface PaymentSourceAuditEntry {
+  readonly type: string;
+  readonly subtype: string | null;
+  readonly hasProvider: boolean;
+  readonly hasDistinctExternalAccountId: boolean;
+  readonly contributesToLiquidity: boolean;
+  readonly isCreditCardLiability: boolean;
+}
+
+export interface EntityCounts {
+  readonly connections: { readonly count: number; readonly byStatus: Record<string, number> };
+  readonly paymentSources: {
+    readonly count: number;
+    readonly allExternalAccountIdsDistinct: boolean;
+    readonly audit: readonly PaymentSourceAuditEntry[];
+  };
+  readonly transactions: { readonly count: number; readonly consumptionTotalCents: number };
+  readonly bills: { readonly count: number };
+  readonly installmentPlans: { readonly count: number };
+  readonly reconciliationLinks: { readonly count: number };
+}
+
+/**
+ * Read-only entity counts for verifying sync idempotency (Sprint 4.5,
+ * DEC-052 follow-up) without opening a second process against the
+ * file-backed PGlite database (forbidden — see DEC-051, PGlite has no
+ * arbitration for concurrent process access) and without exposing secrets
+ * or provider identifiers.
+ */
+export async function getEntityCounts(
+  db: Database,
+  financialProfileId: string,
+  asOfDate: string,
+): Promise<EntityCounts> {
+  const [connections, paymentSources, snapshotInput, bills] = await Promise.all([
+    repo.listProviderConnections(db, financialProfileId),
+    repo.listPaymentSourcesForProfile(db, financialProfileId),
+    repo.loadFinancialSnapshotInput(db, financialProfileId, asOfDate),
+    repo.listBillsForProfile(db, financialProfileId),
+  ]);
+
+  const connectionsByStatus: Record<string, number> = {};
+  for (const c of connections) {
+    connectionsByStatus[c.status] = (connectionsByStatus[c.status] ?? 0) + 1;
+  }
+
+  const consumptionTotalCents = snapshotInput.transactions
+    .filter((t) => isConsumptionLike(t.financialEffect))
+    .reduce((total, t) => total + t.amount.cents, 0);
+
+  // Distinctness is a property of the whole set, not any one row — an
+  // external account id is only meaningful as evidence against accidental
+  // duplication when compared against its siblings (Sprint 4.5 payment-
+  // source audit, DEC-053). Sources with no externalAccountId (manually
+  // entered, no provider) are excluded from this comparison entirely.
+  const externalAccountIds = paymentSources
+    .map((p) => p.externalAccountId)
+    .filter((id): id is string => id !== undefined);
+  const allExternalAccountIdsDistinct = externalAccountIds.length === new Set(externalAccountIds).size;
+
+  const audit: PaymentSourceAuditEntry[] = paymentSources.map((p) => ({
+    type: p.type,
+    subtype: p.subtype ?? null,
+    hasProvider: p.provider !== undefined,
+    hasDistinctExternalAccountId:
+      p.externalAccountId !== undefined &&
+      externalAccountIds.filter((id) => id === p.externalAccountId).length === 1,
+    // Mirrors resolvePosition's own filter above: only provider-synced
+    // accounts count toward liquidity coverage.
+    contributesToLiquidity: p.provider !== undefined,
+    isCreditCardLiability: p.type === "CREDIT_CARD",
+  }));
+
+  return {
+    connections: { count: connections.length, byStatus: connectionsByStatus },
+    paymentSources: { count: paymentSources.length, allExternalAccountIdsDistinct, audit },
+    transactions: { count: snapshotInput.transactions.length, consumptionTotalCents },
+    bills: { count: bills.length },
+    installmentPlans: { count: snapshotInput.installmentPlans.length },
+    reconciliationLinks: { count: snapshotInput.reconciliationLinks.length },
+  };
+}
+
 export async function getRecurringCandidates(
   db: Database,
   financialProfileId: string,

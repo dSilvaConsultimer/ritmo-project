@@ -144,6 +144,55 @@ SUCCEEDED | PARTIAL | FAILED`, plus `metrics` (accountsDiscovered, transactionsR
 Updated/Reconciled/IgnoredDuplicates, billsReceived) and `errors: string[]` — a `PARTIAL` run always
 carries at least one error explaining what didn't complete; nothing is silently swallowed.
 
+## Database singleton across Next.js's RSC/Route-Handler layers (Sprint 4.5, DEC-052)
+
+A real connection persisted correctly through `POST /api/connections` (a Route Handler) was
+nonetheless invisible on the RSC-rendered homepage — `GET /api/connections` reported it, the homepage
+banner still read "DEMO / FIXTURE DATA." Root cause: `getDb()` (`packages/app-services/src/db.ts`)
+cached its DB-initialization promise on a plain module-level `let`, which Next.js's Turbopack dev
+server does not treat as one true per-process singleton — RSC and Route Handlers can each get a
+separate compiled instance of `db.ts`, each with its own `cachedDb`. Fixed by caching the promise on
+`globalThis` instead (the real JS realm global object, shared across module registries within one
+Node.js process) — the same pattern used for the analogous Prisma-Client-in-Next.js-dev-mode problem.
+Verified live: after this fix, RSC, every Route Handler, and the `app-services` layer all resolve the
+identical running-process DB instance with no restart needed between a connect and the next page load.
+
+This is unrelated to, and does not relax, the separate PGlite process-safety rule (DEC-051): **never
+open the same file-backed PGlite data directory concurrently from a second OS process** (a second
+`tsx`/`node` script, a second `pnpm` command, etc.) while the dev server already has it open — that
+failure mode corrupted the file irrecoverably once this sprint and has no code-level fix, only the
+hard rule. `globalThis` caching only solves in-process, cross-module-layer divergence within a single
+already-running Node.js process; it says nothing about, and does not protect against, multiple OS
+processes touching the same file.
+
+## Live validation diagnostics endpoint (Sprint 4.5, DEC-053)
+
+`GET /api/debug/counts` (`apps/web/app/api/debug/counts/route.ts`, backed by
+`getEntityCounts` in `packages/app-services/src/queries.ts`) returns entity counts (connections,
+payment sources, transactions, bills, installment plans, reconciliation links, consumption total) plus
+a non-sensitive payment-source audit (`type`, `subtype`, and booleans — `hasProvider`,
+`hasDistinctExternalAccountId`, `contributesToLiquidity`, `isCreditCardLiability` — never raw external
+ids, labels, or connection ids). It exists so live/manual validation can inspect state through the
+already-running application's own endpoints instead of a second process against the file-backed
+PGlite database (forbidden by DEC-051 above). **Gated on `process.env.NODE_ENV === "production"`
+returning 404 before `getDb()` is ever called** (regression-tested in `route.test.ts` by mocking
+`getDb()` to throw and confirming it's never reached) — this must never become an anonymously
+reachable production financial-inspection endpoint. Not linked from the UI; a permanent, gated
+diagnostic tool, not a temporary script.
+
+## Live sandbox validation — final result (Sprint 4.5, Founder-approved)
+
+One real Pluggy sandbox Connect against a clean, freshly-migrated-and-seeded database, verified stable
+across three repeated `POST /api/sync` calls (`transactionsCreated: 0`, `errors: []` every time):
+1 `ProviderConnection` (`CONNECTED`, "Pluggy Bank"), 3 `PaymentSource`s (audited distinct — 1
+pre-existing manual fixture credit card + 2 real Pluggy accounts, a checking account and a credit
+card), 47 `FinancialTransaction`s, 2 `CreditCardBill`s, 2 `InstallmentPlan`s, 30
+`ReconciliationLink`s, BRL 7,248.14 economic consumption — all identical across all three syncs.
+`FinancialPosition.coverage: PARTIAL`. See `docs/PROJECT_STATE.md`, "Integration status," for the
+full table, and `docs/DECISIONS.md` DEC-054 for how this live runtime Safe-to-Spend figure
+(BRL 1,293.01) relates to — and never replaces — the permanent fixture-only regression
+(BRL 2,171.11).
+
 `syncConnection` (`packages/app-services/src/sync.ts`) is the full pipeline:
 
 1. Refresh connection status (`provider.getConnection`).

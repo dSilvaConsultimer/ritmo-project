@@ -961,7 +961,8 @@ double-counting protection against real data) remain unexecuted.
 **Rationale:** Per the brief's own instruction and the precedent set by DEC-033: report exactly, do
 not fabricate a validation result, and do not mark engineering blocked when only an external
 credential/action is outstanding.
-**Status:** Accepted.
+**Status:** Accepted, follow-up (1) below SUPERSEDED by the Founder's own correction — kept here
+unedited per project convention (never rewrite history); see the correction note.
 **Consequences:** Reported as `ENGINEERING COMPLETE / LIVE OPENAI VALIDATION PARTIAL — BILLING ISSUE
 / LIVE PLUGGY VALIDATION PARTIAL — CONNECT STEP DID NOT PERSIST`. Two concrete follow-ups are owed to
 the Founder: (1) check whether the OpenAI project this key belongs to has its own $0 budget/spend
@@ -970,6 +971,15 @@ even with credits present at the org level), and (2) retry the Pluggy Connect wi
 until it shows its own success confirmation and closes on its own, rather than closing the tab/window
 once sandbox credentials are submitted.
 
+**Correction (2026-09-09, from the Founder directly):** Follow-up (1) above misdiagnoses the error.
+`credit_balance_exhausted` is specifically an organization-level PREPAID-CREDIT exhaustion — a
+different error from, and never to be conflated with, `project_spend_limit_exceeded` or
+`organization_spend_limit_exceeded` (spend-LIMIT errors). The correct, and only, remaining action is
+external to this codebase: the Founder/account owner must resolve the organization's prepaid-credit
+balance directly with OpenAI. No project-level spend-limit check, model change, or key change is
+applicable here. Do not retry live scenario calls until the Founder explicitly confirms billing is
+fixed. See `docs/AI-COPILOT.md`, "Live OpenAI smoke test," and `docs/PROJECT_STATE.md`, "Integration
+status," both updated to reflect this corrected taxonomy.
 
 ---
 
@@ -1193,3 +1203,139 @@ loss — but the rule stands regardless of what the data represents.
 (or be told) whether the dev server is running first. A more robust long-term fix (e.g., a real
 client-server Postgres for local dev, or a documented safe "maintenance mode" toggle) is not
 implemented — out of scope for this sprint, noted as technical debt.
+
+---
+
+### DEC-052
+
+**Date:** 2026-09-09
+**Context:** After the DEC-051 rebuild, a real Pluggy sandbox connection was created successfully
+(confirmed via server logs: `POST /api/token 200` → `POST /api/connections 200` → `GET / 200`,
+repeated twice, zero errors) but the RSC-rendered homepage kept showing "DEMO / FIXTURE DATA — no
+institution connected" while `GET /api/connections` correctly reported the connection as
+`CONNECTED`. This reproduced twice. The cause: `packages/app-services/src/db.ts`'s `getDb()` cached
+its database-initialization promise in a plain module-level `let cachedDb`. Next.js's Turbopack dev
+server compiles React Server Components and Route Handlers as separate module "layers"/bundles; each
+layer got its OWN evaluation of `db.ts`, hence its own `cachedDb` — the RSC layer's instance had
+opened the database before the connection existed and never saw the later write made through the
+Route Handler layer's separate instance. `router.refresh()` (`ConnectedAccountsPanel.tsx`) was
+confirmed firing correctly every time (a `GET /` request appeared in the server log immediately after
+each successful connect) — this was never a client-side caching/refresh problem, purely a server-side
+divergent-singleton problem.
+**Decision:** Cache the database-initialization promise on `globalThis` instead
+(`declare global { var __moneyCopilotDb: Promise<Database> | undefined }`), the same fix commonly used
+for the analogous Prisma-Client-in-Next.js-dev-mode singleton problem. `globalThis` is the actual JS
+realm global object, shared across module registries within the same Node.js process — unlike a
+module-level variable, which is scoped to whichever compiled module instance holds it. `getDb()` and
+the test-only `resetDbCache()` now read/write `globalThis.__moneyCopilotDb`.
+**Verification (live, post-fix, DEC-053's `GET /api/debug/counts` endpoint plus direct `curl` against
+the already-running dev server — no second process touched the database, per DEC-051):** after one
+real sandbox Connect, `GET /api/connections` reported exactly 1 connection AND the RSC homepage banner
+read "PROVIDER DATA CONNECTED (SANDBOX)" (zero occurrences of "DEMO / FIXTURE DATA") in the same
+observation — RSC, Route Handlers, and the `app-services` layer all resolve the same running-process
+DB instance. Three repeated `POST /api/sync` calls against that connection produced byte-identical
+entity counts across every category (see DEC "Live Pluggy validation" note in `PROJECT_STATE.md`),
+confirming the fix does not itself introduce any double-initialization or race.
+**Rationale:** This is a real, permanent characteristic of Next.js's dev-mode module bundling, not a
+one-off bug — any future module that lazily caches a singleton resource (a DB connection, an SDK
+client, etc.) in this codebase must use the same `globalThis` pattern rather than a bare module-level
+variable, or it risks silently diverging state across RSC and Route Handler layers again.
+**Status:** Accepted.
+**Consequences:** The hard rule from DEC-051 (never open the same file-backed PGlite database
+concurrently from a second OS process) still stands and is unrelated to this fix — this fix only
+solves in-process, cross-module-layer divergence. `globalThis` caching is appropriate for this
+project's local development persistence architecture (a single Node.js process running `next dev`);
+it is not itself a solution to genuine multi-process/multi-instance deployment, which is out of scope
+until a real production persistence layer is chosen.
+
+---
+
+### DEC-053
+
+**Date:** 2026-09-09
+**Context:** Verifying DEC-052's fix and the live Pluggy 3x-sync idempotency proof required reading
+entity counts (connections, payment sources, transactions, bills, installment plans, reconciliation
+links, consumption total) from the running application without opening a second process against the
+file-backed PGlite database (forbidden by DEC-051). No such read existed.
+**Decision:** Added `getEntityCounts()` (`packages/app-services/src/queries.ts`), composed entirely
+from existing repository read functions (no new persistence-layer code), and exposed it at
+`GET /api/debug/counts` (`apps/web/app/api/debug/counts/route.ts`). The route returns 404 immediately
+whenever `process.env.NODE_ENV === "production"`, BEFORE calling `getDb()` at all — proven by a
+regression test (`route.test.ts`) that mocks `@money-copilot/app-services` so `getDb()` throws if
+called, then asserts the production branch still returns 404 without that mock ever firing. This is a
+plain, anonymously-reachable diagnostic endpoint with no request body and no query parameters, so it
+must never be reachable outside local development — the project has no auth layer yet (pre-Founder-
+approval sandbox-only product), so a `NODE_ENV` gate (Next.js's own standard convention for dev-only
+behavior) is the correct minimal control, not a placeholder for a real authorization check that
+doesn't exist yet.
+**Payment-source audit (same endpoint, Founder-requested):** the response also includes a
+per-`PaymentSource` audit — `type`, `subtype`, and three booleans (`hasProvider`,
+`hasDistinctExternalAccountId`, `contributesToLiquidity`, `isCreditCardLiability`) — deliberately
+never the raw `externalAccountId`, `label`, `id`, or `connectionId`. Distinctness is evaluated across
+the full set (an id is only meaningful evidence against duplication compared to its siblings), and
+`contributesToLiquidity` mirrors `resolvePosition`'s own filter (`packages/app-services/src/queries.ts`)
+exactly, so the audit can never silently drift from what the engine actually does. Live result for the
+3 `PaymentSource`s present after the validated sandbox connection: (1) `CREDIT_CARD`, no provider, not
+liquidity-contributing, is-credit-card-liability — the pre-existing manually-entered fixture "Nubank"
+card, correctly excluded from liquidity coverage since Sprint 3 (DEC-022's manual-source design); (2)
+`DEBIT`/`CHECKING_ACCOUNT`, has provider, distinct external id, liquidity-contributing — the real
+Pluggy sandbox checking account; (3) `CREDIT_CARD`/`CREDIT_CARD`, has provider, distinct external id,
+liquidity-contributing, is-credit-card-liability — the real Pluggy sandbox credit card.
+`allExternalAccountIdsDistinct: true`. All 3 are legitimate, genuinely distinct sources; no duplicate
+mapping bug, no fix needed, no re-run of the 3x-sync proof required.
+**Rationale:** Reusing one hardened, gated endpoint for both the count proof and the payment-source
+audit avoided adding two separate temporary diagnostic surfaces.
+**Status:** Accepted.
+**Consequences:** `GET /api/debug/counts` remains in the codebase as a permanent, gated, local-dev
+diagnostic tool (not deleted after this validation) — any future change to it must preserve the
+production 404 gate and the non-sensitive-fields-only contract for the payment-source audit.
+
+---
+
+### DEC-054
+
+**Date:** 2026-09-09
+**Context:** The Sprint 1/2 canonical Safe-to-Spend regression (217,111 cents = BRL 2,171.11,
+`packages/financial-engine/src/snapshot/snapshot.test.ts`) is computed from `initialUserSnapshotInput`
+— deterministic fixture data only. Once a real Pluggy sandbox connection was live-validated, the
+SAME homepage now renders a DIFFERENT Safe-to-Spend figure (BRL 1,293.01), because
+`getFinancialSnapshot` (`packages/app-services/src/queries.ts`) builds its snapshot from whatever is
+actually persisted for the profile — fixture data PLUS every real transaction/bill imported by the
+live sandbox sync. Without an explicit record of why, a future session could mistake the runtime
+figure for a regression and "fix" the permanent fixture test to match it, destroying the one test that
+has protected this exact number since DEC-011/DEC-013.
+**Decision:** Both values are permanent and intentionally different; neither ever overwrites the
+other:
+- **BRL 2,171.11 (217,111 cents)** — the deterministic, fixture-only regression. Protected by
+  `snapshot.test.ts`'s existing assertions. Must never change unless the fixture data itself is
+  deliberately changed (and if so, per existing project convention, the new number gets the same
+  DEC-011/013-style "why this changed" treatment).
+- **BRL 1,293.01** — the live, sandbox-connected RUNTIME snapshot, produced only once a real Pluggy
+  sandbox connection has synced data into the SAME persisted profile the fixtures also populate. This
+  number is expected to change again the next time sandbox data changes; it is not a regression target
+  and must never be hard-coded into a `snapshot.test.ts`-style permanent assertion.
+**The exact BRL 878.10 (87,810 cents) delta, audited component-by-component** (both snapshots share
+the identical `USABLE_INCOME`, `FIXED_COMMITMENTS`, `VARIABLE_BUDGETS`, `FUTURE_CONFIRMED`,
+`FUTURE_ESTIMATED`, and `PROTECTED_SAVINGS` components — verified byte-identical between
+`snapshot.test.ts`'s fixture-only assertions and the live-rendered breakdown table):
+  - `ACTUAL_SPENDING`: fixture-only R$828.89 (82,889 cents) → sandbox-connected R$1,651.09 (165,109
+    cents) = **+R$822.20 (82,220 cents)**. The real Pluggy sandbox transactions imported by
+    `syncConnection` (Netflix, Spotify, gym, and the rest of the sandbox's canned dataset) are real
+    `FinancialTransaction`s with `financialEffect: CONSUMPTION` dated within the current month, so
+    `buildFinancialSnapshot` correctly counts them exactly like any other actual spending — this is
+    the engine working as designed, not a bug.
+  - `DEBT_COMMITMENTS`: fixture-only R$1,400.00 (140,000 cents) → sandbox-connected R$1,455.90
+    (145,590 cents) = **+R$55.90 (5,590 cents)**. The live sync imported one additional
+    `CreditCardBill`/`InstallmentPlan` from the sandbox connector's own credit-card data (on top of
+    the fixture's pre-existing "Existing credit card bill installment" plan), contributing its own
+    this-month installment amount.
+  - Sum of deltas: 82,220 + 5,590 = **87,810 cents = BRL 878.10**, exactly matching
+    217,111 − 129,301 = 87,810. Fully reconciles; no unexplained remainder.
+**Rationale:** The Founder's explicit instruction was to identify the exact responsible components,
+not merely state "provider data changed it" — this breakdown is what makes the two numbers auditable
+and permanently distinguishable from each other going forward.
+**Status:** Accepted.
+**Consequences:** `docs/PROJECT_STATE.md` must always present both numbers side by side with this
+distinction, never just the most recently observed one. Any future live sandbox re-validation session
+that produces yet another different runtime figure should extend this same component-level breakdown
+methodology rather than silently replacing the number.
