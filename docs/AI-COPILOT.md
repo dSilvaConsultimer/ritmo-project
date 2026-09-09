@@ -295,31 +295,37 @@ amount being allowed), and structured facts staying separate from narrative text
 
 ## Live OpenAI smoke test
 
-**Attempted in Sprint 4.5 — PARTIAL / BLOCKED BY EXTERNAL BILLING** (status unchanged at Sprint 4.5
-close). With a real `OPENAI_API_KEY` configured:
+**PASSED (Sprint 4.5, final).** With a real `OPENAI_API_KEY` and confirmed organization prepaid
+credit:
 
 - The configured model (`gpt-5.6-terra`) was confirmed to exist and be retrievable
   (`client.models.retrieve`) — model availability check PASSED.
-- The first real call surfaced DEC-043's strict-schema bug, which was fixed and re-verified live.
+- DEC-043's strict-schema bug (found on the first live call, earlier in Sprint 4.5) is fixed and
+  re-verified live.
 - PT-BR deterministic hardening (mutation-guard explicit/hypothetical patterns, grounding) is complete
-  and tested against `MockAIProvider`.
-- Every actual generation call (`live-openai-smoke.test.ts`, `describe.skipIf(!OPENAI_API_KEY)` so it
-  never runs in the default suite) still returns `credit_balance_exhausted` — this persisted even
-  after credits were added to the account and a wait. **This is specifically an organization-level
-  prepaid-credit exhaustion, per the Founder's own correction of an earlier, incorrect diagnosis in
-  this file — it must never be conflated with `project_spend_limit_exceeded` or
-  `organization_spend_limit_exceeded` (separate, spend-LIMIT errors, not a credit-balance error).**
-  Per explicit Founder instruction: do not change the model, do not change/rotate the API key, and do
-  not retry until the Founder confirms billing has actually been fixed with OpenAI. **The exact
-  remaining action is external to this codebase**: the Founder (or the OpenAI account owner) must
-  resolve the organization's prepaid-credit balance directly with OpenAI — no code, model, or key
-  change here can fix this error.
-- None of the six PT-BR scenario tests (basic response, tool call + grounding regression, affordability
-  question, hypothetical-vs-explicit mutation gating, independent-living question) have run to
-  completion yet. They are written and ready; re-run with:
+  and confirmed live, not just against `MockAIProvider`.
+- All 7 scenarios in `live-openai-smoke.test.ts` (`describe.skipIf(!OPENAI_API_KEY)` — still never
+  part of the default suite) pass, confirmed stable across 3 consecutive live runs (model phrasing
+  varies call to call, so repeated runs — not one lucky pass — is what confirms this): basic response;
+  tool call + the 217,111-cent Safe-to-Spend regression grounded in PT-BR; a specific affordability
+  question (`simulateExpense`); a vague outing-budget question ("jantar e talvez motel") answered via
+  `getSpendingEnvelope` without inventing a dinner/motel price; hypothetical language ("E se eu
+  gastasse...") correctly recording NO transaction; explicit language ("Gastei...") correctly
+  recording one; and the independent-living comparison (`getLifestyleComparison`).
+- **A real bug was found and fixed along the way (DEC-055), not a hallucination**: 3 of the 7
+  scenarios initially failed grounding because `packages/app-services/src/copilot/facts.ts` had never
+  been wired up to expose several fields the underlying tools already correctly returned
+  (`DailyGuidance.monthlySafeToSpendRemaining`, `SpendingEnvelope.protectedSavingsStatus.target`, and
+  the entirety of `getFinancialSnapshot`/`getLifestyleComparison`, which had no fact extractor at
+  all). The model's answers were correct the whole time; grounding just had nothing to check them
+  against. Fixed with one shared `financialSnapshotFacts` helper covering every salient
+  `FinancialSnapshot` field at once (rather than patching fields one at a time as different live calls
+  happened to cite them), plus a permanent offline regression (`facts.test.ts`) that would have caught
+  this without any live call. No model, API key, Financial Engine, or Pluggy integration change was
+  made or needed.
+- Re-run with:
   `pnpm --filter @money-copilot/app-services exec vitest run src/copilot/live-openai-smoke.test.ts`
-  (with `OPENAI_API_KEY`/`OPENAI_MODEL` loaded into the shell environment first) once billing is
-  confirmed fixed.
+  (with `OPENAI_API_KEY`/`OPENAI_MODEL` loaded into the shell environment first).
 
 ## Known limitations
 

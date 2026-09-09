@@ -1339,3 +1339,53 @@ and permanently distinguishable from each other going forward.
 distinction, never just the most recently observed one. Any future live sandbox re-validation session
 that produces yet another different runtime figure should extend this same component-level breakdown
 methodology rather than silently replacing the number.
+
+---
+
+### DEC-055
+
+**Date:** 2026-09-09
+**Context:** The Founder confirmed OpenAI organization prepaid credit was available and asked to
+resume the pending live OpenAI PT-BR validation (`live-openai-smoke.test.ts`), adding one more
+required scenario ("Hoje vou sair com uma garota... talvez motel. Quanto posso gastar?" — an
+outing-budget question specifically chosen to tempt a model into inventing a dinner/motel price).
+Running the suite live surfaced 3 of 7 tests failing with `groundingStatus: FAILED`. Debug
+instrumentation (temporary, reverted after diagnosis) showed EVERY failure was the same class of bug,
+not a hallucination: the model's answer was 100% correct and 100% traceable to real deterministic tool
+output, but `packages/app-services/src/copilot/facts.ts`'s `extractFinancialFacts` had never been
+wired up to expose several of the fields those tools actually return —
+`DailyGuidance.monthlySafeToSpendRemaining` (only `recommendedDiscretionarySpendToday` was extracted),
+`SpendingEnvelope.protectedSavingsStatus.target` (only `recommendedAmount`/`cautionAmount` were), and
+`getLifestyleComparison`/`getFinancialSnapshot` — TWO tools with NO fact extractor at all, falling
+into the `default: return []` case, so grounding had literally nothing to check a rich, entirely
+correct model narrative against.
+**Decision:** Rather than patch individual fields reactively as different live calls happened to cite
+different ones (inherently nondeterministic — a live model's phrasing varies call to call), added one
+shared `financialSnapshotFacts(snapshot, sourceTool, labelPrefix)` helper
+(`packages/app-services/src/copilot/facts.ts`) that turns every salient monetary field of a
+`FinancialSnapshot` (income, all six commitment buckets, protected savings, discretionary cash,
+projected savings, Safe-to-Spend total + today's recommendation, all three future-installment
+horizons, and liquidity-aware Safe-to-Spend when known) into facts at once. Wired this into a new
+`getFinancialSnapshot` case and into `getLifestyleComparison` (called once per scenario, with a
+"Current lifestyle: "/"Independent-living: " label prefix, plus the two scenario deltas stored as
+absolute magnitude — prose expresses direction in words ("reduces by X"), never with a minus sign).
+Also added the two missing fields directly to the `getDailyGuidance` and `getSpendingEnvelope` cases.
+Added a permanent offline regression (`facts.test.ts`) asserting each of these tools' real,
+deterministic output values appear among the extracted facts — this would have caught the entire gap
+without any live API call. Re-ran the full live suite 3 times after the fix: 7/7 passing every time
+(model phrasing varies run to run, so 3 clean runs — not 1 — is the actual confirmation of stability,
+not luck).
+**Rationale:** Grounding's job is to distinguish an invented amount from a real one — a coverage gap
+that makes a CORRECT answer look unsupported is the same defect in spirit as a coverage gap that lets
+a WRONG one through: either way, the fact set doesn't match what the tool actually computed. Fixing
+the `FinancialSnapshot` shape once, comprehensively, closes this for every current and future tool
+that returns a full snapshot (or wraps one, as `getLifestyleComparison` does), rather than leaving it
+to be rediscovered field-by-field on some future live run.
+**Status:** Accepted. **Live OpenAI validation for Sprint 4.5 is now PASSED** — see
+`docs/PROJECT_STATE.md`/`docs/AI-COPILOT.md` for the final scenario-by-scenario result. No model
+change, no API key change, no Financial Engine change, no Pluggy integration change were made or
+needed — exactly as instructed.
+**Consequences:** Any NEW tool added in a future sprint that returns (or wraps) a `FinancialSnapshot`
+should reuse `financialSnapshotFacts` rather than hand-picking fields, to avoid reintroducing this
+exact gap. Tools returning some other rich domain object should still get a dedicated, complete case
+rather than a partial one, per this same lesson.

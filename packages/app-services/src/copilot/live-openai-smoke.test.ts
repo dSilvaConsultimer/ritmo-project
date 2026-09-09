@@ -97,6 +97,33 @@ describe.skipIf(!OPENAI_API_KEY)("Live OpenAI smoke test (opt-in, requires OPENA
   );
 
   it(
+    "answers a vague outing-budget question (date night, dinner + possible motel) via getSpendingEnvelope, without inventing specific prices",
+    async () => {
+      const db = await freshSeededDb();
+      const provider = new OpenAIProvider({ apiKey: OPENAI_API_KEY!, model: MODEL });
+
+      const response = await runCopilotTurn({
+        db,
+        financialProfileId: fixtureProfile.id,
+        asOfDate: ASOF,
+        userMessageText:
+          "Hoje vou sair com uma garota e provavelmente vou pagar o jantar e talvez motel. Quanto posso gastar?",
+        aiProvider: provider,
+        model: MODEL,
+      });
+
+      // This is the exact scenario `getSpendingEnvelope`'s own tool description warns against:
+      // "Never use this to invent prices for specific items — it only returns an overall
+      // envelope." A tool call succeeding plus grounding not failing together prove any
+      // monetary figure in the reply traces to the deterministic envelope, not an invented
+      // dinner/motel price.
+      expect(response.toolExecutions.some((t) => t.status === "SUCCESS")).toBe(true);
+      expect(response.groundingStatus).not.toBe("FAILED");
+    },
+    30_000,
+  );
+
+  it(
     "does NOT record a transaction for hypothetical PT-BR language ('E se eu gastasse...')",
     async () => {
       const db = await freshSeededDb();

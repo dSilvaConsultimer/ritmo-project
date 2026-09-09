@@ -9,10 +9,12 @@ identify the conflict, explain the existing rule, do not silently change it, imp
 behavior only if it clearly supersedes the old decision, and record the change in
 `docs/DECISIONS.md` (mark the old decision superseded, add a new one — never rewrite history).
 
-Last updated: **2026-09-09, Sprint 4.5 CLOSED.** Pluggy live sandbox validation is APPROVED/PASSED by
-the Founder. OpenAI live validation remains PARTIAL/BLOCKED by external billing (unrelated to this
-codebase — see "Integration status"). `REAL_PERSONAL_FINANCIAL_DATA_ALLOWED` is now
-`TRUE_PENDING_FOUNDER_APPROVAL` (technical eligibility only — see rule 20 below).
+Last updated: **2026-09-09, Sprint 4.5 FULLY CLOSED.** Both external validations PASSED: Pluggy live
+sandbox validation APPROVED by the Founder; live OpenAI PT-BR validation PASSED (7/7 scenarios,
+confirmed stable across 3 live runs) once the Founder confirmed OpenAI organization prepaid credit was
+available — see "Integration status." `REAL_PERSONAL_FINANCIAL_DATA_ALLOWED` remains
+`TRUE_PENDING_FOUNDER_APPROVAL` (technical eligibility only — see rule 20 below); Product's prior
+recommendation to wait for OpenAI validation before real-data approval has now been satisfied.
 
 ---
 
@@ -112,22 +114,23 @@ AI copilot detail: `docs/AI-COPILOT.md`.
 
 ## Current sprint
 
-**Sprint 4.5 — external-validation + PT-BR hardening pass on top of Sprint 4. CLOSED.** Pluggy portion
-APPROVED by the Founder; live sandbox validation PASSED. OpenAI portion remains PARTIAL/BLOCKED by
-external billing (`credit_balance_exhausted`, unrelated to this codebase). Real credentials were used
-throughout — seven real, previously-untested bugs were found and fixed live (not simulated): an
-OpenAI strict-schema bug (DEC-043), a fixture-id-stability bug that also caused a real React rendering
-error (DEC-047, DEC-049 — two rounds), a bill-deduplication bug (DEC-048), a connection-recovery
-architectural gap (DEC-046), a connection-deletion capability gap (DEC-050), and a Next.js RSC/Route-
-Handler database-singleton divergence bug (DEC-052) that made a real, successfully-persisted
-connection invisible on the dashboard until fixed. A read-only diagnostic endpoint
-(`GET /api/debug/counts`, dev-only-gated, DEC-053) was added specifically to let live validation
-inspect entity counts and payment-source identities through the running application itself rather
-than a second process against the file-backed PGlite database (forbidden — DEC-051). Both Safe-to-
-Spend numbers now in play — the permanent fixture-only regression (BRL 2,171.11) and the live sandbox-
-connected runtime figure (BRL 1,293.01) — are formally distinguished and reconciled component-by-
-component in DEC-054, so a future session never mistakes one for a bug in the other. See the Sprint
-4.5 final report delivered to the founder for the full account; this file carries forward only what a
+**Sprint 4.5 — external-validation + PT-BR hardening pass on top of Sprint 4. FULLY CLOSED.** Both
+Pluggy and OpenAI portions APPROVED/PASSED. Real credentials were used throughout — eight real,
+previously-untested bugs were found and fixed live (not simulated): an OpenAI strict-schema bug
+(DEC-043), a fixture-id-stability bug that also caused a real React rendering error (DEC-047, DEC-049
+— two rounds), a bill-deduplication bug (DEC-048), a connection-recovery architectural gap (DEC-046),
+a connection-deletion capability gap (DEC-050), a Next.js RSC/Route-Handler database-singleton
+divergence bug (DEC-052) that made a real, successfully-persisted connection invisible on the
+dashboard until fixed, and a grounding-coverage gap (DEC-055) that made several entirely-correct live
+model answers look unsupported because their underlying tools' monetary fields had never been wired
+into `extractFinancialFacts`. A read-only diagnostic endpoint (`GET /api/debug/counts`,
+dev-only-gated, DEC-053) was added specifically to let live validation inspect entity counts and
+payment-source identities through the running application itself rather than a second process against
+the file-backed PGlite database (forbidden — DEC-051). Both Safe-to-Spend numbers now in play — the
+permanent fixture-only regression (BRL 2,171.11) and the live sandbox-connected runtime figure
+(BRL 1,293.01) — are formally distinguished and reconciled component-by-component in DEC-054, so a
+future session never mistakes one for a bug in the other. See the Sprint 4.5 final report delivered to
+the founder for the full account; this file carries forward only what a
 future sprint needs to know.
 
 ## Completed capabilities
@@ -190,9 +193,14 @@ future sprint needs to know.
   Portuguese grammar allows, e.g. "Poderia reservar...?" with no "eu"); the system prompt
   (`SYSTEM_INSTRUCTIONS_V2`) now explicitly instructs the assistant to respond in the user's own
   language; `groundResponseText` was confirmed (and regression-tested) to already be language-agnostic.
-- Live OpenAI validation: model availability confirmed (`gpt-5.6-terra` retrievable); actual scenario
-  calls blocked by `429 credit_balance_exhausted` even after credits were added — reported, not
-  retried further, no model changed (see "Integration status").
+- **Live OpenAI validation: PASSED (final)** — model availability confirmed (`gpt-5.6-terra`
+  retrievable); after the Founder confirmed organization prepaid credit was available, all 7 PT-BR
+  scenarios in `live-openai-smoke.test.ts` passed, stable across 3 consecutive live runs (see
+  "Integration status"). Found and fixed one more real bug along the way, DEC-055: a
+  grounding-coverage gap where `extractFinancialFacts` had never been wired up for several fields
+  (and, for `getFinancialSnapshot`/`getLifestyleComparison`, entire tools) that were already correctly
+  computed and correctly cited by the model — fixed with one shared `financialSnapshotFacts` helper
+  plus a permanent offline regression (`facts.test.ts`).
 - Live Pluggy sandbox validation: real authentication + Connect Token creation succeeded live; the
   interactive Connect-widget step did not result in a persisted connection on this app's side —
   reported, no real account/transaction/bill data was imported (see "Integration status").
@@ -304,10 +312,9 @@ enriched fixture (7 September transactions, old debt as an `InstallmentPlan`).
 - ~~Live Pluggy sandbox validation~~ — **COMPLETE as of Sprint 4.5** (see "Integration status"): a
   real sandbox Item was connected, synced, and reflected in the dashboard end to end. Moved out of
   this section; kept only historically relevant items below it.
-- **Live OpenAI validation**: PARTIAL as of Sprint 4.5 — the configured model was confirmed
-  available and a real, previously-untested schema bug was found and fixed live (DEC-043), but actual
-  scenario calls are blocked by `429 credit_balance_exhausted` even after credits were added (see
-  "Integration status"). All AI engineering is complete and tested against `MockAIProvider` regardless.
+- ~~Live OpenAI validation~~ — **COMPLETE as of Sprint 4.5** (see "Integration status"): all 7 PT-BR
+  scenarios in `live-openai-smoke.test.ts` pass live, stable across 3 consecutive runs, after the
+  Founder confirmed organization prepaid credit was available. Moved out of this section.
 - **Scheduled/automatic sync**: intentionally not built (DEC-031) — only webhook-driven and manual
   sync exist.
 - **Chat UI**: usable, single-active-conversation, not final visual polish — see
@@ -510,11 +517,13 @@ testing (all are process/design corrections, documented as decisions rather than
 
 ## Test status
 
-**349 automated tests passing** in the default suite, zero failing, across seven packages/apps (up
-from 288 at end of Sprint 4), plus **6 additional opt-in live-OpenAI tests** that skip automatically
-without `OPENAI_API_KEY` (never part of the default suite — see "Integration status"). The increase
-since the 347 count earlier in Sprint 4.5 is `apps/web/app/api/debug/counts/route.test.ts` (2 tests,
-DEC-053's production-gate regression):
+**354 automated tests passing** in the default suite, zero failing, across seven packages/apps (up
+from 288 at end of Sprint 4), plus **7 additional opt-in live-OpenAI tests** that skip automatically
+without `OPENAI_API_KEY` (never part of the default suite, and now confirmed PASSING live — see
+"Integration status"). The increase since the 349 count earlier in Sprint 4.5 is
+`packages/app-services/src/copilot/facts.test.ts` (5 tests, DEC-055's grounding-coverage regression),
+plus one more live-only scenario in `live-openai-smoke.test.ts` (the outing-budget/no-invented-price
+scenario, also DEC-055).
 
 - `packages/financial-engine`: **126** (`stable-ids.test.ts` — DEC-047's `vi.resetModules()`-based
   fixture-id-stability regression test — included).
@@ -531,7 +540,7 @@ DEC-053's production-gate regression):
   `api/debug/counts/route.test.ts`'s production-gate proof (2, DEC-053: 404 without ever calling
   `getDb()` in production; 200 with real counts otherwise). Now included in the root `pnpm run test`
   script (previously only `packages/*` — fixed this sprint since `apps/web` had no tests before it).
-- `packages/app-services`: **138** — Sprint 4's 86, plus Sprint 4.5: PT-BR mutation-guard explicit/
+- `packages/app-services`: **143** — Sprint 4's 86, plus Sprint 4.5: PT-BR mutation-guard explicit/
   hypothetical cases mirroring the brief's examples, PT-BR grounding pass/fail cases, a full PT-BR
   conversation-loop suite in `orchestrator.test.ts` (Safe-to-Spend regression, hypothetical-vs-
   explicit mutation gating, grounding fallback, independent-living question — all in Portuguese),
@@ -541,11 +550,13 @@ DEC-053's production-gate regression):
   missing connection recovered, both onSuccess and webhook arrive in either order, repeated recovery
   stays idempotent) plus two defensive cases (no `clientUserId` reported; `clientUserId` matching no
   known profile), a bill-deduplication regression test (DEC-048, syncing the same mock connection
-  twice and asserting exactly one bill row persists), and `connection-deletion.test.ts`'s 3 tests
+  twice and asserting exactly one bill row persists), `connection-deletion.test.ts`'s 3 tests
   (DEC-050: a cross-connection reconciliation link removed correctly while the kept connection's data
   stays untouched; a connection with no imported data at all deletes cleanly; an unknown connection id
-  throws rather than silently no-op-ing) — plus 6 skipped-by-default live tests in
-  `live-openai-smoke.test.ts`.
+  throws rather than silently no-op-ing), and `facts.test.ts`'s 5 tests (DEC-055: `getFinancialSnapshot`,
+  `getDailyGuidance`, `getSpendingEnvelope`, and `getLifestyleComparison` each expose their real,
+  deterministic monetary fields as groundable facts; an unknown tool name still returns `[]`) — plus
+  7 skipped-by-default (now confirmed PASSING live) tests in `live-openai-smoke.test.ts`.
 
 Run with `pnpm run test` from the repo root (now covers `packages/*` and `apps/*`), or per-package
 with `--filter`.
@@ -623,26 +634,35 @@ real money. No orphaned data (no delete/disconnect operation occurred in this fi
 No Belvo, no real (non-sandbox) bank connections, no WhatsApp — all correctly out of scope for
 Sprint 1–4.5.
 
-**OpenAI: engineering complete, live validation PARTIAL / BLOCKED BY EXTERNAL BILLING.** A real
-`OPENAI_API_KEY` was used in Sprint 4.5. `client.models.retrieve("gpt-5.6-terra")` succeeded,
-confirming the configured model exists and is reachable with this key (model availability check
-PASSED). The first real `generate()` call surfaced a genuine bug (DEC-043, now fixed): OpenAI's
-strict function-calling mode rejected the tool schemas because optional arguments were missing from
-each schema's `required` array — fixed and confirmed live. PT-BR deterministic hardening (mutation-
-guard, grounding) is complete and tested against `MockAIProvider`. After the schema fix, actual
-generation calls still return `credit_balance_exhausted` — this persisted even after the Founder added
-credits and after a wait. **`credit_balance_exhausted` is specifically an organization-level prepaid-
-credit exhaustion, per the Founder's own correction — this is a DIFFERENT error from, and must never
-be conflated with, `project_spend_limit_exceeded` or `organization_spend_limit_exceeded` (spend-limit
-errors).** Per explicit Founder instruction: do not change the configured model, do not change/rotate
-the API key, and do not retry until the Founder confirms billing has actually been fixed on the OpenAI
-side. **The exact remaining action needed is external to this codebase: the Founder (or whoever owns
-the OpenAI account) must resolve the org's prepaid-credit balance with OpenAI directly** — no code
-change, model change, or key change can fix this error. None of the 6 written PT-BR smoke-test
-scenarios (basic response, tool call + grounding regression, affordability question,
-hypothetical-vs-explicit mutation gating, independent-living question) have run to completion yet;
-`live-openai-smoke.test.ts` remains in the codebase, skipped by default, ready to run the moment
-billing is confirmed.
+**OpenAI: engineering complete, live validation PASSED (final, Sprint 4.5).** A real `OPENAI_API_KEY`
+was used throughout Sprint 4.5. `client.models.retrieve("gpt-5.6-terra")` succeeded, confirming the
+configured model exists and is reachable with this key (model availability check PASSED). The first
+real `generate()` call surfaced a genuine bug (DEC-043, now fixed): OpenAI's strict function-calling
+mode rejected the tool schemas because optional arguments were missing from each schema's `required`
+array — fixed and confirmed live. PT-BR deterministic hardening (mutation-guard, grounding) is
+complete and was tested against `MockAIProvider` first. Actual generation calls then returned
+`credit_balance_exhausted` — an organization-level prepaid-credit exhaustion (a DIFFERENT error from,
+and never to be conflated with, `project_spend_limit_exceeded`/`organization_spend_limit_exceeded`,
+per the Founder's own correction of an earlier, incorrect diagnosis) — and validation was correctly
+left blocked rather than retried, per explicit Founder instruction, until the Founder confirmed
+billing was fixed.
+
+**Once the Founder confirmed organization prepaid credit was available, validation resumed and
+PASSED**: all 7 scenarios in `live-openai-smoke.test.ts` succeeded — basic response; tool call +
+the 217,111-cent Safe-to-Spend regression grounded in PT-BR; a specific affordability question
+(`simulateExpense`); a vague outing-budget question ("Hoje vou sair com uma garota... talvez motel")
+answered via `getSpendingEnvelope` without inventing a dinner/motel price; hypothetical language
+correctly recording no transaction; explicit language correctly recording one; and the
+independent-living comparison (`getLifestyleComparison`) — confirmed stable across 3 consecutive live
+runs (model phrasing varies call to call, so this, not one pass, is what confirms it). **A real bug
+was found and fixed along the way (DEC-055), not a hallucination**: 3 of the 7 scenarios initially
+failed grounding because `extractFinancialFacts` had never been wired up for several fields
+(`DailyGuidance.monthlySafeToSpendRemaining`, `SpendingEnvelope.protectedSavingsStatus.target`) and
+two entire tools (`getFinancialSnapshot`, `getLifestyleComparison`) that the model was correctly
+citing — the model's answers were correct the whole time; grounding had nothing to check them against.
+Fixed with one shared `financialSnapshotFacts` helper covering every salient `FinancialSnapshot` field
+at once, plus a permanent offline regression (`facts.test.ts`). No model change, no API key change, no
+Financial Engine change, and no Pluggy integration change were made or needed — exactly as instructed.
 
 ## Open questions
 
@@ -656,13 +676,13 @@ methodology), plus:
   specific sandbox fixture transactions.)
 - Should old-debt installment match candidates get a lightweight accept/reject affordance before
   Sprint 5's full recommendation lifecycle UI, or wait?
-- (Sprint 4.5) When will the OpenAI account's org-level prepaid-credit balance actually be resolved?
-  This is purely an external billing question for the Founder/account owner with OpenAI directly —
-  not a code or configuration question. See "Integration status" for the precise error taxonomy.
-- (Sprint 4.5) Should Sprint 5 (Recommendation Engine) happen before or after live OpenAI validation
-  finally completes? **Product's current recommendation: wait** — the Founder's first real-personal-
-  data experience should include the working conversational copilot, not a dashboard-only product
-  (see rule 20 / the release-gate note above).
+- (Sprint 4.5, resolved) Both live validations have now passed and both `docs/ROADMAP.md`-relevant
+  release gates (Pluggy technical eligibility, OpenAI live validation) are satisfied — nothing further
+  blocks Sprint 5 from a validation standpoint. The remaining real-data decision (connecting an actual
+  Santander/Nubank account) still requires a SEPARATE, explicit Founder approval per the
+  `TRUE_PENDING_FOUNDER_APPROVAL` release gate — that is a product decision, not an engineering one.
+- Should old-debt installment match candidates get a lightweight accept/reject affordance before
+  Sprint 5's full recommendation lifecycle UI, or wait?
 
 ## Next recommended sprint
 
@@ -670,22 +690,21 @@ methodology), plus:
 `docs/ROADMAP.md` for detailed scope. The AI copilot's tool layer (`packages/app-services/src/
 copilot/`) and the `Recommendation` domain model (Sprint 1) are both already in place — Sprint 5's
 job is the actual discovery logic, respecting `ProtectedPreference` and never resurfacing a rejected
-recommendation absent material context change. Live Pluggy sandbox validation is now APPROVED/PASSED
-(DEC-033/DEC-045 through DEC-054); live OpenAI validation remains PARTIAL/BLOCKED BY EXTERNAL BILLING.
-**Product recommends completing live OpenAI validation (and, separately, obtaining explicit Founder
-real-data approval per the `TRUE_PENDING_FOUNDER_APPROVAL` release gate) before or alongside Sprint 5**
-— see "Open questions." **Sprint 5 has explicitly not been started.**
+recommendation absent material context change. Both live Pluggy sandbox validation and live OpenAI
+validation are now APPROVED/PASSED (DEC-033/DEC-045 through DEC-055) — the validation precondition
+Product previously wanted before Sprint 5 is satisfied. **Sprint 5 has explicitly not been started.**
 
 ## Risks
 
 Carried forward from Sprint 2 (threshold drift, version currency, reconciliation false negatives —
 now validated against real live Pluggy sandbox data as of Sprint 4.5, not just fixtures), plus:
 
-- **(Sprint 4.5) Live OpenAI scenario validation still unexecuted**: the schema-level bug (DEC-043)
-  is fixed and confirmed live, but no PT-BR scenario has actually completed against a real model
-  response — `hasExplicitMutationIntent`'s and `groundResponseText`'s behavior against a live model's
-  actual prose variety (as opposed to `MockAIProvider`-scripted text) remains unverified.
-  `AIRequestLog` has similarly never recorded a real call's actual latency/token usage.
+- **(Sprint 4.5, resolved)** Live OpenAI scenario validation is now complete: all 7 PT-BR scenarios
+  passed live, confirmed stable across 3 runs. `hasExplicitMutationIntent`'s and
+  `groundResponseText`'s behavior against real model prose (not just `MockAIProvider`-scripted text)
+  is now verified — the latter's coverage gap (DEC-055) was found and fixed as part of this. Kept here
+  only as a pointer for any future session that sees an older reference to this as "unexecuted."
+  `AIRequestLog` has now recorded real calls' actual latency/token usage for the first time.
 - **(Sprint 4.5) The amount-sign/effect mapping table was exercised against real sandbox data for the
   first time**, and produced plausible-looking results (e.g. `REFUND` for CREDIT-direction credit-card
   entries), but this was not manually cross-checked against Pluggy's own documentation of what each
