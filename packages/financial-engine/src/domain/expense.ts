@@ -28,6 +28,16 @@ export interface FixedExpense {
    * reduction by a future recommendation engine. See RULE #5, #6.
    */
   readonly protected: boolean;
+  /**
+   * Day of the month (1-31) this commitment is typically due, when known.
+   * Sprint 8 (Ritmo UI integration): purely a DISPLAY convenience for
+   * showing due-date badges/timelines — never used in any Safe-to-Spend or
+   * snapshot calculation, which already treats every fixed expense as
+   * committed for the current month regardless of its due day. Absent
+   * (`undefined`) means genuinely unknown — never guessed, and never
+   * defaulted to a specific day. See docs/RITMO.md, "Data-model gaps."
+   */
+  readonly dueDayOfMonth?: number;
 }
 
 /**

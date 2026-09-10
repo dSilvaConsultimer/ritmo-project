@@ -1,9 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildFinancialSnapshot, initialUserSnapshotInput, fixtureProfile } from "@money-copilot/financial-engine";
+import { createId } from "@money-copilot/shared";
+import {
+  buildFinancialSnapshot,
+  fromReais,
+  initialUserSnapshotInput,
+  fixtureProfile,
+  type FixedExpense,
+} from "@money-copilot/financial-engine";
 import { createDatabase } from "./db";
 import { runMigrations } from "./migrate";
 import { seed } from "./seed";
-import { loadFinancialSnapshotInput } from "./repositories";
+import { loadFinancialSnapshotInput, upsertFixedExpense } from "./repositories";
 import * as schema from "./schema";
 
 async function freshDb() {
@@ -142,5 +149,52 @@ describe("idempotent seed", () => {
       protectedPreferences: 1,
       lifestyleScenarios: 2,
     });
+  });
+
+  /**
+   * Sprint 8 (Ritmo UI integration): `dueDayOfMonth` is a display-only,
+   * genuinely-optional field — round-trips when present, and stays
+   * `undefined` (never a fabricated `0`/`null`-as-a-real-value) when absent,
+   * exactly like every other optional financial-engine field. See
+   * `FixedExpense.dueDayOfMonth`'s doc comment.
+   */
+  it("round-trips FixedExpense.dueDayOfMonth when present, and leaves it undefined when absent", async () => {
+    const db = await freshDb();
+    await seed(db);
+
+    const withDueDay: FixedExpense = {
+      id: createId("fixed-expense"),
+      label: "Aluguel",
+      category: "Housing",
+      amount: fromReais(1800),
+      certainty: "ACTUAL",
+      protected: false,
+      dueDayOfMonth: 5,
+    };
+    const withoutDueDay: FixedExpense = {
+      id: createId("fixed-expense"),
+      label: "Internet",
+      category: "Housing",
+      amount: fromReais(120),
+      certainty: "ACTUAL",
+      protected: false,
+    };
+
+    await upsertFixedExpense(db, withDueDay, fixtureProfile.id);
+    await upsertFixedExpense(db, withoutDueDay, fixtureProfile.id);
+
+    const loaded = await loadFinancialSnapshotInput(db, fixtureProfile.id, initialUserSnapshotInput.asOfDate);
+    const loadedWithDueDay = loaded.fixedExpenses.find((e) => e.id === withDueDay.id);
+    const loadedWithoutDueDay = loaded.fixedExpenses.find((e) => e.id === withoutDueDay.id);
+
+    expect(loadedWithDueDay?.dueDayOfMonth).toBe(5);
+    expect(loadedWithoutDueDay?.dueDayOfMonth).toBeUndefined();
+
+    // Never used in any calculation — adding it never changes Safe-to-Spend.
+    const snapshot = buildFinancialSnapshot(loaded);
+    const snapshotWithoutTheNewFields = buildFinancialSnapshot(initialUserSnapshotInput);
+    expect(snapshot.commitments.fixed.cents).toBe(
+      snapshotWithoutTheNewFields.commitments.fixed.cents + 180_000 + 12_000,
+    );
   });
 });

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { fixtureProfile } from "@money-copilot/financial-engine";
+import { fixtureProfile, categoryRules as fixtureCategoryRules } from "@money-copilot/financial-engine";
 import type { ExternalAccountInput } from "@money-copilot/financial-engine";
 import * as repo from "@money-copilot/persistence";
 import { createId } from "@money-copilot/shared";
@@ -11,6 +11,8 @@ import {
   getLifestyleComparison,
   getRecurringCandidates,
   getUncategorizedTransactions,
+  getFixedExpensesForProfile,
+  getCategoryRuleCount,
 } from "./queries";
 import { syncConnection } from "./sync";
 import { resetProviderRegistry } from "./provider-registry";
@@ -88,6 +90,25 @@ describe("getRecurringCandidates", () => {
   it("finds no recurring pattern in the fixture's single-month transaction set", async () => {
     const db = await freshSeededDb();
     expect(await getRecurringCandidates(db, fixtureProfile.id, ASOF)).toEqual([]);
+  });
+});
+
+describe("getFixedExpensesForProfile", () => {
+  it("returns the fixture's confirmed recurring commitments, with dueDayOfMonth absent by default", async () => {
+    const db = await freshSeededDb();
+    const expenses = await getFixedExpensesForProfile(db, fixtureProfile.id, ASOF);
+    expect(expenses.length).toBeGreaterThan(0);
+    expect(expenses.some((e) => e.label.toLowerCase().includes("housing") || e.category === "Housing")).toBe(true);
+    for (const expense of expenses) {
+      expect(expense.dueDayOfMonth).toBeUndefined();
+    }
+  });
+});
+
+describe("getCategoryRuleCount", () => {
+  it("matches the real global rule set, not a hardcoded number", async () => {
+    const db = await freshSeededDb();
+    expect(await getCategoryRuleCount(db)).toBe(fixtureCategoryRules.length);
   });
 });
 

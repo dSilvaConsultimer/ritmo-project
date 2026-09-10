@@ -38,6 +38,7 @@ import {
   type ReconciliationLink,
   type RecurringExpenseCandidate,
   type ProviderConnection,
+  type FixedExpense,
 } from "@money-copilot/financial-engine";
 import * as repo from "@money-copilot/persistence";
 import type { Database } from "@money-copilot/persistence";
@@ -221,6 +222,30 @@ export async function getEntityCounts(
     installmentPlans: { count: snapshotInput.installmentPlans.length },
     reconciliationLinks: { count: snapshotInput.reconciliationLinks.length },
   };
+}
+
+/**
+ * Sprint 8 (Ritmo UI): the raw list of confirmed recurring commitments
+ * (rent, insurance, subscriptions, etc.) — distinct from
+ * `getRecurringCandidates` (detected PATTERNS from transaction history).
+ */
+export async function getFixedExpensesForProfile(
+  db: Database,
+  financialProfileId: string,
+  asOfDate: string,
+): Promise<readonly FixedExpense[]> {
+  const input = await repo.loadFinancialSnapshotInput(db, financialProfileId, asOfDate);
+  return input.fixedExpenses;
+}
+
+/**
+ * Sprint 8 (Ritmo UI): how many deterministic categorization rules exist —
+ * global, not per-profile (see `repo.loadRules`). Powers the "Mais" screen's
+ * "Categorias e regras" row honestly instead of a hardcoded count.
+ */
+export async function getCategoryRuleCount(db: Database): Promise<number> {
+  const { categoryRules } = await repo.loadRules(db);
+  return categoryRules.length;
 }
 
 export async function getRecurringCandidates(

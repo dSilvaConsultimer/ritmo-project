@@ -12,22 +12,22 @@ identify the conflict, explain the existing rule, do not silently change it, imp
 behavior only if it clearly supersedes the old decision, and record the change in
 `docs/DECISIONS.md` (mark the old decision superseded, add a new one — never rewrite history).
 
-Last updated: **2026-09-09, Sprint 7 complete.** Deterministic alert engine + in-app notifications
-(`SAFE_TO_SPEND_MATERIAL_DROP`, `RECOMMENDATION_FAILED`/`VERIFIED`, `UPCOMING_EVENT_PRESSURE`/
-`UNKNOWN_COST`, `LIQUIDITY_COVERAGE_DEGRADED`, `CONNECTION_NEEDS_ATTENTION`, `STALE_CONCIERGE_PLAN`) —
-alert creation is 100% deterministic, episode-based anti-spam, automatic resolution, a declarative
-fact-registration mechanism ending a 4th recurrence of the "ungrounded tool" bug class, Connected
-Accounts hardening (Disconnect UI, Reconnect flow, duplicate-Connect-click prevention), and discovery
-production safety (mock venues can no longer reach a production deployment). See
-`docs/ALERTS-NOTIFICATIONS.md` and `docs/DECISIONS.md` DEC-076 through DEC-082. **Live-validated
-end to end against the real running app, real OpenAI, and the real persisted Pluggy sandbox connection
-from earlier sprints** — genuine success (see "Integration status"), including one real bug found and
-fixed live: **DEC-082** (a mutation-guard pattern only matched the brief's own bare example phrasing,
-not natural real usage — a 4th recurrence of the "live phrasing gap" lesson after DEC-064/DEC-075).
+Last updated: **2026-09-10, Sprint 8 complete.** The Founder-approved Lovable prototype ("Ritmo") is
+now the live product UI: a new `apps/ritmo` (TanStack Start) app, ported visually verbatim from
+`meu-ritmo-design`, with all six screens (Home, Transações, Planejamento, Insights, Assistente, Mais)
+wired to the SAME real `@money-copilot/app-services`/financial-engine/persistence stack `apps/web`
+already used — no second business-logic implementation, no financial calculation in React. `apps/web`
+remains temporarily as an internal/debug frontend and is retired once parity is validated further.
+Founder visual and product validation PASSED against the real engine. See `docs/RITMO.md` for the
+full architecture, the 9 data-model gaps found and how each was resolved honestly (never by
+fabricating a number the mock implied but the engine doesn't know), and `docs/DECISIONS.md` DEC-083
+through DEC-086 (DEC-083 extends DEC-051's PGlite single-process rule to `apps/ritmo`; DEC-084–086
+record the sprint's other live-discovered findings). Sprint 7 (alerts/notifications),
 Sprint 6 (concierge), Sprint 5 (recommendation engine), and Sprint 4.5 (both external validations
 PASSED) remain complete/closed; `REAL_PERSONAL_FINANCIAL_DATA_ALLOWED` remains
-`TRUE_PENDING_FOUNDER_APPROVAL` — Sprint 7 did not change the release gate and did not connect any new
-real institution (the pre-existing Pluggy SANDBOX connection was reused for live validation only).
+`TRUE_PENDING_FOUNDER_APPROVAL` — Sprint 8 did not change the release gate, did not connect any new
+real institution, and did not implement production authentication (explicitly out of scope — see
+`docs/RITMO.md`, "Login exception").
 
 ---
 
@@ -125,23 +125,64 @@ Full detail: `docs/PRODUCT.md`.
 
 ## Current architecture
 
-pnpm workspace monorepo, still eight packages deep (Sprint 7 added modules within existing packages,
-not a new package): `apps/web` (Next.js 16 App Router, DB-backed via `app-services`, plus `/api/chat`,
-`/api/alerts`) → `packages/app-services` (application/query service layer, the Sprint 4 AI tool/
+pnpm workspace monorepo, now NINE packages/apps deep (Sprint 8 adds one new app, `apps/ritmo` — no
+new package): `apps/ritmo` (TanStack Start, THE PRODUCT UI as of Sprint 8 — see `docs/RITMO.md`) and
+`apps/web` (Next.js 16 App Router, now internal/debug only, retired once `apps/ritmo` reaches full
+parity) both → `packages/app-services` (application/query service layer, the Sprint 4 AI tool/
 orchestration layer `src/copilot/`, the Sprint 5 recommendation service, the Sprint 6 concierge module
 `src/concierge/`, and the Sprint 7 alert/notification modules `src/alerts/`/`src/notifications/`, zero
-Next.js dependency) → `packages/ai` (provider-neutral `AIProvider` + OpenAI adapter, Sprint 4),
-`packages/open-finance` (provider abstraction + Pluggy adapter + MockProvider), `packages/discovery`
-(provider-neutral `LocalDiscoveryProvider` + Mock provider, Sprint 6 — mirrors `open-finance`'s shape
-for real-world venue data), and `packages/persistence` (Drizzle + PGlite) → `packages/financial-engine`
-(zero framework/database/provider/AI/discovery dependencies, the priority package — Sprint 7 adds
-`domain/alert-policy.ts`/`domain/alert-signal.ts`, pure and framework-free like everything else here) →
-`packages/shared` (generic `Id`/id-generation only). Full detail: `docs/ARCHITECTURE.md`. Calculation
+Next.js OR TanStack dependency) → `packages/ai` (provider-neutral `AIProvider` + OpenAI adapter,
+Sprint 4), `packages/open-finance` (provider abstraction + Pluggy adapter + MockProvider),
+`packages/discovery` (provider-neutral `LocalDiscoveryProvider` + Mock provider, Sprint 6 — mirrors
+`open-finance`'s shape for real-world venue data), and `packages/persistence` (Drizzle + PGlite) →
+`packages/financial-engine` (zero framework/database/provider/AI/discovery dependencies, the priority
+package — Sprint 8 adds one additive optional field, `FixedExpense.dueDayOfMonth?: number`, display-only,
+never used in any calculation) → `packages/shared` (generic `Id`/id-generation only). Both `apps/web`
+and `apps/ritmo` call `@money-copilot/app-services` directly — one source of truth for every
+financial calculation, Safe-to-Spend, transaction, Open Finance, recommendation, alert, and AI
+orchestration; `apps/ritmo`'s presentation adapters (`src/adapters/`) only ever reshape that data for
+its ported-verbatim Lovable UI, never recompute it. Full detail: `docs/ARCHITECTURE.md`. Calculation
 detail: `docs/FINANCIAL-ENGINE.md`. Provider integration detail: `docs/OPEN-FINANCE.md`. AI copilot
 detail: `docs/AI-COPILOT.md`. Recommendation engine detail: `docs/RECOMMENDATIONS.md`. Concierge
-detail: `docs/CONCIERGE.md`. Alerts/notifications detail: `docs/ALERTS-NOTIFICATIONS.md`.
+detail: `docs/CONCIERGE.md`. Alerts/notifications detail: `docs/ALERTS-NOTIFICATIONS.md`. Ritmo UI
+integration detail: `docs/RITMO.md`.
 
 ## Current sprint
+
+**Sprint 8 — Ritmo (Lovable) UI integration. COMPLETE.** The Founder approved a Lovable-generated
+prototype (`meu-ritmo-design`, product name "Ritmo") as the visual source of truth for Money
+Copilot's consumer product UI, replacing `apps/web`'s developer dashboard as the surface end users
+see. A new app, `apps/ritmo` (React 19, TanStack Start, Vite, Tailwind v4, shadcn/ui — the
+prototype's own stack, copied in and never redesigned/simplified/"improved"), was built with a strict
+architectural boundary: `apps/ritmo/src/functions/` (TanStack `createServerFn()` bodies) is the ONLY
+layer allowed to import `@money-copilot/app-services`, enforced at the Vite plugin level in dev
+(TanStack Start's native import-protection, configured by Lovable's own scaffold) and proven at
+build time by a new automated check (`scripts/check-client-bundle.mjs`, scans the client-only build
+output for `OPENAI_API_KEY`/`PLUGGY_CLIENT_SECRET` values/literals and server-only package names).
+`apps/ritmo/src/adapters/` are pure presentation-reshaping functions — no I/O, no financial
+calculation — between a server function's raw domain data and the UNCHANGED Lovable JSX. All six
+screens (Home, Transações, Planejamento, Insights, Assistente, Mais) were migrated one at a time,
+each verified against a pre-captured visual baseline (mobile + desktop, light + dark) before moving
+to the next; `src/lib/mock.ts` (the prototype's static example data) was kept only through that
+baseline checkpoint and is now deleted. A single profile-resolution seam,
+`getCurrentProfileContext()`, is the only place `DEMO_PROFILE_ID` is referenced — explicitly not an
+authentication implementation, but the seam a future sprint's real auth replaces with zero changes to
+any adapter or route. The Assistente screen's chat is real, not scripted — it calls the SAME
+OpenAI-backed `runCopilotTurn` orchestrator `apps/web`'s (UI-less) `/api/chat` route already used,
+verified live with real, billed OpenAI calls. Nine data-model gaps were found where the mock implied
+a fact the real engine doesn't know (a bill due-date, a paycheck date, a subscription plan, a
+scheduled daily digest, an exact before/after simulation pair, etc.) — every one resolved by adapting
+displayed COPY only, never by fabricating a number or changing the approved component's visual
+result; see `docs/RITMO.md`, "Data-model gaps," for the full list and each resolution.
+`FixedExpense.dueDayOfMonth?: number` was added as the one additive domain-model change (optional,
+display-only, absent unless separately confirmed — never backfilled from the mock's placeholder
+dates). Founder visual and product validation PASSED against the real running engine. Full monorepo
+`typecheck`/`lint`/`test` green throughout (645 automated tests, up from 599). See `docs/RITMO.md`
+for the complete architecture, verification record, and known limitations, and `docs/DECISIONS.md`
+DEC-083 through DEC-086 (DEC-083 extends DEC-051's PGlite single-process rule to `apps/ritmo`;
+DEC-084 is the `functions/`-not-`server/` import-protection finding; DEC-085 is a live timezone
+off-by-one date-formatting bug; DEC-086 is the Assistente screen's simulation-card field mapping and
+markdown-rendering fix).
 
 **Sprint 7 — Alerts, notifications & product hardening. COMPLETE.** A deterministic alert engine
 (`packages/financial-engine/src/domain/alert-policy.ts`/`alert-signal.ts` for pure classification,
@@ -221,6 +262,36 @@ permanent fixture-only regression (BRL 2,171.11) and the live sandbox-connected 
 Sprint 4.5 final report delivered to the founder for the full account.
 
 ## Completed capabilities
+
+**New in Sprint 8** (see `docs/DECISIONS.md` DEC-083 through DEC-086 and `docs/RITMO.md` for the
+full account):
+
+- **`apps/ritmo`, the new product UI**: React 19 + TanStack Start, ported visually verbatim from the
+  Founder-approved `meu-ritmo-design` Lovable prototype — no redesign, simplification, or
+  "improvement" of the approved visual result at any point.
+- **All six screens wired to real data** (Home, Transações, Planejamento, Insights, Assistente,
+  Mais): each screen's `functions/*.ts` server function calls the existing
+  `@money-copilot/app-services` (same functions `apps/web` already used — zero duplicated business
+  logic), and each screen's `adapters/*.ts` is a pure, unit-tested reshaping function with no I/O and
+  no financial calculation.
+- **Server/client security boundary, enforced twice**: TanStack Start's native import-protection
+  plugin denies any client-context import from `apps/ritmo/src/functions/` at the Vite plugin level
+  in dev; `scripts/check-client-bundle.mjs` proves it at build time by scanning the client-only
+  output for `OPENAI_API_KEY`/`PLUGGY_CLIENT_SECRET` values/literals and server-only package names.
+- **A single profile-resolution seam** (`getCurrentProfileContext()`) — the only place
+  `DEMO_PROFILE_ID` is referenced anywhere in `apps/ritmo`, explicitly not an auth implementation but
+  the seam a future real-auth sprint replaces with zero changes to any adapter or route.
+- **Real AI chat on the Assistente screen** — calls the same `runCopilotTurn` orchestrator
+  `apps/web`'s (UI-less) `/api/chat` route already used; no AI orchestration reimplemented. Verified
+  live with real OpenAI calls, conversation persists across reloads.
+- **`FixedExpense.dueDayOfMonth?: number`** (financial-engine, additive, optional, display-only,
+  never used in any calculation) — the one domain-model change this sprint, plus a persistence
+  migration (`0006_neat_virginia_dare.sql`) and a new `getFixedExpensesForProfile`/
+  `getCategoryRuleCount` app-services query pair.
+- **Nine data-model gaps found and resolved honestly** — every case where the Lovable mock implied a
+  fact the real engine doesn't know was fixed by adapting displayed copy, never by fabricating a
+  number or changing the approved component's visual result. Full list in `docs/RITMO.md`,
+  "Data-model gaps."
 
 **New in Sprint 7** (see `docs/DECISIONS.md` DEC-076–082 and `docs/ALERTS-NOTIFICATIONS.md` for the
 full account):
@@ -718,12 +789,26 @@ plus:
   consequence).
 - (Sprint 4.5) The mutation-guard's pattern list is now maintained in two languages (English and
   Portuguese) with no shared test harness enforcing parity between them — see "Risks."
-- (Sprint 4.5, DEC-051) PGlite (the embedded, file-backed local dev database) has no built-in
-  arbitration for a second OS process opening the same data directory concurrently — a standalone
-  script run while the dev server was also running corrupted the file irrecoverably. No code fix
-  exists for this yet, only a documented hard rule (never do that) — a real client-server Postgres
-  for local dev, or a "maintenance mode" toggle the app itself enforces, would remove the risk
-  entirely but is out of scope for this sprint.
+- (Sprint 4.5, DEC-051; extended Sprint 8, DEC-083) PGlite (the embedded, file-backed local dev
+  database) has no built-in arbitration for a second OS process opening the same data directory
+  concurrently — a standalone script run while the dev server was also running corrupted the file
+  irrecoverably. Sprint 8 added a second application (`apps/ritmo`) capable of opening this same
+  database, so the rule now explicitly covers never running `apps/web` and `apps/ritmo` dev servers
+  concurrently against the same data directory (see `docs/RITMO.md`). No code fix exists for this
+  yet, only a documented hard rule (never do that) — a real client-server Postgres for local dev, or
+  a "maintenance mode" toggle the app itself enforces, would remove the risk entirely but remains out
+  of scope.
+- (Sprint 8) `apps/ritmo`'s Assistente screen's "Simulação" card data (the real `simulateExpense`
+  tool's output) is only available in the response of the turn that produced it — it is not
+  separately persisted, so it does not reappear next to older messages after a page reload. An
+  honest consequence of never fabricating a fact not currently in hand, not a bug — see
+  `docs/RITMO.md`, "Assistente: real AI chat, not a scripted demo."
+- (Sprint 8) `docs/RITMO.md`'s data-model gaps #3 (two Insights mock examples with no engine
+  equivalent: week-over-week spending pace, a positive "planned event still fits" confirmation) and
+  #6 (Planejamento's "Linha do mês" timeline has almost no real dated facts to show — no `Income`
+  pay-date, no confirmed `FixedExpense` due-days for most fixture rows) remain open product gaps, not
+  Sprint 8 bugs — closing them requires either a real pay-date/due-date capture flow or a
+  positive-confirmation alert type, both deliberately deferred.
 - (Sprint 4.5, DEC-050) No UI "Disconnect" button exists yet for `disconnectConnection` — only the
   `DELETE /api/connections?connectionId=...` endpoint. Low-risk, natural follow-up.
 - (Sprint 4.5, DEC-053) `GET /api/debug/counts` is gated only by `process.env.NODE_ENV`, since no
@@ -796,10 +881,20 @@ testing (all are process/design corrections, documented as decisions rather than
 
 ## Test status
 
-**599 automated tests passing** in the default suite, zero failing, across eight packages/apps (up
-from 491 at end of Sprint 6, 426 at end of Sprint 5), plus the same **7 opt-in live-OpenAI tests**
-(unchanged by Sprint 7, still skip automatically without `OPENAI_API_KEY`).
+**645 automated tests passing** in the default suite, zero failing, across nine packages/apps (up
+from 599 at end of Sprint 7, 491 at end of Sprint 6), plus the same **7 opt-in live-OpenAI tests**
+(unchanged by Sprint 8, still skip automatically without `OPENAI_API_KEY`).
 
+- `apps/ritmo`: **43** (new, Sprint 8) — adapter-only unit tests (no component/DOM tests): Home's
+  formatting/due-day/insight-fallback cases, Transações' Hoje/Ontem/Esta-semana grouping and
+  `UNCATEGORIZED`-sentinel localization, Planejamento's honest-timeline/never-fabricate-a-percentage
+  cases, Insights' evidence-grounded detail sentences and severity→tone mapping, Assistente's
+  message-role mapping and inline-markdown bold parsing, and Mais' honest quiet-hours/plan-free
+  copy.
+- `packages/app-services`: **295** (up from 293) — Sprint 8 adds `getFixedExpensesForProfile`'s and
+  `getCategoryRuleCount`'s tests (2 new; everything else unchanged by Sprint 8).
+- `packages/persistence`: **38** (up from 37) — Sprint 8 adds `FixedExpense.dueDayOfMonth`'s
+  round-trip test (present vs. absent, Safe-to-Spend unaffected beyond the new expense amounts).
 - `packages/discovery`: **6** (unchanged).
 - `packages/financial-engine`: **196** (up from 171) — `alert-signal.test.ts`'s 25 tests
   (`evaluateSafeToSpendChange`'s relative/absolute/deficit-crossing/no-baseline cases,
@@ -961,6 +1056,18 @@ with permanent regression tests using the exact live-failing phrasing; re-verifi
 through live phrasing rather than offline tests written against the same narrow brief examples (see
 DEC-064, DEC-075).
 
+**Sprint 8 Ritmo UI: Founder visual and product validation PASSED.** Each of the six screens was
+verified against a pre-captured visual baseline (mobile 412×915 and desktop 1440×900, both light and
+dark theme) before its data wiring began, then re-verified after — no unapproved visual difference
+was found; the only differences accepted were the pre-approved copy reframings documented in
+`docs/RITMO.md`, "Data-model gaps." The Assistente screen's real chat was verified with real, billed
+OpenAI calls (kept deliberately few — two, for this sprint), including a real bug found and fixed
+live: the model's `**bold**` markdown was rendering as literal asterisks in the plain-`<p>` chat
+bubble (no markdown renderer existed) — fixed with a small, targeted inline bold-span parser, never a
+general markdown library. `check-client-bundle.mjs` was run clean against a real production build
+both before and after the Assistente screen introduced the first real `OPENAI_API_KEY` usage in
+`apps/ritmo`. The Founder gave final approval with the real engine connected — Sprint 8 is complete.
+
 ## Open questions
 
 Carried forward from Sprint 2 (caution threshold, viability thresholds, protected savings target
@@ -983,14 +1090,19 @@ methodology), plus:
 
 ## Next recommended sprint
 
-**Sprint 8 — scope not yet defined by the Founder/Product Lead.** Candidates worth considering when
-that brief is written: real production authentication (this product has none yet — every route is
-gated only by `NODE_ENV`, acceptable pre-Founder-approval but not beyond it), a real push/email
-notification provider (currently `NOT_CONFIGURED`), a real discovery-provider credential (Sprint 6's
-`LIVE_DISCOVERY_VALIDATION = BLOCKED_BY_EXTERNAL_PROVIDER_CONFIGURATION` is still unresolved,
-independent of Sprint 7's own scope), and a real completion/cancellation status on
-`SavedConciergePlan` (Sprint 7's `STALE_CONCIERGE_PLAN` alert currently approximates this with a
-relevance-window heuristic). **Sprint 7 is complete; Sprint 8 has explicitly not been started.**
+**Sprint 9 — scope not yet defined by the Founder/Product Lead.** Candidates worth considering when
+that brief is written: real production authentication (the profile-resolution seam,
+`getCurrentProfileContext()` in `apps/ritmo/src/functions/profile-context.ts`, was built in Sprint 8
+specifically so real auth can replace its insides with zero changes to any adapter or route — see
+`docs/RITMO.md`, "Login exception"), retiring `apps/web` once `apps/ritmo` parity is validated
+further, closing the remaining Sprint 8 data-model gaps deliberately (a real bill due-date/paycheck-
+date capture flow, a real scheduled daily-digest notification, the two Insights example categories
+with no engine equivalent yet), a real push/email notification provider (currently `NOT_CONFIGURED`),
+a real discovery-provider credential (Sprint 6's `LIVE_DISCOVERY_VALIDATION =
+BLOCKED_BY_EXTERNAL_PROVIDER_CONFIGURATION` is still unresolved), and a real completion/cancellation
+status on `SavedConciergePlan` (Sprint 7's `STALE_CONCIERGE_PLAN` alert currently approximates this
+with a relevance-window heuristic). **Sprint 8 is complete; Sprint 9 has explicitly not been
+started — in particular, no production/authentication work has begun.**
 
 ## Risks
 

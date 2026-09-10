@@ -140,18 +140,35 @@ data is never flooded with retroactive alerts about its starting state. See
 [docs/ALERTS-NOTIFICATIONS.md](./ALERTS-NOTIFICATIONS.md) for the full architecture; only in-app
 delivery exists today, no real push/email provider is configured.
 
-## Out of scope for Sprint 1–7
+## The product UI (Sprint 8)
+
+Money Copilot's user-facing surface is now a Founder-approved visual design ("Ritmo"), not a
+developer dashboard. The Founder approved a Lovable-generated prototype as the exact visual source of
+truth — layout, hierarchy, spacing, typography, colors, gradients, icons, component composition — and
+Sprint 8 connected that unchanged visual design to the same deterministic engine every other sprint
+already built (`apps/ritmo`, see [docs/RITMO.md](./RITMO.md)). The product principle this enforces:
+**the engine's correctness and the product's presentation are two separate concerns, and a visual
+redesign is never an excuse to touch the former, nor is a data integration ever an excuse to touch
+the latter.** Where the approved design implied a fact the engine doesn't actually know (a bill's
+due-date, a paycheck date, a subscription plan), the displayed copy was adapted to what's honestly
+known — never a fabricated number, and never a change to the approved visual result. No login/account
+system exists yet; the previous developer dashboard (`apps/web`) remains temporarily for internal/
+debug use only and will be retired once the new UI reaches full parity.
+
+## Out of scope for Sprint 1–8
 
 Real (non-sandbox) bank/credit card connections (technically eligible as of Sprint 4.5's passed
 validation, but gated on separate explicit Founder approval — see `docs/PROJECT_STATE.md`), WhatsApp,
 any external booking/reservation/payment/cancellation action (Sprint 6 only discovers and recommends —
-no restaurant/hotel booking, no ticket purchase, no merchant contact), and any real push/email
+no restaurant/hotel booking, no ticket purchase, no merchant contact), any real push/email
 notification delivery, automatic monitoring alerts beyond the Sprint 7 catalog, or automatic merchant
 actions (Sprint 7 only surfaces already-computed deterministic signals — see
-[docs/ALERTS-NOTIFICATIONS.md](./ALERTS-NOTIFICATIONS.md)). Sprint 4 added conversational AI (OpenAI,
-via a provider-neutral abstraction a future Anthropic provider could also implement) strictly as an
+[docs/ALERTS-NOTIFICATIONS.md](./ALERTS-NOTIFICATIONS.md)), and production user authentication (Sprint
+8 built the architectural seam for it — see [docs/RITMO.md](./RITMO.md), "Login exception" — but
+implemented no login UI or real account system). Sprint 4 added conversational AI (OpenAI, via a
+provider-neutral abstraction a future Anthropic provider could also implement) strictly as an
 interpretation/interface layer over the unchanged deterministic core; Sprint 5 added the recommendation
-engine, Sprint 6 the concierge, and Sprint 7 the alert engine, all using that same interpretation-only
-AI layer — see [docs/AI-COPILOT.md](./AI-COPILOT.md), [docs/RECOMMENDATIONS.md](./RECOMMENDATIONS.md),
-[docs/CONCIERGE.md](./CONCIERGE.md), [docs/ALERTS-NOTIFICATIONS.md](./ALERTS-NOTIFICATIONS.md), and
-[docs/ROADMAP.md](./ROADMAP.md).
+engine, Sprint 6 the concierge, Sprint 7 the alert engine, and Sprint 8 the real product UI — see
+[docs/AI-COPILOT.md](./AI-COPILOT.md), [docs/RECOMMENDATIONS.md](./RECOMMENDATIONS.md),
+[docs/CONCIERGE.md](./CONCIERGE.md), [docs/ALERTS-NOTIFICATIONS.md](./ALERTS-NOTIFICATIONS.md),
+[docs/RITMO.md](./RITMO.md), and [docs/ROADMAP.md](./ROADMAP.md).

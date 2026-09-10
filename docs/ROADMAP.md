@@ -114,13 +114,36 @@ real OpenAI, and the real persisted Pluggy sandbox connection — genuine succes
 found and fixed live (DEC-082, a mutation-guard pattern that only matched the brief's own bare example
 phrasing). See `docs/ALERTS-NOTIFICATIONS.md` and `docs/DECISIONS.md` DEC-076 through DEC-082.
 
-## Sprint 8 and beyond — not yet scoped
+## Sprint 8 — Ritmo (Lovable) UI integration ✅ (complete)
 
-No brief exists yet for Sprint 8. Candidates the Founder/Product Lead may consider: real production
-authentication, a real push/email notification provider, a real discovery-provider credential (Sprint
-6's `LIVE_DISCOVERY_VALIDATION` remains blocked), and a real completion/cancellation status on saved
-concierge plans (Sprint 7's stale-plan alert currently approximates this with a relevance-window
-heuristic).
+A Founder-approved Lovable-generated prototype ("Ritmo") became the visual source of truth for the
+product UI, replacing `apps/web`'s developer dashboard. A new app, `apps/ritmo` (React 19, TanStack
+Start, Vite, Tailwind v4, shadcn/ui — the prototype's own stack, ported in and never redesigned),
+connects that unchanged visual design to the same deterministic engine every prior sprint built — all
+six screens (Home, Transações, Planejamento, Insights, Assistente, Mais) read real data via
+`@money-copilot/app-services`, never a second business-logic implementation. A strict server/client
+security boundary (`apps/ritmo/src/functions/` is the only layer allowed to import `app-services`,
+enforced by TanStack Start's native import-protection plugin and proved at build time by
+`scripts/check-client-bundle.mjs`) and a single profile-resolution seam (`getCurrentProfileContext()`
+— explicitly not an auth implementation, but the seam a future sprint's real auth replaces) were both
+built before any screen was wired. The Assistente screen's chat is real, calling the same
+`runCopilotTurn` orchestrator `apps/web`'s (previously UI-less) `/api/chat` route already used.
+`FixedExpense.dueDayOfMonth?: number` was added as the one additive domain-model change. Nine
+data-model gaps (a bill due-date, a paycheck date, a fabricated subscription plan, etc.) were each
+resolved by adapting displayed copy honestly, never by fabricating a number or changing the approved
+visual result. Founder visual and product validation PASSED against the real engine. See
+`docs/RITMO.md` for the full architecture and `docs/DECISIONS.md` DEC-083 through DEC-086.
+
+## Sprint 9 and beyond — not yet scoped
+
+No brief exists yet for Sprint 9. Candidates the Founder/Product Lead may consider: real production
+authentication (Sprint 8 built the seam for it — `getCurrentProfileContext()` — but implemented no
+login UI), retiring `apps/web` once `apps/ritmo` parity is validated further, closing Sprint 8's
+remaining data-model gaps deliberately (a real bill due-date/paycheck-date capture flow, a real
+scheduled daily-digest notification), a real push/email notification provider, a real
+discovery-provider credential (Sprint 6's `LIVE_DISCOVERY_VALIDATION` remains blocked), and a real
+completion/cancellation status on saved concierge plans (Sprint 7's stale-plan alert currently
+approximates this with a relevance-window heuristic).
 
 ## Explicitly not scheduled yet
 

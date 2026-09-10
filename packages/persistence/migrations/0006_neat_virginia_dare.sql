@@ -1,0 +1,1 @@
+ALTER TABLE "fixed_expenses" ADD COLUMN "due_day_of_month" integer;

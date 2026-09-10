@@ -5,7 +5,13 @@
 ```
 money-copilot/
   apps/
-    web/                    Next.js App Router UI + API routes (thin — no direct DB/provider access)
+    ritmo/                  TanStack Start — THE PRODUCT UI (Sprint 8, see docs/RITMO.md). Ported
+                             visually verbatim from the Founder-approved Lovable prototype; calls
+                             app-services only from src/functions/ (server-only), never from a route
+                             component or a client hook.
+    web/                    Next.js App Router — now internal/debug only (Sprint 8), retired once
+                             apps/ritmo reaches full parity. UI + API routes, thin — no direct
+                             DB/provider access.
   packages/
     financial-engine/       The priority package: deterministic domain + calculations
     persistence/            Drizzle ORM + PGlite: schema, migrations, seed (Sprint 2)
@@ -29,13 +35,17 @@ dependency at all. This means:
 - It can be unit tested in isolation with no mocking of infrastructure.
 - It can be reused by a future CLI, a future API server, a future background job, or a future LLM
   tool-calling layer, without dragging in React/Next.
-- The web app's job is reduced to *calling* the engine and *displaying* its output — it must never
-  reimplement or duplicate a calculation.
+- Each frontend app's job is reduced to *calling* the engine and *displaying* its output — it must
+  never reimplement or duplicate a calculation. **Sprint 8 proved this with a second, independent
+  frontend** (`apps/ritmo`, a different framework entirely — TanStack Start, not Next.js): it consumes
+  the exact same `@money-copilot/app-services` surface as `apps/web`, with zero financial logic
+  duplicated between them — see `docs/RITMO.md`.
 
 `@money-copilot/shared` holds only generic, domain-agnostic utilities (currently: a branded `Id<T>`
 type and a monotonic id generator for fixtures/tests). It intentionally does **not** hold financial
 domain types — those belong in financial-engine, which is the single source of truth for the domain
-model. This keeps the dependency graph one-directional: `web → financial-engine → shared`.
+model. This keeps the dependency graph one-directional: `{web, ritmo} → app-services → financial-engine
+→ shared`.
 
 ## The financial-engine package, internally
 
@@ -259,6 +269,28 @@ API routes (`apps/web/app/api/*/route.ts`) are the only other server-side surfac
 constructs an `OpenAIProvider`). Each is a thin wrapper calling one `app-services` function — no
 business logic lives in a route handler.
 
+## How the Ritmo app consumes the engine (Sprint 8)
+
+`apps/ritmo` needs no `transpilePackages`-equivalent configuration at all — Vite resolves
+workspace-linked TypeScript source (`@money-copilot/app-services`'s `main`/`types` point directly at
+raw `src/index.ts`) out of the box, unlike Next.js's Turbopack. This was confirmed as the very first
+implementation step (a spike) before any screen was built.
+
+Where `apps/web` calls `app-services` from a React Server Component, `apps/ritmo` calls it from a
+TanStack Start `createServerFn()` — same idea (server-only, request-time, direct function call, no
+HTTP hop to a second API surface), different framework's mechanism for it. The boundary is stricter
+here: only files under `apps/ritmo/src/functions/` may import `@money-copilot/app-services`, enforced
+by TanStack Start's native import-protection Vite plugin in dev (any client-context import from a
+`server/`-pattern path is a hard build error) and proved at build time by
+`apps/ritmo/scripts/check-client-bundle.mjs`, which scans the client-only build output for
+`OPENAI_API_KEY`/`PLUGGY_CLIENT_SECRET` and server-only package names. `apps/ritmo/src/adapters/` is
+a presentation-only layer between a server function's raw domain data and the (visually unchanged,
+Lovable-sourced) route JSX — pure functions, no I/O, no financial calculation. Full detail, including
+the profile-resolution seam and every data-model gap this introduced: `docs/RITMO.md`.
+
+Both `apps/web` and `apps/ritmo` are capable of opening the same file-backed PGlite database — see
+"Persistence" below and DEC-051/DEC-083 in `docs/DECISIONS.md` for the resulting single-process rule.
+
 ## Persistence (Sprint 2, extended Sprint 3)
 
 `@money-copilot/persistence` provides the persistence layer: Drizzle ORM schema + versioned SQL
@@ -272,7 +304,13 @@ adds `provider_connections`, `sync_runs`, `webhook_events`, and `bills` tables, 
 `packages/persistence/src/migration.test.ts`).
 
 The web app now reads from this database at request time via `@money-copilot/app-services` (DEC-024,
-superseding DEC-019's earlier caution) — see "Application service layer" above.
+superseding DEC-019's earlier caution) — see "Application service layer" above. **Sprint 8** added a
+second app (`apps/ritmo`) that reads/writes the same way — PGlite has no built-in arbitration for two
+OS processes opening the same file-backed data directory concurrently (DEC-051), so the hard rule
+(never run `apps/web` and `apps/ritmo` dev servers concurrently against the same data directory) now
+explicitly covers both apps (DEC-083). Each app's default `MONEY_COPILOT_DB_PATH` resolves relative
+to its own `cwd`, so today they write to two different physical files rather than corrupting a shared
+one — but never override that variable to point both at one file while both might run at once.
 
 ## Enforcing "the engine calculates, AI interprets" in code (Sprint 4)
 

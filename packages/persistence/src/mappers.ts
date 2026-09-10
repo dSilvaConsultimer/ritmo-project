@@ -153,6 +153,7 @@ export function fixedExpenseToRow(
     amountCents: e.amount.cents,
     certainty: e.certainty,
     protected: e.protected,
+    dueDayOfMonth: e.dueDayOfMonth ?? null,
   };
 }
 
@@ -164,6 +165,7 @@ export function rowToFixedExpense(row: FixedExpenseRow): FixedExpense {
     amount: M.fromCents(row.amountCents),
     certainty: row.certainty,
     protected: row.protected,
+    ...(row.dueDayOfMonth !== null ? { dueDayOfMonth: row.dueDayOfMonth } : {}),
   };
 }
 

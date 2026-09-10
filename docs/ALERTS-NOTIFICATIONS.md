@@ -5,6 +5,13 @@ Sprint 7. Read `docs/PROJECT_STATE.md` first for the full continuity account; th
 detailed reference for how alerting is built and why. See `docs/DECISIONS.md` DEC-076 onward for the
 individual architectural decisions this document summarizes.
 
+**Sprint 8 note:** references below to `apps/web/app/page.tsx` describe the original, now
+internal/debug-only dashboard. The Founder-facing product surface is now `apps/ritmo` (see
+`docs/RITMO.md`): its Home screen shows one top-ranked alert/recommendation as an "insight" card, and
+its Insights screen shows the full real feed of active alerts and pending recommendations — both via
+the exact same `listAlertsForProfile`/`rankAlerts`/`getRecommendationsSummary` app-services functions
+described here, never a second alert-ranking implementation.
+
 ## The one rule everything else follows
 
 Alert CREATION is 100% deterministic. The AI may explain an alert, summarize what changed, answer

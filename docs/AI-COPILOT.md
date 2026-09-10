@@ -45,9 +45,15 @@ packages/app-services/src/copilot/
   orchestrator.ts            runCopilotTurn() — the bounded tool-calling loop
 ```
 
-`apps/web/app/api/chat/route.ts` is the only place that constructs a real `OpenAIProvider` (reads
-`OPENAI_API_KEY` from `process.env`, server-only) and calls `runCopilotTurn`. `apps/web/app/
-components/ChatPanel.tsx` is the chat UI.
+`apps/web/app/api/chat/route.ts` was the original place that constructs a real `OpenAIProvider`
+(reads `OPENAI_API_KEY` from `process.env`, server-only) and calls `runCopilotTurn`; `apps/web/app/
+components/ChatPanel.tsx` is its chat UI. **Sprint 8** added a second, real caller:
+`apps/ritmo/src/functions/assistente.ts` (a TanStack Start server function) does the identical
+thing — same `runCopilotTurn`, same conversation-service persistence, no AI orchestration
+duplicated — for the new product UI's Assistente screen (`apps/ritmo/src/routes/assistente.tsx`).
+`apps/ritmo` is now the primary, Founder-facing chat surface; `apps/web`'s `/api/chat`/`ChatPanel.tsx`
+remain as the original, internal/debug-only implementation. See `docs/RITMO.md`, "Assistente: real AI
+chat, not a scripted demo."
 
 ## Provider-neutral `AIProvider` abstraction
 
@@ -99,12 +105,18 @@ no `OPENAI_API_KEY` is required for the default test suite.
 
 ## OPENAI_API_KEY
 
-Server-only. Read once, in `apps/web/app/api/chat/route.ts`, from `process.env["OPENAI_API_KEY"]` —
-never sent to the browser, never persisted in the database, never logged, never part of an
-`AIRequestLog` row. `.env.example` documents it as an empty placeholder. If it's absent,
-`POST /api/chat` returns `{ error: { code: "AI_CONFIGURATION_ERROR", ... } }` (HTTP 503) rather than
-silently falling back to a stub assistant — the rest of the dashboard (Sprints 1-3) is unaffected.
-`MockAIProvider` is a test utility, not a disguised production fallback.
+Server-only, in both apps. `apps/web/app/api/chat/route.ts` reads it from
+`process.env["OPENAI_API_KEY"]`; `apps/ritmo`'s equivalent (Sprint 8,
+`apps/ritmo/src/functions/assistente.ts`) reads the same variable from its own
+`apps/ritmo/.env.local` (gitignored, never committed) — never sent to the browser, never persisted
+in the database, never logged, never part of an `AIRequestLog` row, in either app. `apps/ritmo`
+additionally proves this at build time: `scripts/check-client-bundle.mjs` scans the client-only
+build output for the key's real value and the literal string, run clean before this claim was
+written (see `docs/RITMO.md`, "Server/client security boundary"). `.env.example` documents it as an
+empty placeholder. If it's absent, `POST /api/chat` (`apps/web`) returns
+`{ error: { code: "AI_CONFIGURATION_ERROR", ... } }` (HTTP 503), and `apps/ritmo`'s
+`sendAssistenteMessage` returns the equivalent structured result — neither silently falls back to a
+stub assistant. `MockAIProvider` is a test utility, not a disguised production fallback.
 
 ## Conversation persistence — no provider-locked memory
 

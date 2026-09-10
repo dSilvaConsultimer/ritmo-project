@@ -117,6 +117,12 @@ export const fixedExpenses = pgTable("fixed_expenses", {
   amountCents: integer("amount_cents").notNull(),
   certainty: text("certainty").$type<Certainty>().notNull(),
   protected: boolean("protected").notNull(),
+  /**
+   * Sprint 8: display-only due-day-of-month (1-31), never used in any
+   * calculation. Null means genuinely unknown — never guessed. See
+   * `FixedExpense.dueDayOfMonth`'s doc comment.
+   */
+  dueDayOfMonth: integer("due_day_of_month"),
 });
 
 export const variableBudgets = pgTable("variable_budgets", {

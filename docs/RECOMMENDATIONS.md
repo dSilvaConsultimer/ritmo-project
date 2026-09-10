@@ -169,8 +169,9 @@ already-decided outcome.
 `syncConnection` (`packages/app-services/src/sync.ts`) calls `evaluateRecommendations` then
 `evaluateRecommendationVerifications` after every successful import, in its own try/catch (a problem
 here never fails the sync itself). The same pair also runs on every homepage load
-(`apps/web/app/page.tsx`), so fixture/demo-mode users see recommendations too, generated from any
-qualifying MANUAL-origin transactions.
+(`apps/web/app/page.tsx`, and, as of Sprint 8, `apps/ritmo`'s Home screen server function — see
+`docs/RITMO.md`), so fixture/demo-mode users see recommendations too, generated from any qualifying
+MANUAL-origin transactions.
 
 ## AI tools and grounding
 

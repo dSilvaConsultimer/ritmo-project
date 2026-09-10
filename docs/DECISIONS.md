@@ -2185,3 +2185,114 @@ fourth recurrence in a fourth domain (recommendations, concierge, now alerts).
 plausibly phrase the intent WITH an object/detail named in the middle, not just the shortest possible
 example — "does this still match if the user names what they're acting on?" is now a standing question
 to ask before considering a new pattern done.
+
+---
+
+### DEC-083
+
+**Date:** 2026-09-10
+**Context:** Sprint 8 introduced `apps/ritmo` — a new TanStack Start frontend (ported from the
+Founder-approved `meu-ritmo-design` Lovable prototype) that becomes the product UI, replacing
+`apps/web`'s developer dashboard as the surface end users see. `apps/ritmo`'s server functions
+import `@money-copilot/app-services` directly and call `getDb()` exactly like `apps/web` already
+does — the same file-backed PGlite database, just from a second application.
+**Decision:** DEC-051's rule ("never run a second process against the same file-backed PGlite data
+directory while another process already has it open") now explicitly extends to `apps/ritmo`:
+`pnpm --filter @money-copilot/web dev` and `pnpm --filter @money-copilot/ritmo dev` must never run
+concurrently against the same data directory. In practice each app's default `MONEY_COPILOT_DB_PATH`
+resolves relative to its own `cwd` (`apps/web/.data/...` vs. `apps/ritmo/.data/...`), so the two
+currently write to two DIFFERENT physical files rather than corrupting a shared one — but both
+independently reseed the identical fixture on first run, so this is a latent footgun rather than a
+protection: pointing both at the same explicit `MONEY_COPILOT_DB_PATH` (e.g. via a shared
+`.env.local`) would immediately reintroduce DEC-051's exact failure mode. The documented rule is:
+stop whichever dev server isn't in use before starting the other, and never override
+`MONEY_COPILOT_DB_PATH` to point both apps at one file.
+**Rationale:** `apps/web` is being retired deliberately once `apps/ritmo` reaches parity (see
+`docs/RITMO.md`) — until then, both exist, both are capable of opening the database, and DEC-051's
+underlying constraint (PGlite arbitrates no concurrent OS-process access) is unchanged by which
+application is doing the opening.
+**Status:** Accepted.
+**Consequences:** `docs/RITMO.md` documents this rule for anyone working in `apps/ritmo`; no
+automated enforcement exists (matching DEC-051's own state) — this remains a documented discipline,
+not a code-level guard.
+
+---
+
+### DEC-084
+
+**Date:** 2026-09-09
+**Context:** The Sprint 8 plan called for a `server/` directory as the single location allowed to
+import `@money-copilot/app-services` in `apps/ritmo` (mirroring `apps/web`'s Route-Handler-only
+boundary). Wiring the Home screen's first server function this way produced a full-page red error
+overlay in dev: `[plugin:vite:import-analysis] [import-protection] Import denied in client
+environment / Denied by file pattern: **/server/**`. Investigation (reading
+`@tanstack/start-plugin-core`'s `import-protection/defaults.js`, then downloading
+`@lovable.dev/vite-tanstack-config`'s own published `dist/index.js` via `npm pack`) found this is a
+real, deliberate Lovable scaffold convention, not a bug: it overrides TanStack Start's own default
+`import-protection` pattern (`**/*.server.*`, file-suffix-based) to `client: { files:
+["**/server/**"], specifiers: ["server-only"] }` — i.e. any import path literally containing a
+`server/` segment is denied from client-context code.
+**Decision:** Renamed the directory to `apps/ritmo/src/functions/` — identical architectural role
+(the only place `createServerFn()` bodies live, the only place allowed to import `app-services`),
+different name that doesn't collide with the scaffold's literal pattern match.
+**Rationale:** The protection itself is exactly the security boundary the Sprint 8 plan already
+required — the fix is to work with Lovable's own naming convention, not to weaken or bypass the
+protection to keep a preferred folder name.
+**Status:** Accepted.
+**Consequences:** Any future `apps/ritmo` work should assume `src/functions/` (never `src/server/`)
+is where server-only code lives; `docs/RITMO.md` documents this explicitly so the reason isn't
+rediscovered from scratch.
+
+---
+
+### DEC-085
+
+**Date:** 2026-09-09
+**Context:** Live screenshot verification of the Home screen's real-data wiring showed "Hoje, 04 de
+setembro" for `asOfDate = "2026-09-05"` — one calendar day off. Root cause:
+`Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "long" })`, with no explicit `timeZone` option,
+formats in the HOST PROCESS's local timezone; a `Date` built via `Date.UTC(year, month-1, day)`
+represents UTC midnight, which is the PREVIOUS calendar day in any timezone behind UTC — exactly the
+same category of date-vs-instant confusion `packages/financial-engine`'s own `date-utils.ts` already
+guards against for every domain date (every date in this codebase is an explicit "YYYY-MM-DD"
+calendar string, never a real timezone-bound instant).
+**Decision:** Added `timeZone: "UTC"` to the formatter in `apps/ritmo/src/adapters/format.ts`, with a
+comment recording the live-discovered failure mode, plus a permanent regression test
+(`format.test.ts`) asserting the day never shifts backward.
+**Rationale:** A presentation-layer formatter that silently depends on the server process's local
+timezone is a latent bug for any deployment environment set to a timezone behind UTC (which most
+production hosting defaults to, UTC itself) — the fix generalizes the financial-engine's own
+established discipline to the new presentation layer rather than inventing a separate convention.
+**Status:** Accepted.
+**Consequences:** Any future `apps/ritmo` date-formatting helper must pass `timeZone: "UTC"` (or
+equivalent) explicitly — never rely on the host process's default timezone.
+
+---
+
+### DEC-086
+
+**Date:** 2026-09-09
+**Context:** Wiring the Assistente screen's real chat (per the Founder's explicit instruction to
+connect it to the real `runCopilotTurn` orchestrator, not leave it scripted) surfaced two real,
+live-discovered gaps. First, the Lovable mock's "Simulação" card shows a fabricated `Hoje`/`Depois`
+Safe-to-Spend pair; the real `simulateExpense` tool's actual output has no such pair — it returns a
+recommended limit, projected savings after the expense, and any compensation required to still hit
+the savings goal. Second, a real live OpenAI response rendered with literal `**asterisks**` visible
+in the chat bubble: the model's replies use plain markdown, but the approved bubble is a plain `<p>`,
+never a markdown renderer — a real, visible defect not present in the fully-scripted mock (which
+never contained markdown).
+**Decision:** The "Simulação" card now shows the three real `simulateExpense` figures (recommended
+limit, projected savings after, compensation required) under honest labels, only ever rendered when
+that tool actually ran this turn — never a fabricated before/after pair. A small, targeted
+`parseInlineMarkdown()` function (splits `**bold**` spans into bold/plain text segments) was added and
+used only for chat-bubble text — deliberately not a general markdown parser, and it never touches the
+bubble's own visual container/styling.
+**Rationale:** Both gaps are exactly the kind of "the mock implied a fact/format the real system
+doesn't produce" case Sprint 8's own data-integration rule anticipates: adapt the displayed content
+honestly, never fabricate, never touch the approved visual shell beyond what's strictly needed to
+render real content correctly.
+**Status:** Accepted.
+**Consequences:** `docs/RITMO.md`, "Data-model gaps" #7/#8, documents both for future reference. If a
+future model response includes other markdown constructs (lists, links, headers), the same literal-
+character defect will recur until `parseInlineMarkdown` (or a real markdown renderer, if ever
+justified) is extended to cover them.
