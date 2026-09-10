@@ -1,3 +1,6 @@
+export * from "./alerts/index";
+export * from "./notifications/index";
+export * from "./notification-provider-registry";
 export * from "./concierge/index";
 export * from "./copilot/index";
 export * from "./db";

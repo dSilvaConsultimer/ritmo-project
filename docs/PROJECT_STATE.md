@@ -4,32 +4,30 @@
 file, plus `docs/PRODUCT.md`, `docs/ARCHITECTURE.md`, `docs/FINANCIAL-ENGINE.md`,
 `docs/ROADMAP.md`, and `docs/DECISIONS.md` (`docs/OPEN-FINANCE.md` from Sprint 3 on for
 provider-integration detail, `docs/AI-COPILOT.md` from Sprint 4 on for the AI copilot layer,
-`docs/RECOMMENDATIONS.md` from Sprint 5 on for the recommendation engine, and `docs/CONCIERGE.md` from
-Sprint 6 on for the concierge/discovery layer), in that order. This documentation is more authoritative
-than assumptions carried over from a chat session. If a new request conflicts with a rule documented
-here: identify the conflict, explain the existing rule, do not silently change it, implement the new
+`docs/RECOMMENDATIONS.md` from Sprint 5 on for the recommendation engine, `docs/CONCIERGE.md` from
+Sprint 6 on for the concierge/discovery layer, and `docs/ALERTS-NOTIFICATIONS.md` from Sprint 7 on for
+the alert/notification engine), in that order. This documentation is more authoritative than
+assumptions carried over from a chat session. If a new request conflicts with a rule documented here:
+identify the conflict, explain the existing rule, do not silently change it, implement the new
 behavior only if it clearly supersedes the old decision, and record the change in
 `docs/DECISIONS.md` (mark the old decision superseded, add a new one — never rewrite history).
 
-Last updated: **2026-09-09, Sprint 6 complete.** Budget-aware concierge/real-world-discovery layer
-(financial-envelope-first architecture, provider-neutral `LocalDiscoveryProvider` abstraction,
-structured price evidence, deterministic budget-fit classification, multi-part plans, discovery
-grounding, privacy boundary) — see `docs/CONCIERGE.md` and `docs/DECISIONS.md` DEC-065 through
-DEC-075. **No live discovery provider credential exists** — `LIVE_DISCOVERY_VALIDATION =
-BLOCKED_BY_EXTERNAL_PROVIDER_CONFIGURATION` (DEC-073); the running app uses a deterministic mock
-provider, and the full pipeline THROUGH that mock provider was live-validated end to end against the
-real running product and real OpenAI, using the brief's own Section 51 scenario — a genuine success:
-correct envelope-first ordering, correct party-size/payment-responsibility inference, correct
-multi-part plan arithmetic, correct budget-fit classification, no fabricated venue/price data, and
-`groundingStatus: PASSED`, with Safe-to-Spend confirmed unchanged afterward. Live validation also found
-and fixed two real bugs (both now regression-tested and documented): **DEC-074** (`getConciergeBudget`
-had no fact extractor, so a correct answer was rejected by grounding — the same "tool output not
-exposed to grounding is a product bug" lesson recurring a third time after DEC-055/DEC-062) and
-**DEC-075** (a stale Sprint 4 system-instruction rule, accurate when written, was telling the model it
-had no real-world venue search — silently suppressing the brand-new Sprint 6 tools until removed).
-Sprint 5 (recommendation engine) and Sprint 4.5 (both external validations PASSED) remain
-complete/closed; `REAL_PERSONAL_FINANCIAL_DATA_ALLOWED` remains `TRUE_PENDING_FOUNDER_APPROVAL` —
-Sprint 6 did not change the release gate and did not connect any real institution.
+Last updated: **2026-09-09, Sprint 7 complete.** Deterministic alert engine + in-app notifications
+(`SAFE_TO_SPEND_MATERIAL_DROP`, `RECOMMENDATION_FAILED`/`VERIFIED`, `UPCOMING_EVENT_PRESSURE`/
+`UNKNOWN_COST`, `LIQUIDITY_COVERAGE_DEGRADED`, `CONNECTION_NEEDS_ATTENTION`, `STALE_CONCIERGE_PLAN`) —
+alert creation is 100% deterministic, episode-based anti-spam, automatic resolution, a declarative
+fact-registration mechanism ending a 4th recurrence of the "ungrounded tool" bug class, Connected
+Accounts hardening (Disconnect UI, Reconnect flow, duplicate-Connect-click prevention), and discovery
+production safety (mock venues can no longer reach a production deployment). See
+`docs/ALERTS-NOTIFICATIONS.md` and `docs/DECISIONS.md` DEC-076 through DEC-082. **Live-validated
+end to end against the real running app, real OpenAI, and the real persisted Pluggy sandbox connection
+from earlier sprints** — genuine success (see "Integration status"), including one real bug found and
+fixed live: **DEC-082** (a mutation-guard pattern only matched the brief's own bare example phrasing,
+not natural real usage — a 4th recurrence of the "live phrasing gap" lesson after DEC-064/DEC-075).
+Sprint 6 (concierge), Sprint 5 (recommendation engine), and Sprint 4.5 (both external validations
+PASSED) remain complete/closed; `REAL_PERSONAL_FINANCIAL_DATA_ALLOWED` remains
+`TRUE_PENDING_FOUNDER_APPROVAL` — Sprint 7 did not change the release gate and did not connect any new
+real institution (the pre-existing Pluggy SANDBOX connection was reused for live validation only).
 
 ---
 
@@ -127,21 +125,50 @@ Full detail: `docs/PRODUCT.md`.
 
 ## Current architecture
 
-pnpm workspace monorepo, now eight packages deep: `apps/web` (Next.js 16 App Router, DB-backed via
-`app-services`, plus `/api/chat`) → `packages/app-services` (application/query service layer, the
-Sprint 4 AI tool/orchestration layer `src/copilot/`, the Sprint 5 recommendation service, and the
-Sprint 6 concierge module `src/concierge/`, zero Next.js dependency) → `packages/ai` (provider-neutral
-`AIProvider` + OpenAI adapter, Sprint 4), `packages/open-finance` (provider abstraction + Pluggy
-adapter + MockProvider), `packages/discovery` (provider-neutral `LocalDiscoveryProvider` + Mock
-provider, Sprint 6 — mirrors `open-finance`'s shape for real-world venue data), and
-`packages/persistence` (Drizzle + PGlite) → `packages/financial-engine` (zero framework/database/
-provider/AI/discovery dependencies, the priority package) → `packages/shared` (generic
-`Id`/id-generation only). Full detail: `docs/ARCHITECTURE.md`. Calculation detail:
-`docs/FINANCIAL-ENGINE.md`. Provider integration detail: `docs/OPEN-FINANCE.md`. AI copilot detail:
-`docs/AI-COPILOT.md`. Recommendation engine detail: `docs/RECOMMENDATIONS.md`. Concierge detail:
-`docs/CONCIERGE.md`.
+pnpm workspace monorepo, still eight packages deep (Sprint 7 added modules within existing packages,
+not a new package): `apps/web` (Next.js 16 App Router, DB-backed via `app-services`, plus `/api/chat`,
+`/api/alerts`) → `packages/app-services` (application/query service layer, the Sprint 4 AI tool/
+orchestration layer `src/copilot/`, the Sprint 5 recommendation service, the Sprint 6 concierge module
+`src/concierge/`, and the Sprint 7 alert/notification modules `src/alerts/`/`src/notifications/`, zero
+Next.js dependency) → `packages/ai` (provider-neutral `AIProvider` + OpenAI adapter, Sprint 4),
+`packages/open-finance` (provider abstraction + Pluggy adapter + MockProvider), `packages/discovery`
+(provider-neutral `LocalDiscoveryProvider` + Mock provider, Sprint 6 — mirrors `open-finance`'s shape
+for real-world venue data), and `packages/persistence` (Drizzle + PGlite) → `packages/financial-engine`
+(zero framework/database/provider/AI/discovery dependencies, the priority package — Sprint 7 adds
+`domain/alert-policy.ts`/`domain/alert-signal.ts`, pure and framework-free like everything else here) →
+`packages/shared` (generic `Id`/id-generation only). Full detail: `docs/ARCHITECTURE.md`. Calculation
+detail: `docs/FINANCIAL-ENGINE.md`. Provider integration detail: `docs/OPEN-FINANCE.md`. AI copilot
+detail: `docs/AI-COPILOT.md`. Recommendation engine detail: `docs/RECOMMENDATIONS.md`. Concierge
+detail: `docs/CONCIERGE.md`. Alerts/notifications detail: `docs/ALERTS-NOTIFICATIONS.md`.
 
 ## Current sprint
+
+**Sprint 7 — Alerts, notifications & product hardening. COMPLETE.** A deterministic alert engine
+(`packages/financial-engine/src/domain/alert-policy.ts`/`alert-signal.ts` for pure classification,
+`packages/app-services/src/alerts/` for the persisted `Alert` lifecycle) with an 8-type catalog
+(`SAFE_TO_SPEND_MATERIAL_DROP`, `RECOMMENDATION_FAILED`/`VERIFIED`, `UPCOMING_EVENT_PRESSURE`/
+`UNKNOWN_COST`, `LIQUIDITY_COVERAGE_DEGRADED`, `CONNECTION_NEEDS_ATTENTION`, `STALE_CONCIERGE_PLAN`) —
+alert CREATION is 100% deterministic; the AI may only read/explain/mark-seen/dismiss/re-check an alert
+that already exists (same "engine calculates, AI interprets" boundary as every prior sprint). A single
+shared episode mechanism (`upsertAlertEpisode`) implements anti-spam/reuse/resolve/rearm for every
+alert type at once; a persisted per-profile checkpoint plus a recovery-hysteresis baseline prevents both
+retroactive-noise-on-bootstrap and flapping-at-the-threshold. In-app notification delivery
+(`packages/app-services/src/notifications/`) is architecturally separate from alert state (never one
+table), with a provider-neutral `NotificationProvider` abstraction (mirrors `OpenFinanceProvider`/
+`LocalDiscoveryProvider`) — no real push/email provider exists yet
+(`LIVE_EXTERNAL_NOTIFICATION_VALIDATION = NOT_CONFIGURED`). Connected Accounts UX was hardened
+(Disconnect button, Reconnect flow for a troubled connection, and closing the Sprint 4.5
+duplicate-Connect-click gap by disabling the button for the widget's entire open duration, not just the
+token fetch). Discovery production safety was added (`MockDiscoveryProvider` can no longer be resolved
+under `NODE_ENV=production`, closing a real gap where a production deployment with no live discovery
+credential would otherwise silently show synthetic venues as real). A declarative, colocated
+fact-extraction mechanism (`ToolDefinition.extractFacts`) was added specifically to end a FOURTH
+recurrence of the "a new tool's monetary figure has no grounding extractor" bug class (DEC-055/062/074,
+now DEC-081's fix). Live validation against the real running app, real OpenAI, and the real persisted
+Pluggy sandbox connection from earlier sprints PASSED end to end and found one more real bug live —
+DEC-082, a mutation-guard pattern that only matched the brief's own bare example phrasing, not natural
+real usage — fixed with regression tests and re-verified live. See `docs/ALERTS-NOTIFICATIONS.md` and
+`docs/DECISIONS.md` DEC-076 through DEC-082.
 
 **Sprint 6 — Budget-aware concierge & real-world discovery. COMPLETE.** A new `@money-copilot/discovery`
 package (mirroring Open Finance's exact abstraction pattern) plus `packages/app-services/src/concierge/`
@@ -194,6 +221,53 @@ permanent fixture-only regression (BRL 2,171.11) and the live sandbox-connected 
 Sprint 4.5 final report delivered to the founder for the full account.
 
 ## Completed capabilities
+
+**New in Sprint 7** (see `docs/DECISIONS.md` DEC-076–082 and `docs/ALERTS-NOTIFICATIONS.md` for the
+full account):
+
+- **Deterministic alert engine**: `AlertPolicy`/`DEFAULT_ALERT_POLICY` (financial-engine, every
+  threshold centralized) + pure classification functions (`evaluateSafeToSpendChange`,
+  `hasSafeToSpendRecovered`, `evaluateEventPressure`, `hasEventPassed`,
+  `evaluateLiquidityCoverageChange`, `evaluateConnectionAttention`) + `Alert`/`evaluateAlerts`
+  (app-services). 8-type catalog. Alert creation/severity is never decided by the AI.
+- **One shared episode mechanism** (`upsertAlertEpisode`, DEC-077): reuse-if-still-true,
+  resolve-if-now-false, create-only-if-no-non-terminal-row — implements anti-spam for every alert type
+  at once. `Alert.transitions` is append-only, mirroring `Recommendation.decisionHistory`.
+- **Bootstrap semantics + recovery hysteresis** (DEC-078): `AlertEvaluationCheckpoint` (one row per
+  profile) suppresses retroactive alerting on a profile's first-ever evaluation for the two
+  checkpoint-delta alert types only; a persisted episode baseline + hysteresis ratio prevents a
+  Safe-to-Spend value oscillating at the threshold from flapping open/resolved every evaluation.
+- **Notification layer, architecturally separate from alert state** (DEC-076/079):
+  `NotificationDelivery`/`NotificationPreferences`/`NotificationProvider` (mirrors
+  `OpenFinanceProvider`/`LocalDiscoveryProvider`) — `MockNotificationProvider` only;
+  `LIVE_EXTERNAL_NOTIFICATION_VALIDATION = NOT_CONFIGURED`. Privacy mode (`GENERIC`/`AMOUNT_ALLOWED`)
+  enforced at render time; quiet-hours evaluation exists but never suppresses IN_APP delivery itself.
+- **Connected Accounts hardening** (DEC-080): a `DisconnectButton` (explicit confirm, idempotent) for
+  the previously-missing UI over `disconnectConnection`; a "Reconectar" affordance (same `ConnectButton`
+  flow, relabeled) for a `LOGIN_ERROR`/`USER_ACTION_REQUIRED`/`ERROR` connection; the Connect button now
+  disables itself for the widget's ENTIRE open duration, closing the exact Sprint 4.5
+  duplicate-connection-click gap.
+- **Discovery production safety** (DEC-080): `getDiscoveryProvider` refuses `"mock"` under
+  `NODE_ENV=production`; `concierge-service.ts` degrades to an honest `{discoveryUnavailable: true}`
+  result instead of a crash or fabricated venues.
+- **Declarative, colocated fact-extraction** (DEC-081): `ToolDefinition.extractFacts`, checked first by
+  `extractFinancialFacts` before the legacy per-tool switch — ends a fourth recurrence
+  (DEC-055/062/074) of "a new tool's monetary figure has no grounding extractor" for every NEW tool
+  going forward, with zero migration risk to existing tools.
+- **6 new AI tools + full grounding coverage**: `getAlerts`/`getAlertDetails`/
+  `reevaluateAlertContext` (READ), `markAlertSeen`/`dismissAlert`/`updateNotificationPreference`
+  (MUTATION, gated by `hasExplicitMutationIntent` extended with alert/preference language).
+- **UI**: `AlertCenter.tsx` (severity-badged cards, mark-seen/dismiss, empty state "Nada precisa da sua
+  atenção agora."), dashboard shows only the top-5 ranked active alerts
+  (`packages/app-services/src/alerts/ranking.ts`'s `rankAlerts`).
+- **Live validation: PASSED** end to end against the real running app, real OpenAI, and the real
+  persisted Pluggy sandbox connection — a real material Safe-to-Spend drop via an ordinary chat
+  interaction correctly created and later resolved/dismissed the right alerts, with grounding PASSED
+  and Safe-to-Spend confirmed unchanged by alert actions. **One real bug found and fixed live**
+  (DEC-082): a mutation-guard mark-seen pattern only matched the brief's own bare example phrasing, not
+  a natural real message naming which alert — fixed, regression-tested, re-verified live.
+- 599 automated tests passing in the default suite (up from 491 at end of Sprint 6), plus the same 7
+  opt-in live-OpenAI tests.
 
 **New in Sprint 6** (see `docs/DECISIONS.md` DEC-065–073 and `docs/CONCIERGE.md` for the full account):
 
@@ -671,6 +745,14 @@ plus:
 - (Sprint 6) No distance/travel-time ranking factor exists — V1 ranks by neighborhood/location-text
   match only. Deliberate (the brief explicitly says not to implement a routing engine unless a live
   provider actually supplies coordinates), but a real gap once live discovery data exists.
+- (Sprint 7) No real push/email notification provider exists — `MockNotificationProvider` only; see
+  `docs/ALERTS-NOTIFICATIONS.md`, "External notification provider status."
+- (Sprint 7) `STALE_CONCIERGE_PLAN`'s relevance-window heuristic stands in for a real plan
+  completion/cancellation status that doesn't exist on `SavedConciergePlan` yet — see
+  `docs/ALERTS-NOTIFICATIONS.md`, "Known limitations."
+- (Sprint 7) No background scheduler exists (by design, matching DEC-031's precedent for sync) — alert
+  evaluation runs after every sync and on every homepage load; a future scheduler calling
+  `evaluateAlerts`/`syncNotificationsForProfile` directly is purely additive.
 
 ## Known bugs
 
@@ -714,44 +796,42 @@ testing (all are process/design corrections, documented as decisions rather than
 
 ## Test status
 
-**491 automated tests passing** in the default suite, zero failing, across eight packages/apps (up
-from 426 at end of Sprint 5, 354 at end of Sprint 4.5), plus the same **7 opt-in live-OpenAI tests**
-(unchanged by Sprint 6, still skip automatically without `OPENAI_API_KEY`).
+**599 automated tests passing** in the default suite, zero failing, across eight packages/apps (up
+from 491 at end of Sprint 6, 426 at end of Sprint 5), plus the same **7 opt-in live-OpenAI tests**
+(unchanged by Sprint 7, still skip automatically without `OPENAI_API_KEY`).
 
-- `packages/discovery`: **6** (new package) — `MockDiscoveryProvider` returns only venues matching
-  the requested activity type; includes a venue with zero price evidence (unknown price is a real,
-  expected case); `getPlaceDetails` returns the exact venue or `undefined` for an unknown id; searches
-  are deterministic across repeated calls.
-- `packages/financial-engine`: **171** (up from 160) — `budget-fit.test.ts`'s 10 tests (WITHIN_
-  RECOMMENDED/WITHIN_CAUTION/HIGH_IMPACT classification; UNKNOWN_COST for a null cost; a mixed range
-  produces the conservative overall zone; a generous user ceiling never erases HIGH_IMPACT; a stricter
-  user ceiling produces EXCEEDS_LIMIT; `deriveSearchCeiling` never loosens beyond the caution amount).
+- `packages/discovery`: **6** (unchanged).
+- `packages/financial-engine`: **196** (up from 171) — `alert-signal.test.ts`'s 25 tests
+  (`evaluateSafeToSpendChange`'s relative/absolute/deficit-crossing/no-baseline cases,
+  `hasSafeToSpendRecovered`'s hysteresis, `evaluateEventPressure`'s far/comfortable/pressuring/
+  unknown-cost/already-started cases, `hasEventPassed`, `evaluateLiquidityCoverageChange`'s
+  degrade/unchanged/improve/no-baseline cases, `evaluateConnectionAttention`'s transient/repeated/
+  stale/healthy/disconnected cases).
 - `packages/ai`: **11** (unchanged).
 - `packages/open-finance`: **46** (unchanged).
-- `packages/persistence`: **29** (up from 26) — `concierge-repository.test.ts`'s 3 tests (session row
-  round-trip; saving the same plan id twice finds the existing row rather than duplicating; an unknown
-  session id returns `undefined`).
-- `apps/web`: **6** (unchanged — the new `RecommendationsPanel`-style Saved Plans section and chat
-  discovery-fact cards are covered by app-services' integration tests plus manual live validation).
-- `packages/app-services`: **222** (up from 177) — `concierge/plan-builder.test.ts`'s 13 tests
-  (party-size multiplier rules; PER_PERSON vs. TOTAL price handling; PRICE_LEVEL never converts to an
-  amount; deterministic component-cost summation; an unpriced component makes the combined total
-  unknown, never zero; exactly 2 plans for 1 required + 1 optional component; an optional component
-  never inflates the base plan's cost), `concierge/ranking.test.ts`'s 3 tests (budget fit dominates
-  rating; inspectable structured factors; a matching preference increases score),
-  `concierge/concierge-service.test.ts`'s 8 integration tests (the search ceiling is always derived
-  from the envelope; the discovery provider receives only derived constraints, never financial data;
-  an adversarial provider price cannot change Safe-to-Spend; saving a plan creates no transaction;
-  saving the same plan twice does not duplicate; reserving a budget creates a `FinancialEvent`, never a
-  transaction; explicit spending still uses the existing path; a plan is flagged stale once the
-  envelope changes), `orchestrator-concierge.test.ts`'s 5 tests (read tools never mutate; explicit
-  PT-BR plan selection mutates exactly once; hypothetical PT-BR selection language does not mutate; a
-  malicious discovery-tool payload changes neither the system instructions sent to the AI provider nor
-  grounding's rejection of an invented amount; grounding passes when a price is cited exactly as
-  returned), plus `mutation-guard.test.ts`'s 6 additional Sprint 6 cases, `tools.test.ts` updated
-  for the 6 new concierge tools, and `facts.test.ts`'s 2 DEC-074 regression tests (`getConciergeBudget`
-  and its nested appearances inside `buildConciergePlans`/`evaluateConciergePlan` expose their
-  amounts) — plus the same 7 skipped-by-default live tests in `live-openai-smoke.test.ts`.
+- `packages/persistence`: **37** (up from 29) — `alert-repository.test.ts`'s 8 tests (alert row
+  round-trip; episode identity finds the LATEST row, not just any row; listing; checkpoint upsert is
+  one row per profile; notification preferences/deliveries round-trip).
+- `apps/web`: **10** (up from 6) — `api/alerts/route.test.ts`'s 4 tests (missing input rejected;
+  markAlertSeen/dismissAlert wired correctly; an unknown alert id returns 404, never a raw error).
+- `packages/app-services`: **293** (up from 222) — `alerts/alert-service.test.ts`'s 21 tests (material-
+  drop create/reuse/dismiss/seen/resolve/rearm, idempotency, recommendation FAILED/VERIFIED, event
+  pressure/unknown-cost/passed-resolves, liquidity coverage degrade/unchanged/restore including the
+  "permanently-UNKNOWN demo profile never alerts" case, connection health transient/repeated/recovery,
+  stale concierge plan create/resolve/outside-window, protected-preference language check),
+  `notifications/notification-service.test.ts`'s 12 tests (preferences defaults/update, delivery
+  idempotency, category-disabled suppression, dismissed/resolved never delivered, quiet hours never
+  suppress IN_APP, GENERIC vs AMOUNT_ALLOWED payload rendering), `discovery-provider-registry.test.ts`'s
+  3 tests (production refusal, non-production/test success, test-injected-provider escape hatch),
+  `orchestrator-alerts.test.ts`'s 8 tests (read tools never mutate; explicit PT-BR mark-seen/dismiss/
+  preference-change mutate exactly once; hypothetical PT-BR dismiss language does not mutate; grounding
+  passes on the alert's own evidence and fails on an invented amount; never suggests reducing the
+  protected family-support commitment), plus `mutation-guard.test.ts`'s 12 additional Sprint 7 cases
+  (including the DEC-082 live-bug regression), `tools.test.ts` updated for the 6 new alert tools, and
+  `facts.test.ts`'s 4 Sprint 7 regression tests (getAlerts/getAlertDetails/markAlertSeen/dismissAlert/
+  reevaluateAlertContext all expose their evidence amounts via the new declarative `extractFacts`
+  mechanism; a non-monetary alert type correctly exposes zero facts) — plus the same 7
+  skipped-by-default live tests in `live-openai-smoke.test.ts`.
 
 Run with `pnpm run test` from the repo root (covers `packages/*` and `apps/*`), or per-package with
 `--filter`.
@@ -859,6 +939,28 @@ Fixed with one shared `financialSnapshotFacts` helper covering every salient `Fi
 at once, plus a permanent offline regression (`facts.test.ts`). No model change, no API key change, no
 Financial Engine change, and no Pluggy integration change were made or needed — exactly as instructed.
 
+**Sprint 7 alerts/notifications: live validation PASSED**, run against the SAME real running app, real
+OpenAI, and the real, already-persisted Pluggy sandbox connection from earlier sprints (no new
+institution connected). Sequence: dashboard loaded with zero alerts (bootstrap correctly suppressed
+retroactive noise for a profile with real pre-existing sandbox data) → a real chat interaction
+("Gastei R$ 800 hoje com um conserto emergencial do carro.") recorded a manual transaction, dropping
+Safe-to-Spend from R$1.293,01 to R$493,01 → the next dashboard load correctly created exactly one
+`SAFE_TO_SPEND_MATERIAL_DROP` alert and correctly surfaced a genuinely-stale `STALE_CONCIERGE_PLAN`
+alert for a plan saved during an earlier Sprint 6 live session (real historical data) → "Tenho algum
+alerta?" listed both correctly → "Por que você está me avisando sobre o Safe-to-Spend?" cited the exact
+figures with `groundingStatus: PASSED` → mark-seen and dismiss both succeeded → repeating the dismiss
+request correctly found nothing left to act on (idempotent) → two further dashboard reloads produced
+zero duplicate alerts → a final Safe-to-Spend check confirmed R$493,01 unchanged by any alert action.
+**One real bug was found and fixed live (DEC-082)**: the mark-seen mutation-guard pattern
+(`/\bmarc(a|ar|ado|o|ou) como (visto|vista|lido|lida)\b/i`) required "marcar" and "como visto" to be
+adjacent, matching only the brief's own bare example — a real message naming which alert
+("Pode marcar o alerta do Safe-to-Spend como visto.") was rejected as `MUTATION_NOT_EXPLICIT` even
+though intent was unambiguous. Fixed by widening the pattern to allow an object phrase in between,
+with permanent regression tests using the exact live-failing phrasing; re-verified live afterward with
+`markAlertSeen: SUCCESS`. This is the fourth sprint in a row a mutation-guard gap was found only
+through live phrasing rather than offline tests written against the same narrow brief examples (see
+DEC-064, DEC-075).
+
 ## Open questions
 
 Carried forward from Sprint 2 (caution threshold, viability thresholds, protected savings target
@@ -881,14 +983,14 @@ methodology), plus:
 
 ## Next recommended sprint
 
-**Sprint 7 — Notifications, alerts, UX stabilization, production hardening.** See `docs/ROADMAP.md`
-for detailed scope: proactive alerts (e.g. finally acting on the `UNKNOWN`-certainty warning mechanism
-built in Sprint 1), plus general production hardening (auth, error handling, observability, UX
-polish). Before or alongside Sprint 7, Product should also decide whether to provision a real
-product-owned discovery-provider credential (see `docs/CONCIERGE.md`, "Live provider status" —
-`LIVE_DISCOVERY_VALIDATION = BLOCKED_BY_EXTERNAL_PROVIDER_CONFIGURATION`) so Sprint 6's concierge can
-be live-validated against real venue data; this is independent of Sprint 7's own scope. **Sprint 6 is
-complete; Sprint 7 has explicitly not been started.**
+**Sprint 8 — scope not yet defined by the Founder/Product Lead.** Candidates worth considering when
+that brief is written: real production authentication (this product has none yet — every route is
+gated only by `NODE_ENV`, acceptable pre-Founder-approval but not beyond it), a real push/email
+notification provider (currently `NOT_CONFIGURED`), a real discovery-provider credential (Sprint 6's
+`LIVE_DISCOVERY_VALIDATION = BLOCKED_BY_EXTERNAL_PROVIDER_CONFIGURATION` is still unresolved,
+independent of Sprint 7's own scope), and a real completion/cancellation status on
+`SavedConciergePlan` (Sprint 7's `STALE_CONCIERGE_PLAN` alert currently approximates this with a
+relevance-window heuristic). **Sprint 7 is complete; Sprint 8 has explicitly not been started.**
 
 ## Risks
 
@@ -909,7 +1011,11 @@ now validated against real live Pluggy sandbox data as of Sprint 4.5, not just f
   particular sandbox dataset (it happened not to include a credit-card-bill-payment transaction).
 - **(Sprint 4.5) Two-language maintenance burden**: the mutation-guard's pattern list must now be
   kept in sync across English and Portuguese — a behavior change in one language's patterns could
-  silently not be mirrored in the other without a deliberate check.
+  silently not be mirrored in the other without a deliberate check. **(Sprint 7 update)** Live
+  validation found a fourth real pattern-coverage gap in a fourth domain (DEC-082, after DEC-064's
+  recommendation language and DEC-075's system-instruction staleness) — every sprint that adds new
+  mutation vocabulary should specifically test phrasing that NAMES the object in between the verb and
+  any fixed trailing phrase, not just the brief's own bare illustrative examples.
 - **(Sprint 4.5, resolved)** The local dev database's pre-DEC-047 duplicate fixture rows were cleared
   by a full `.data` wipe + reseed + fresh sandbox Connect during this sprint's final validation round
   (see "Integration status," "Final validated state") — no longer a live risk, kept here only as a

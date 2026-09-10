@@ -126,15 +126,32 @@ never spending — no transaction is created; an explicit budget reservation reu
 event mechanism. **No live discovery provider credential exists yet** — see
 [docs/CONCIERGE.md](./CONCIERGE.md) for the full architecture and exact live-provider status.
 
-## Out of scope for Sprint 1–6
+## Alerts & notifications (Sprint 7)
+
+Money Copilot now recognizes when something financially relevant changed and surfaces it without the
+user having to notice on their own — a materially lower Safe-to-Spend, a recurring cost that came back
+after the user tried to cancel it, a tightly-budgeted upcoming commitment, a bank connection or saved
+outing plan that needs attention. Alert CREATION is entirely deterministic — the same "engine
+calculates, AI interprets" boundary as every other number in this product — the AI only explains an
+alert, answers "why am I seeing this?", and acts on the user's own explicit instruction to mark one
+seen or dismiss it. The system deliberately prioritizes signal over noise: a tiny fluctuation never
+alerts, a dismissed alert never reappears on its own, and a brand-new profile with years of pre-existing
+data is never flooded with retroactive alerts about its starting state. See
+[docs/ALERTS-NOTIFICATIONS.md](./ALERTS-NOTIFICATIONS.md) for the full architecture; only in-app
+delivery exists today, no real push/email provider is configured.
+
+## Out of scope for Sprint 1–7
 
 Real (non-sandbox) bank/credit card connections (technically eligible as of Sprint 4.5's passed
 validation, but gated on separate explicit Founder approval — see `docs/PROJECT_STATE.md`), WhatsApp,
-and any external booking/reservation/payment/cancellation action (Sprint 6 only discovers and
-recommends — no restaurant/hotel booking, no ticket purchase, no merchant contact). Sprint 4 added
-conversational AI (OpenAI, via a provider-neutral abstraction a future Anthropic provider could also
-implement) strictly as an interpretation/interface layer over the unchanged deterministic core; Sprint
-5 added the recommendation engine, and Sprint 6 the concierge, both using that same
-interpretation-only AI layer — see [docs/AI-COPILOT.md](./AI-COPILOT.md),
-[docs/RECOMMENDATIONS.md](./RECOMMENDATIONS.md), [docs/CONCIERGE.md](./CONCIERGE.md), and
+any external booking/reservation/payment/cancellation action (Sprint 6 only discovers and recommends —
+no restaurant/hotel booking, no ticket purchase, no merchant contact), and any real push/email
+notification delivery, automatic monitoring alerts beyond the Sprint 7 catalog, or automatic merchant
+actions (Sprint 7 only surfaces already-computed deterministic signals — see
+[docs/ALERTS-NOTIFICATIONS.md](./ALERTS-NOTIFICATIONS.md)). Sprint 4 added conversational AI (OpenAI,
+via a provider-neutral abstraction a future Anthropic provider could also implement) strictly as an
+interpretation/interface layer over the unchanged deterministic core; Sprint 5 added the recommendation
+engine, Sprint 6 the concierge, and Sprint 7 the alert engine, all using that same interpretation-only
+AI layer — see [docs/AI-COPILOT.md](./AI-COPILOT.md), [docs/RECOMMENDATIONS.md](./RECOMMENDATIONS.md),
+[docs/CONCIERGE.md](./CONCIERGE.md), [docs/ALERTS-NOTIFICATIONS.md](./ALERTS-NOTIFICATIONS.md), and
 [docs/ROADMAP.md](./ROADMAP.md).

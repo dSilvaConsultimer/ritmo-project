@@ -93,11 +93,34 @@ financial data; and full plan-vs-actual-spending separation (saving a plan never
 transaction; an explicit budget reservation reuses the existing `FinancialEvent` mechanism). See
 `docs/CONCIERGE.md` and `docs/DECISIONS.md` DEC-065 through DEC-073.
 
-## Sprint 7 — Notifications, alerts, UX stabilization, production hardening
+## Sprint 7 — Notifications, alerts, product hardening ✅ (complete)
 
-- Proactive alerts (e.g. "your beach trip is in 3 days and still has no budget set" — finally acting
-  on the `UNKNOWN`-certainty warning mechanism built in Sprint 1).
-- General production hardening: auth, error handling, observability, UX polish.
+A deterministic alert engine (`docs/ALERTS-NOTIFICATIONS.md`) with an 8-type catalog
+(`SAFE_TO_SPEND_MATERIAL_DROP`, `RECOMMENDATION_FAILED`/`VERIFIED`, `UPCOMING_EVENT_PRESSURE`/
+`UNKNOWN_COST`, `LIQUIDITY_COVERAGE_DEGRADED`, `CONNECTION_NEEDS_ATTENTION`, `STALE_CONCIERGE_PLAN`) —
+alert creation is 100% deterministic (financial-engine's pure `alert-signal.ts` classification
+functions + app-services' `evaluateAlerts`), never decided by the AI; one shared episode mechanism
+(`upsertAlertEpisode`) implements anti-spam/reuse/resolve/rearm for every type at once; bootstrap
+semantics prevent retroactive alerting on a profile's pre-existing historical state. An in-app
+notification layer, architecturally separate from alert state (`NotificationDelivery`/
+`NotificationPreferences`/a provider-neutral `NotificationProvider` mirroring
+`OpenFinanceProvider`/`LocalDiscoveryProvider`) — no real push/email provider exists yet
+(`LIVE_EXTERNAL_NOTIFICATION_VALIDATION = NOT_CONFIGURED`). Connected Accounts UX hardening (a
+Disconnect button, a Reconnect flow, closing the Sprint 4.5 duplicate-Connect-click gap) and discovery
+production safety (mock venues can no longer reach a production deployment) round out the sprint. A
+declarative fact-extraction mechanism (`ToolDefinition.extractFacts`) ends a fourth recurrence of the
+"new tool, no grounding extractor" bug class. Live-validated end to end against the real running app,
+real OpenAI, and the real persisted Pluggy sandbox connection — genuine success, with one real bug
+found and fixed live (DEC-082, a mutation-guard pattern that only matched the brief's own bare example
+phrasing). See `docs/ALERTS-NOTIFICATIONS.md` and `docs/DECISIONS.md` DEC-076 through DEC-082.
+
+## Sprint 8 and beyond — not yet scoped
+
+No brief exists yet for Sprint 8. Candidates the Founder/Product Lead may consider: real production
+authentication, a real push/email notification provider, a real discovery-provider credential (Sprint
+6's `LIVE_DISCOVERY_VALIDATION` remains blocked), and a real completion/cancellation status on saved
+concierge plans (Sprint 7's stale-plan alert currently approximates this with a relevance-window
+heuristic).
 
 ## Explicitly not scheduled yet
 

@@ -86,6 +86,24 @@ const EXPLICIT_ACTION_PATTERNS: readonly RegExp[] = [
   /\b(vou|vamos) com\b/i,
   /\bselecion(o|e|ar)\b/i,
   /\bsepar(e|ar|a|ado|ei)\b/i,
+  // Sprint 7: alert mark-seen / dismiss / notification-preference language — English
+  /\bmark (this |it |that )?as (seen|read)\b/i,
+  /\bdismiss (this|that|it)\b/i,
+  /\bignore this alert\b/i,
+  /\bstop notifying me\b/i,
+  /\bturn off .*alerts\b/i,
+  // Português (PT-BR)
+  // Sprint 7 live bug: "Pode marcar O ALERTA como visto." has the object
+  // between the verb and "como visto" — a real, natural phrasing the
+  // original adjacent-words-only pattern missed entirely, found via live
+  // validation (DEC-082). Allows up to ~40 characters between the two
+  // markers rather than requiring them adjacent.
+  /\bmarc(a|ar|ado|o|ou)\b.{0,40}\bcomo (visto|vista|lido|lida)\b/i,
+  /\bpode ignorar\b/i,
+  /\bignora(r)? esse alerta\b/i,
+  /\bdispensa(r)? (esse|este) alerta\b/i,
+  /\bpare de me avisar\b/i,
+  /\bdesativ(e|ar|a) (os )?alertas\b/i,
 ];
 
 /** True when the text contains a hypothetical/exploratory marker — a strong signal the message is NOT reporting a completed or decided action. */

@@ -261,6 +261,17 @@ web-search-backed provider — configured server-side only (matching the existin
 before any live call. Adding it later is purely additive: one new adapter class implementing
 `LocalDiscoveryProvider` + one new `discovery-provider-registry.ts` branch — no other file changes.
 
+**Production safety (Sprint 7, DEC-080).** Being blocked on a live credential is one thing; a
+production DEPLOYMENT silently showing `MockDiscoveryProvider`'s obviously-synthetic venues as if they
+were real search results would be another, worse one. `getDiscoveryProvider` now throws
+`DiscoveryError("PROVIDER_NOT_CONFIGURED_FOR_PRODUCTION")` when asked to resolve `"mock"` under
+`NODE_ENV === "production"`. `searchConciergePlaces`/`buildConciergePlansForProfile` catch specifically
+that error and return `{ discoveryUnavailable: true, candidates: [] }` / `{ discoveryUnavailable: true,
+sessionId: null, plans: [] }` — the financial envelope is still resolved normally (never affected), only
+the discovery step degrades honestly instead of crashing or fabricating data. See
+`docs/ALERTS-NOTIFICATIONS.md`, "Discovery production safety," for the full account and regression
+tests.
+
 The pipeline that WOULD use that live provider — financial envelope → intent → search → plans →
 grounding → AI explanation — was fully validated live against the real running product and real
 OpenAI, through the mock discovery provider, using the brief's own Section 51 scenario ("Vou sair com
@@ -315,3 +326,9 @@ financial situation. A restaurant suggestion is never a `Recommendation` entity 
   `hasExplicitMutationIntent` heuristic and does not mutate — also the documented safe-failure design,
   not a bug. A more reliable "resume the last concierge session" mechanism is a reasonable future
   improvement but is out of scope for Sprint 6.
+- (Sprint 7) A saved plan that goes stale (its envelope snapshot no longer matches the current one) now
+  also surfaces as a `STALE_CONCIERGE_PLAN` alert on the dashboard/via chat — see
+  `docs/ALERTS-NOTIFICATIONS.md`. Since `SavedConciergePlan` has no `COMPLETED`/`CANCELLED` status
+  field, that alert approximates "no longer relevant" with a time-based relevance window rather than a
+  real completion status — a known limitation of the alert, not of the concierge staleness check itself
+  (which is reused unchanged).

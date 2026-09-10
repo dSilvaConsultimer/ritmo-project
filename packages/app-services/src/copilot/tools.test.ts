@@ -67,15 +67,38 @@ describe("TOOL_REGISTRY", () => {
       [
         "acceptRecommendation",
         "createPlannedFinancialEvent",
+        "dismissAlert",
+        "markAlertSeen",
         "modifyRecommendation",
         "recordManualTransaction",
         "rejectRecommendation",
         "replanAfterExpense",
         "reservePlanBudget",
         "saveConciergePlan",
+        "updateNotificationPreference",
         "updatePlannedFinancialEvent",
       ].sort(),
     );
+  });
+
+  it("includes every required Sprint 7 alert tool", () => {
+    const names = new Set(TOOL_REGISTRY.map((t) => t.name));
+    for (const required of [
+      "getAlerts",
+      "getAlertDetails",
+      "markAlertSeen",
+      "dismissAlert",
+      "reevaluateAlertContext",
+      "updateNotificationPreference",
+    ]) {
+      expect(names.has(required)).toBe(true);
+    }
+  });
+
+  it("classifies getAlerts, getAlertDetails, and reevaluateAlertContext as READ", () => {
+    expect(findTool("getAlerts")?.kind).toBe("READ");
+    expect(findTool("getAlertDetails")?.kind).toBe("READ");
+    expect(findTool("reevaluateAlertContext")?.kind).toBe("READ");
   });
 
   it("classifies getRecommendations and getRecommendationDetails as READ", () => {

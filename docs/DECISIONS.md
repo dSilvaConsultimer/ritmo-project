@@ -1981,3 +1981,207 @@ is exactly why the brief's live-validation step exists.
 absent or out of scope, that prior rule must be located and corrected in the same change — a version-
 chain review ("does any earlier rule claim something this sprint just made untrue?") is now a required
 step before considering a new AI capability done.
+
+---
+
+### DEC-076
+
+**Date:** 2026-09-09
+**Context:** Sprint 7 requires proactive alerts without turning Money Copilot into a notification
+system that decides financial truth on its own — the brief is explicit that alert CREATION must be
+100% deterministic and that "Alert" and "Notification" (a delivery of an alert through a channel) are
+different concepts that must never collapse into one table.
+**Decision:** `Alert` (`packages/app-services/src/alerts/types.ts`) is a persisted domain signal with
+its own lifecycle (`ACTIVE_UNSEEN`/`ACTIVE_SEEN`/`DISMISSED`/`RESOLVED`); `NotificationDelivery`
+(`packages/app-services/src/notifications/types.ts`) is a separate table recording one delivery
+ATTEMPT of one alert through one channel. Alert creation/lifecycle transitions
+(`alert-service.ts`'s `evaluateAlerts`/`upsertAlertEpisode`) never reference a notification provider or
+delivery state at all; notification delivery (`notification-service.ts`) only ever READS an alert's
+already-decided state to decide whether/how to render and deliver it. The AI's alert tools
+(`getAlerts`/`getAlertDetails`/`markAlertSeen`/`dismissAlert`/`reevaluateAlertContext`/
+`updateNotificationPreference`) can read, explain, mark-seen, dismiss, or re-check an EXISTING alert —
+none of them can create one, resolve one, or change its severity.
+**Rationale:** Mirrors the exact "the engine calculates, AI interprets" boundary already enforced for
+financial figures (Sprint 4), recommendations (Sprint 5), and concierge discovery (Sprint 6) — alert
+existence and meaning is one more kind of financial/product truth the AI must never originate.
+**Status:** Accepted.
+**Consequences:** A future external channel (PUSH/EMAIL) only ever needs new `NotificationProvider`
+implementations and `NotificationChannel` values — it never needs to touch `Alert`'s own schema or
+lifecycle logic.
+
+---
+
+### DEC-077
+
+**Date:** 2026-09-09
+**Context:** The brief's anti-spam requirements (Section 24) are the most safety-critical part of
+Sprint 7: one active alert per identity/episode, no duplication on repeated identical evaluation, a
+seen alert must not become unseen again, a dismissed alert must not reappear, and a resolved condition
+should only re-arm after a MEANINGFUL recovery/re-deterioration — not on every tiny fluctuation.
+**Decision:** A single shared function, `upsertAlertEpisode` (`alert-service.ts`), implements ALL of
+this in one place for every alert type: it looks up the most recent row for an identity
+(`findLatestAlertRowByIdentityKey`), reuses it in place (touching only `lastTriggeredAt`/evidence,
+never `status`/`seenAt`/`dismissedAt`) whenever the condition is still true and a non-terminal row
+already exists, transitions to `RESOLVED` the moment the condition becomes false, and only creates a
+brand-new row when no non-terminal row exists for that identity (which is also what "re-arming" means
+here — a new episode after an old one resolved). For `SAFE_TO_SPEND_MATERIAL_DROP` specifically, a
+persisted ORIGINAL episode baseline (`AlertEvaluationCheckpoint.activeDropEpisodeBaselineCents`) plus a
+configured recovery hysteresis ratio (`AlertPolicy.safeToSpendRecoveryHysteresisRatio`) prevents a
+value oscillating right at the material-drop threshold from flapping the alert open/resolved on every
+evaluation.
+**Rationale:** Per-type ad-hoc reuse/resolve logic would have meant seven or eight independent, easy-
+to-diverge implementations of the exact same anti-spam guarantee — one shared mechanism is both less
+code and structurally impossible to get inconsistent across types.
+**Status:** Accepted.
+**Consequences:** Any new alert type added in a future sprint must compute a boolean
+"isCurrentlyTrue" and call `upsertAlertEpisode` — it must never invent its own reuse/dismiss/resolve
+branching.
+
+---
+
+### DEC-078
+
+**Date:** 2026-09-09
+**Context:** Safe-to-Spend/liquidity-coverage change detection requires a "previous" value to compare
+against — but the brief explicitly warns against retroactively alerting on a profile's entire
+pre-existing historical state the first time alerting is turned on (Section 12: "do not double-count
+old data").
+**Decision:** One `AlertEvaluationCheckpoint` row per profile
+(`packages/persistence`'s `alert_evaluation_checkpoints` table) stores the minimum comparable state:
+rolling `safeToSpendCents`, `liquidityAwareSafeToSpendCents`, `liquidityCoverage`, the currently-active
+drop episode's baseline (if any), `evaluatedAt`, and `policyVersion` — never a duplicate full snapshot.
+When no checkpoint row exists yet (a fresh profile, or alerting's first-ever run against an established
+one), both checkpoint-delta-dependent alert types (`SAFE_TO_SPEND_MATERIAL_DROP`,
+`LIQUIDITY_COVERAGE_DEGRADED`) are unconditionally suppressed for that one call, while the OTHER five
+alert types (which evaluate CURRENT state only, no delta needed) are unaffected and correctly surface a
+presently-true condition even on a first-ever run. A live-data-specific subtlety: a profile that has
+never connected any institution is permanently `UNKNOWN` coverage from day one — `evaluateAlerts`
+distinguishes this ("nothing was ever better, so it can't be degrading") from a genuine COMPLETE→PARTIAL
+regression by checking whether a real alert episode already exists, not just by comparing rolling
+checkpoint values, which would otherwise incorrectly fire forever on a permanently-demo profile.
+**Rationale:** The bootstrap/first-run distinction has to be narrower than "suppress everything on day
+one" — a currently-broken connection or a currently-failed recommendation is real, present information
+the user should see immediately, not noise to be filtered out just because it's the first evaluation.
+**Status:** Accepted.
+**Consequences:** Any future alert type that needs a "previous vs. current" comparison must add its own
+field to `AlertEvaluationCheckpoint` (or a new profile-scoped checkpoint concept) and follow the same
+"only checkpoint-delta types respect bootstrap suppression" pattern — a purely current-state alert type
+never needs this at all.
+
+---
+
+### DEC-079
+
+**Date:** 2026-09-09
+**Context:** The brief requires a notification privacy model (a future lock-screen push must be able to
+omit amounts) and an honest external-provider status, without implementing any real push/email
+integration this sprint (`LIVE_EXTERNAL_NOTIFICATION_VALIDATION = NOT_CONFIGURED` is an acceptable,
+expected outcome per the brief's own instruction).
+**Decision:** `NotificationPreferences.privacyMode` (`GENERIC` | `AMOUNT_ALLOWED`) is enforced at
+render time (`notification-service.ts`'s `renderPayload`) — `GENERIC` always produces the brief's own
+example generic sentence ("Money Copilot encontrou algo que merece sua atenção."), never a
+figure-bearing one, regardless of which alert triggered it. `NotificationProvider` (mirroring
+`OpenFinanceProvider`/`LocalDiscoveryProvider`'s exact abstraction pattern) receives ONLY
+`{financialProfileId, channel, title, body}` — never a transaction history, balance, or provider
+token. `MockNotificationProvider` is the only registered provider; no Firebase/APNs/SendGrid/Twilio
+code was written.
+**Rationale:** Building the privacy boundary and the provider abstraction NOW, even with only a mock
+implementation, means a future real channel is purely additive (one adapter + one registry branch)
+and can never accidentally receive more financial context than a rendered notification payload needs —
+the same reasoning already applied to `LocalDiscoveryProvider` (DEC-069) and `OpenFinanceProvider`.
+**Status:** Accepted.
+**Consequences:** Before any real external channel ships, Product must decide the actual default
+`privacyMode` for real users (this sprint defaults to `AMOUNT_ALLOWED`, matching in-app behavior,
+which is a reasonable default for a channel nobody outside the user's own device sees but may not be
+the right default for a lock-screen-visible one).
+
+---
+
+### DEC-080
+
+**Date:** 2026-09-09
+**Context:** Two independent, explicitly-named hardening items: (1) the Sprint 4.5 incident where
+repeated clicks on "Connect institution" created two sandbox connections, still not fully closed (the
+button only disabled itself during the token-fetch request, not for the entire time the Connect widget
+was open); (2) no UI existed yet for the already-implemented `disconnectConnection` (DEC-050); (3) a
+production deployment with no live discovery credential would still silently return
+`MockDiscoveryProvider`'s obviously-synthetic venues as if they were real search results.
+**Decision:** `ConnectButton` is now disabled for the ENTIRE time its widget is open (`isOpen`), not
+just during the token fetch — closing the exact gap the Sprint 4.5 incident exploited. A new
+`DisconnectButton` (explicit two-step confirm, disabled while in flight, refreshes server state after)
+wires to the EXISTING `DELETE /api/connections` endpoint — no new backend logic. A connection whose
+status is `LOGIN_ERROR`/`USER_ACTION_REQUIRED`/`ERROR` now shows a "Reconectar" button (the SAME
+`ConnectButton`/Connect-flow component, relabeled) instead of "Refresh / sync" — reconnecting the same
+sandbox Item is already deduplicated by `completeConnection`'s existing (profile, provider,
+externalConnectionId) lookup, so no new duplicate-prevention logic was needed there either.
+Separately, `getDiscoveryProvider` now throws `DiscoveryError("PROVIDER_NOT_CONFIGURED_FOR_PRODUCTION")`
+when asked to resolve `"mock"` under `NODE_ENV === "production"`; `concierge-service.ts`'s two entry
+points catch specifically that error and return `{ discoveryUnavailable: true, candidates: [], plans:
+[] }` — the financial envelope is still resolved normally, but no synthetic venue ever reaches a
+production user.
+**Rationale:** All three are the same class of fix — a real gap between what the system already
+correctly implements at the service layer and what the UI (or environment-specific safety check) around
+it actually enforces. Reusing the existing backend logic in every case (`disconnectConnection`,
+`completeConnection`'s dedup, the discovery-provider registry) kept the fix small and low-risk.
+**Status:** Accepted.
+**Consequences:** A real live discovery provider, once configured, must be registered under its OWN
+name (never reusing `"mock"`) so this production guard continues to do its job without any further
+code change.
+
+---
+
+### DEC-081
+
+**Date:** 2026-09-09
+**Context:** The exact same live bug — a new AI tool returns a correct monetary figure, but
+`facts.ts`'s per-tool `switch` statement has no case for it, so grounding rejects an entirely correct
+answer — was found live in THREE separate sprints (DEC-055 in Sprint 4.5, DEC-062 in Sprint 5, DEC-074
+in Sprint 6), always because the fact extractor lived in a file separate from the tool definition a
+reviewer could add without touching. The Sprint 7 brief explicitly invites addressing this ("consider
+whether a more declarative/shared fact-registration mechanism can reduce future omission risk... if a
+small clean abstraction eliminates repeated manual omission bugs, implement it").
+**Decision:** `ToolDefinition` (`copilot/tools.ts`) gained an optional `extractFacts` field. A tool
+that can return a monetary figure now declares its OWN extractor INLINE, immediately next to its
+schema and `execute` function — physically impossible to add the tool without at least seeing the
+field. `extractFinancialFacts` (`facts.ts`) checks `findTool(toolName)?.extractFacts` FIRST, falling
+back to the legacy per-tool switch only when a tool hasn't declared one — existing tools are
+UNCHANGED, no forced migration. All six Sprint 7 alert tools use the new mechanism exclusively.
+**Rationale:** A full migration of all ~27 existing tools' extraction logic into the new style would
+have been a large, purely-cosmetic risk for no behavioral gain (every existing tool's coverage is
+already correct and tested) — the brief itself cautions against a "massive rewrite unless justified."
+Adding the mechanism and applying it going forward gets the actual benefit (new tools can no longer
+silently skip grounding coverage) without that risk.
+**Status:** Accepted.
+**Consequences:** Any NEW tool added from Sprint 8 onward that can return a monetary figure should use
+`extractFacts` inline rather than adding a new `facts.ts` switch case — code review for a new tool
+should specifically check this field exists when the tool's result could contain money.
+
+---
+
+### DEC-082
+
+**Date:** 2026-09-09
+**Context:** Live validation against the real running app and real OpenAI (Section 73's scenario) found
+a genuine bug: asking the assistant to "Pode marcar o alerta do Safe-to-Spend como visto." — natural
+phrasing that names WHICH alert, exactly the kind of message a real user sends — was rejected as
+`MUTATION_NOT_EXPLICIT` even though the user's intent was unambiguous. Root cause:
+`EXPLICIT_ACTION_PATTERNS`' mark-seen regex, `/\bmarc(a|ar|ado|o|ou) como (visto|vista|lido|lida)\b/i`,
+required "marcar" and "como visto" to be ADJACENT — true only for the brief's own bare example ("Pode
+marcar como visto.") and false for any real sentence that names the object in between, which is the
+more natural and more common phrasing.
+**Decision:** Widened the pattern to `/\bmarc(a|ar|ado|o|ou)\b.{0,40}\bcomo (visto|vista|lido|lida)\b/i`
+— allows up to ~40 characters between the verb and "como visto" (enough for "o alerta do Safe-to-Spend"
+or similar) while still requiring both markers in the right order, so an unrelated sentence that merely
+contains the word "marcar" somewhere far earlier still doesn't match. Added two permanent regression
+tests using the exact live-failing phrasing. Verified live after the fix: the identical message now
+succeeds (`markAlertSeen: SUCCESS`).
+**Rationale:** A regex tuned only against a brief's own bare illustrative example, without considering
+how a real user would actually phrase the same intent with an object named in between, is exactly the
+kind of gap only live validation (not offline unit tests written against the same narrow examples)
+reliably catches — the same lesson as DEC-064's/DEC-075's live-phrasing gaps in earlier sprints, now a
+fourth recurrence in a fourth domain (recommendations, concierge, now alerts).
+**Status:** Accepted.
+**Consequences:** Any future mutation-guard pattern should be written against how a user would
+plausibly phrase the intent WITH an object/detail named in the middle, not just the shortest possible
+example — "does this still match if the user names what they're acting on?" is now a standing question
+to ask before considering a new pattern done.

@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { ConnectButton } from "./ConnectButton";
 import { SyncButton } from "./SyncButton";
+import { DisconnectButton } from "./DisconnectButton";
 
 export interface ConnectionSummary {
   id: string;
@@ -11,6 +12,8 @@ export interface ConnectionSummary {
   status: string;
   lastSuccessfulSyncAt?: string;
 }
+
+const RECONNECT_STATUSES = new Set(["LOGIN_ERROR", "USER_ACTION_REQUIRED", "ERROR"]);
 
 export interface SyncRunSummary {
   status: string;
@@ -52,14 +55,26 @@ export function ConnectedAccountsPanel({
       ) : (
         connections.map((c) => (
           <div key={c.id} style={cardStyle}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
               <div>
                 <div style={{ fontWeight: 600 }}>{c.connectorName ?? c.provider}</div>
                 <div style={{ fontSize: 12, color: "#8b93a7" }}>
                   Status: {c.status} · Last sync: {c.lastSuccessfulSyncAt ?? "never"}
                 </div>
+                {RECONNECT_STATUSES.has(c.status) ? (
+                  <div style={{ fontSize: 12, color: "#e0b64f", marginTop: 4 }}>
+                    Esta conexão precisa de atenção — reconecte para continuar sincronizando.
+                  </div>
+                ) : null}
               </div>
-              <SyncButton connectionId={c.id} onSynced={refresh} />
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                {RECONNECT_STATUSES.has(c.status) ? (
+                  <ConnectButton onConnected={refresh} label="Reconectar" />
+                ) : (
+                  <SyncButton connectionId={c.id} onSynced={refresh} />
+                )}
+                <DisconnectButton connectionId={c.id} connectorLabel={c.connectorName ?? c.provider} onDisconnected={refresh} />
+              </div>
             </div>
           </div>
         ))

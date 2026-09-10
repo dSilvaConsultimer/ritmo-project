@@ -118,6 +118,16 @@ export type DiscoveryErrorCode =
   | "RATE_LIMITED"
   | "UPSTREAM_UNAVAILABLE"
   | "NOT_FOUND"
+  /**
+   * Sprint 7 (DEC, "discovery production safety"): the only registered
+   * provider for this deployment is the obviously-synthetic
+   * `MockDiscoveryProvider`, and the runtime environment is production —
+   * refusing to resolve it here is what makes it structurally impossible
+   * for fake venue data to reach a real user, rather than relying on every
+   * caller to remember to check. See docs/CONCIERGE.md, "Live provider
+   * status."
+   */
+  | "PROVIDER_NOT_CONFIGURED_FOR_PRODUCTION"
   | "UNKNOWN";
 
 export class DiscoveryError extends Error {

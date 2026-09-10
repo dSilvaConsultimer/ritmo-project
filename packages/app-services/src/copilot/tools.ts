@@ -5,6 +5,9 @@ import * as queries from "../queries";
 import * as mutations from "../mutations";
 import * as recommendationService from "../recommendation-service";
 import * as conciergeService from "../concierge";
+import * as alertService from "../alerts";
+import { updateNotificationPreferences } from "../notifications";
+import type { FinancialFact } from "./facts";
 
 /**
  * The explicit, server-validated tool allowlist the AI may invoke. The
@@ -31,6 +34,20 @@ export interface ToolDefinition<Args = unknown, Result = unknown> {
   readonly kind: ToolKind;
   readonly schema: z.ZodType<Args>;
   readonly execute: (ctx: ToolContext, args: Args) => Promise<Result>;
+  /**
+   * Sprint 7 (declarative grounding, see DEC "shared fact-registration
+   * mechanism"): a tool that can return a monetary figure the model might
+   * cite should define this RIGHT HERE, alongside its own definition — the
+   * same recurring bug (DEC-055, DEC-062, DEC-074: a correct tool result
+   * with no fact extractor gets rejected by grounding) happened three times
+   * because the extractor lived in a SEPARATE file (`facts.ts`) a reviewer
+   * could forget to touch when adding a tool. `extractFinancialFacts` in
+   * `facts.ts` checks here FIRST, before its own legacy per-tool switch —
+   * new tools should use this; existing tools keep working via the switch
+   * unless/until migrated. See docs/AI-COPILOT.md, "Financial fact
+   * grounding."
+   */
+  readonly extractFacts?: (result: Result) => FinancialFact[];
 }
 
 function tool<Args, Result>(def: ToolDefinition<Args, Result>): ToolDefinition<Args, Result> {
@@ -584,6 +601,148 @@ const reservePlanBudgetTool = tool({
     }),
 });
 
+// ---------- Alerts / notifications (Sprint 7) ----------
+//
+// NON-NEGOTIABLE: alert CREATION/lifecycle is 100% deterministic
+// (`evaluateAlerts`/`alert-service.ts`) — the AI may only read, explain,
+// mark-seen, dismiss, or re-check an alert that ALREADY exists. No tool
+// here can create, resolve, or decide the severity of an alert. See
+// docs/ALERTS-NOTIFICATIONS.md.
+
+/** Every monetary figure ONE `Alert`'s evidence carries — colocated here per the Sprint 7 declarative-grounding pattern (see `ToolDefinition.extractFacts`'s doc comment). */
+function alertFacts(alert: alertService.Alert): FinancialFact[] {
+  const sourceTool = "alert";
+  const evidence = alert.evidence;
+  switch (evidence.kind) {
+    case "SAFE_TO_SPEND_MATERIAL_DROP":
+      return [
+        { label: `${alert.title}: previous Safe-to-Spend`, amountCents: evidence.previousCents, certainty: "HIGH", sourceTool, semanticType: "SAFE_TO_SPEND" },
+        { label: `${alert.title}: current Safe-to-Spend`, amountCents: evidence.currentCents, certainty: "HIGH", sourceTool, semanticType: "SAFE_TO_SPEND" },
+        { label: `${alert.title}: change`, amountCents: evidence.deltaCents, certainty: "HIGH", sourceTool, semanticType: "SAFE_TO_SPEND" },
+      ];
+    case "RECOMMENDATION_DECISION":
+      return [
+        { label: `${alert.title}: observed amount`, amountCents: evidence.observedAmountCents, certainty: "HIGH", sourceTool, semanticType: "RECOMMENDATION_OBSERVED_AMOUNT" },
+        { label: `${alert.title}: monthly impact`, amountCents: evidence.projectedMonthlyImpactCents, certainty: "HIGH", sourceTool, semanticType: "RECOMMENDATION_MONTHLY_IMPACT" },
+      ];
+    case "UPCOMING_EVENT_PRESSURE":
+      return [{ label: `${alert.title}: known cost`, amountCents: evidence.knownCostCents, certainty: "HIGH", sourceTool, semanticType: "EVENT_RESERVATION" }];
+    case "UPCOMING_EVENT_UNKNOWN_COST":
+    case "LIQUIDITY_COVERAGE_DEGRADED":
+    case "CONNECTION_NEEDS_ATTENTION":
+    case "STALE_CONCIERGE_PLAN":
+      return []; // No monetary figure in this alert type's evidence.
+  }
+}
+
+function alertListFacts(alerts: readonly alertService.Alert[]): FinancialFact[] {
+  return alerts.flatMap(alertFacts);
+}
+
+const getAlertsSchema = z.object({
+  includeHistory: z
+    .boolean()
+    .describe("Set true to also include DISMISSED/RESOLVED alerts (history). Null/false returns only currently-active alerts.")
+    .nullable()
+    .default(null),
+});
+
+const getAlertsTool = tool({
+  name: "getAlerts",
+  description:
+    "Returns the user's currently-active alerts (deterministically created and ranked — never invented), plus an unread count. Use this for 'tenho algum alerta?' or 'o que precisa da minha atenção?'. Read-only.",
+  kind: "READ",
+  schema: getAlertsSchema,
+  execute: async (ctx, args) => {
+    const all = await alertService.listAlertsForProfile(ctx.db, ctx.financialProfileId);
+    const active = alertService.activeAlerts(all);
+    const ranked = alertService.rankAlerts(active, new Date().toISOString()).map((r) => r.alert);
+    const unreadCount = active.filter((a) => a.status === "ACTIVE_UNSEEN").length;
+    return {
+      active: ranked,
+      unreadCount,
+      ...(args.includeHistory ? { history: all.filter((a) => a.status === "DISMISSED" || a.status === "RESOLVED") } : {}),
+    };
+  },
+  extractFacts: (result) => {
+    const r = result as { active: alertService.Alert[]; history?: alertService.Alert[] };
+    return alertListFacts([...r.active, ...(r.history ?? [])]);
+  },
+});
+
+const getAlertDetailsSchema = z.object({
+  alertId: z.string().min(1).describe("The alert's id, obtained from a prior getAlerts call."),
+});
+
+const getAlertDetailsTool = tool({
+  name: "getAlertDetails",
+  description:
+    "Returns one alert's full deterministic evidence — use this to answer 'por que você está me avisando disso?'. Never invent a cause beyond what this returns. Read-only.",
+  kind: "READ",
+  schema: getAlertDetailsSchema,
+  execute: (ctx, args) => alertService.getAlertById(ctx.db, args.alertId),
+  extractFacts: (result) => (result ? alertFacts(result as alertService.Alert) : []),
+});
+
+const markAlertSeenSchema = z.object({
+  alertId: z.string().min(1).describe("The alert's id, obtained from a prior getAlerts call."),
+});
+
+const markAlertSeenTool = tool({
+  name: "markAlertSeen",
+  description:
+    "Marks an alert as seen (e.g. 'pode marcar como visto'). Only call this on the user's own explicit instruction — never merely because the user asked about the alert.",
+  kind: "MUTATION",
+  schema: markAlertSeenSchema,
+  execute: (ctx, args) => alertService.markAlertSeen(ctx.db, args.alertId),
+  extractFacts: (result) => alertFacts(result as alertService.Alert),
+});
+
+const dismissAlertSchema = z.object({
+  alertId: z.string().min(1).describe("The alert's id, obtained from a prior getAlerts call."),
+  reason: z.string().nullable().default(null),
+});
+
+const dismissAlertTool = tool({
+  name: "dismissAlert",
+  description:
+    "Dismisses an alert the user explicitly wants to stop seeing (e.g. 'pode ignorar esse alerta'). This does NOT mean the underlying condition is resolved — only that the user chose not to keep seeing it. Only call this for an explicit decision, never a hypothetical ('e se eu ignorasse?').",
+  kind: "MUTATION",
+  schema: dismissAlertSchema,
+  execute: (ctx, args) => alertService.dismissAlert(ctx.db, args.alertId, args.reason ?? undefined),
+  extractFacts: (result) => alertFacts(result as alertService.Alert),
+});
+
+const reevaluateAlertContextSchema = z.object({
+  alertId: z.string().min(1).describe("The alert's id, obtained from a prior getAlerts call."),
+});
+
+const reevaluateAlertContextTool = tool({
+  name: "reevaluateAlertContext",
+  description:
+    "Re-checks whether an alert's underlying condition is still true against the user's CURRENT financial state (e.g. 'isso ainda se aplica?'). May return the alert as RESOLVED if the condition no longer holds. Read-only — never mutates anything beyond what the deterministic engine would already do on its own.",
+  kind: "READ",
+  schema: reevaluateAlertContextSchema,
+  execute: (ctx, args) => alertService.reevaluateAlertContext(ctx.db, ctx.financialProfileId, ctx.asOfDate, args.alertId),
+  extractFacts: (result) => alertFacts(result as alertService.Alert),
+});
+
+const notificationCategoryEnum = z.enum(["FINANCIAL_CHANGE", "PLANNED_EVENTS", "RECOMMENDATIONS", "CONNECTION_HEALTH", "CONCIERGE"]);
+
+const updateNotificationPreferenceSchema = z.object({
+  category: notificationCategoryEnum.describe("Which alert category to change (e.g. CONCIERGE for 'não quero mais alertas de concierge')."),
+  enabled: z.boolean().describe("true to enable, false to disable — must match exactly what the user asked for."),
+});
+
+const updateNotificationPreferenceTool = tool({
+  name: "updateNotificationPreference",
+  description:
+    "Enables or disables in-app alerts for one category (e.g. 'não quero mais alertas de concierge'). Only call this for the user's own explicit preference statement — never infer a preference from a single complaint about one alert.",
+  kind: "MUTATION",
+  schema: updateNotificationPreferenceSchema,
+  execute: (ctx, args) => updateNotificationPreferences(ctx.db, ctx.financialProfileId, { category: args.category, enabled: args.enabled }),
+});
+
 export const TOOL_REGISTRY: readonly ToolDefinition<never, unknown>[] = [
   getFinancialSnapshotTool,
   getSafeToSpendTool,
@@ -612,6 +771,12 @@ export const TOOL_REGISTRY: readonly ToolDefinition<never, unknown>[] = [
   evaluateConciergePlanTool,
   saveConciergePlanTool,
   reservePlanBudgetTool,
+  getAlertsTool,
+  getAlertDetailsTool,
+  markAlertSeenTool,
+  dismissAlertTool,
+  reevaluateAlertContextTool,
+  updateNotificationPreferenceTool,
 ] as unknown as readonly ToolDefinition<never, unknown>[];
 
 export function findTool(name: string): ToolDefinition<unknown, unknown> | undefined {

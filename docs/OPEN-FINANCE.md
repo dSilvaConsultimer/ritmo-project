@@ -114,12 +114,27 @@ default for local dev), the webhook path cannot fire regardless of how well it's
 about a new Item at all. This is a genuine, documented constraint of Pluggy's webhook delivery model,
 not a gap in this recovery mechanism.
 
-## Connection deletion (Sprint 4.5, DEC-050)
+## Reconnect UX and duplicate-Connect prevention (Sprint 7, DEC-080)
+
+A connection whose status is `LOGIN_ERROR`/`USER_ACTION_REQUIRED`/`ERROR` now shows a "Reconectar"
+button in `ConnectedAccountsPanel` — the SAME `ConnectButton`/Connect-widget flow, just relabeled, not
+a separate reconnect implementation. Reconnecting the same sandbox Item is already deduplicated by
+`completeConnection`'s existing (profile, provider, externalConnectionId) lookup (DEC-023), so no new
+duplicate-prevention logic was needed for this path specifically. Separately, `ConnectButton` itself is
+now disabled for the ENTIRE time its Connect widget is open (`isOpen`), not just during the initial
+token-fetch request — closing the exact gap the Sprint 4.5 incident (two sandbox connections created
+from repeated clicks) exploited, where the button re-enabled itself the moment the token fetch
+finished even though the widget was still open and waiting for the user.
+
+## Connection deletion (Sprint 4.5, DEC-050; UI added Sprint 7, DEC-080)
 
 The inverse of recovery: fully removing ONE connection and every piece of local data scoped
 exclusively to it, without touching shared/canonical fixture data (nothing in that data is scoped to
 a connection). `disconnectConnection` (`packages/app-services/src/sync.ts`), exposed at
-`DELETE /api/connections?connectionId=...`:
+`DELETE /api/connections?connectionId=...` — as of Sprint 7, also wired to a UI
+(`apps/web/app/components/DisconnectButton.tsx`, explicit two-step confirm, disabled while in flight,
+refreshes server state after; this endpoint was previously invoked directly for cleanup only, with a
+UI listed as a natural follow-up — see "Technical debt" in `docs/PROJECT_STATE.md`, now closed):
 
 1. Best-effort deletes the Item on the provider's own side (`provider.deleteConnection`) — never lets
    that failure block local cleanup, since the Item may already be gone/expired there. The outcome

@@ -84,6 +84,39 @@ describe("hasExplicitMutationIntent", () => {
       expect(hasExplicitMutationIntent(text)).toBe(false);
     },
   );
+
+  it.each([
+    "Pode marcar como visto.",
+    "Marca como visto.",
+    "Pode ignorar esse alerta.",
+    "Ignora esse alerta.",
+    "Não quero mais receber alertas de concierge.",
+    "Pare de me avisar sobre isso.",
+    "Mark this as seen.",
+    "Dismiss this alert.",
+    // DEC-082 (real live bug): the object sits BETWEEN the verb and "como
+    // visto" in natural phrasing — found via live validation, where the
+    // model echoed the user's own words back almost verbatim and the
+    // original adjacent-words-only pattern missed it entirely.
+    "Pode marcar o alerta do Safe-to-Spend como visto.",
+    "Marca esse alerta como visto, por favor.",
+  ])("(Sprint 7) returns true for explicit alert mark-seen/dismiss/preference language: %s", (text) => {
+    expect(hasExplicitMutationIntent(text)).toBe(true);
+  });
+
+  it.each(["E se eu ignorasse esse alerta?", "Poderia marcar como visto?"])(
+    "(Sprint 7) returns false for hypothetical alert language: %s",
+    (text) => {
+      expect(hasExplicitMutationIntent(text)).toBe(false);
+    },
+  );
+
+  it.each(["Quais alertas eu tenho?", "Por que você está me avisando disso?"])(
+    "(Sprint 7) a plain question about alerts is never treated as explicit mutation intent: %s",
+    (text) => {
+      expect(hasExplicitMutationIntent(text)).toBe(false);
+    },
+  );
 });
 
 describe("containsHypotheticalLanguage", () => {

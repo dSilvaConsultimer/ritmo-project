@@ -11,6 +11,7 @@ import type {
 } from "@money-copilot/financial-engine";
 import type { RecommendationsSummary, UpcomingFinancialEvent } from "../queries";
 import type { ConciergeBudget } from "../concierge";
+import { findTool } from "./tools";
 
 /**
  * A single deterministic monetary fact, always traceable back to the tool
@@ -259,6 +260,14 @@ function conciergeBudgetFacts(budget: ConciergeBudget, sourceTool: string): Fina
  * hasn't wired up a fact extractor for yet) rather than guessing.
  */
 export function extractFinancialFacts(toolName: string, result: unknown): FinancialFact[] {
+  // Sprint 7: a tool may declare its own extractor colocated with its
+  // definition in `tools.ts` — checked FIRST so a new tool's grounding
+  // coverage can never be a separate, forgettable step. See
+  // `ToolDefinition.extractFacts`'s doc comment for why this exists (DEC-
+  // 055/062/074's recurring omission bug).
+  const declared = findTool(toolName)?.extractFacts;
+  if (declared) return declared(result);
+
   switch (toolName) {
     case "getFinancialSnapshot": {
       return financialSnapshotFacts(result as FinancialSnapshot, toolName, "");

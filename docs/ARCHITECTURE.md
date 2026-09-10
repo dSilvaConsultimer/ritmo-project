@@ -46,7 +46,8 @@ packages/financial-engine/src/
                  FinancialEffect, FinancialEvent, FinancialGoal, ProtectedPreference,
                  Recommendation, LifestyleScenario (+ LifestyleViability), Certainty,
                  FinancialProfile, ReconciliationLink, MerchantNormalizationRule, CategoryRule,
-                 RecurringExpenseCandidate, InstallmentPlan, FinancialPosition (Sprint 2)
+                 RecurringExpenseCandidate, InstallmentPlan, FinancialPosition (Sprint 2),
+                 AlertPolicy + pure alert classification functions (Sprint 7)
   snapshot/      FinancialSnapshot: the core aggregate calculation (Safe-to-Spend, breakdown, etc.)
   simulation/    simulateExpense() and lifestyle comparison, built on top of a snapshot
   reporting/     Read models over transactions (category totals, uncategorized, etc.) (Sprint 2)
@@ -119,6 +120,30 @@ not just a convention** (see DEC-065). No live provider exists yet (no credentia
 `docs/CONCIERGE.md`, "Live provider status"); adding one later is purely additive, exactly like
 `PluggyProvider` was added alongside `MockProvider`. Full account: `docs/CONCIERGE.md`.
 
+## The alerts/notifications modules, internally (Sprint 7)
+
+```
+packages/app-services/src/alerts/
+  types.ts            Alert, AlertType, AlertStatus, AlertSeverity, AlertEvidence
+  ranking.ts           AlertRankingPolicy + rankAlerts — deterministic dashboard prioritization
+  alert-service.ts     evaluateAlerts(), upsertAlertEpisode, markAlertSeen/dismissAlert/reevaluateAlertContext
+
+packages/app-services/src/notifications/
+  types.ts            NotificationChannel/Status/Category/Preferences, quiet-hours evaluation
+  provider.ts         NotificationProvider interface + MockNotificationProvider
+  notification-service.ts   preferences CRUD, deliverAlertNotification, syncNotificationsForProfile
+```
+
+`Alert` is an APPLICATION-layer type (like `ConciergeSession`/`OutingPlan`, DEC-068) — its
+`relatedEntityType`/`relatedEntityId` can point at a `SavedConciergePlan` (an app-services-only
+concept), so it cannot live in `financial-engine`. The PURE classification math it's built on
+(`evaluateSafeToSpendChange`, `evaluateEventPressure`, `evaluateLiquidityCoverageChange`,
+`evaluateConnectionAttention`, `AlertPolicy`) DOES live in `financial-engine/src/domain/alert-*.ts`,
+framework-free like everything else there — `alert-service.ts` assembles these into persisted
+episodes, never reimplementing the arithmetic. `NotificationProvider` mirrors
+`OpenFinanceProvider`/`LocalDiscoveryProvider`'s exact abstraction pattern; only `MockNotificationProvider`
+exists (no real push/email provider is configured). Full account: `docs/ALERTS-NOTIFICATIONS.md`.
+
 ## Application service layer (Sprint 3)
 
 ```
@@ -129,6 +154,9 @@ packages/app-services/src/
   recommendation-service.ts   evaluateRecommendations, evaluateRecommendationVerifications, accept/modify/rejectRecommendation (Sprint 5)
   discovery-provider-registry.ts  getDiscoveryProvider(name) — resolves "mock" (Sprint 6, mirrors provider-registry.ts)
   concierge/                  ConciergeIntent, OutingPlan, budget-fit-aware plan building/ranking, session persistence (Sprint 6)
+  alerts/                     Alert, evaluateAlerts, upsertAlertEpisode, rankAlerts (Sprint 7)
+  notifications/               NotificationPreferences/Delivery, deliverAlertNotification, syncNotificationsForProfile (Sprint 7)
+  notification-provider-registry.ts  getNotificationProvider(name) — resolves "mock" (Sprint 7, mirrors discovery-provider-registry.ts)
   webhook.ts                  handleWebhookEvent — idempotent webhook dispatch
   provider-registry.ts        getProvider(name) — resolves "pluggy" | "mock" lazily
 ```
@@ -167,9 +195,11 @@ and only to call the neutral `AIProvider` interface. Full account: `docs/AI-COPI
 
 ```
 packages/app-services/src/copilot/
-  tools.ts                  The allowlist: Zod schemas + execute() bound to queries.ts/mutations.ts
+  tools.ts                  The allowlist: Zod schemas + execute() bound to queries.ts/mutations.ts;
+                             each tool may declare its own `extractFacts` inline (Sprint 7, DEC-081)
   mutation-guard.ts          hasExplicitMutationIntent() — deterministic, independent of LLM judgment
-  facts.ts                   Deterministic FinancialFact extraction per tool
+  facts.ts                   Deterministic FinancialFact extraction — checks a tool's own declared
+                             `extractFacts` first, falling back to a legacy per-tool switch
   grounding.ts                Hallucination protection for monetary figures in assistant prose
   system-instructions.ts     Version-controlled system prompt
   conversation-service.ts    Persistence wrappers over @money-copilot/persistence

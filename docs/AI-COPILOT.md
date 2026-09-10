@@ -131,25 +131,27 @@ never a secret, never a full banking payload.
 ## Application tool layer — the allowlist
 
 The LLM never queries Drizzle or calls `financial-engine` internals directly. Its only capability is
-calling one of the 27 named tools in `packages/app-services/src/copilot/tools.ts` (16 from Sprint 4,
-5 from Sprint 5, 6 from Sprint 6), each with a strict Zod argument schema, a `kind` (`READ` or
-`MUTATION`), and an `execute(ctx, args)` bound to an `app-services` function. `findTool(name)` returns
-`undefined` for anything not in this list — the orchestrator records that as an `INVALID_ARGUMENTS`
-execution and tells the model "Unknown tool," never silently ignoring or crashing.
+calling one of the 33 named tools in `packages/app-services/src/copilot/tools.ts` (16 from Sprint 4,
+5 from Sprint 5, 6 from Sprint 6, 6 from Sprint 7), each with a strict Zod argument schema, a `kind`
+(`READ` or `MUTATION`), and an `execute(ctx, args)` bound to an `app-services` function. `findTool(name)`
+returns `undefined` for anything not in this list — the orchestrator records that as an
+`INVALID_ARGUMENTS` execution and tells the model "Unknown tool," never silently ignoring or crashing.
 
 **READ / SIMULATION tools** (execute unconditionally — they never persist anything):
 `getFinancialSnapshot`, `getSafeToSpend`, `getSafeToSpendBreakdown`, `getFinancialPosition`,
 `getLifestyleComparison`, `getGoalStatus`, `getSpendingEnvelope`, `getDailyGuidance`,
 `simulateExpense`, `getUpcomingFinancialEvents`, `getCategoryBudgetStatus`,
 `getRecentSpendingSummary`, `getRecommendations`, `getRecommendationDetails` (Sprint 5),
-`getConciergeBudget`, `searchPlaces`, `buildConciergePlans`, `evaluateConciergePlan` (Sprint 6).
+`getConciergeBudget`, `searchPlaces`, `buildConciergePlans`, `evaluateConciergePlan` (Sprint 6),
+`getAlerts`, `getAlertDetails`, `reevaluateAlertContext` (Sprint 7).
 
 **MUTATION tools** (additionally gated by the explicit mutation policy below):
 `recordManualTransaction`, `createPlannedFinancialEvent`, `updatePlannedFinancialEvent`,
 `replanAfterExpense`, `acceptRecommendation`, `modifyRecommendation`, `rejectRecommendation`
-(Sprint 5), `saveConciergePlan`, `reservePlanBudget` (Sprint 6). See `docs/RECOMMENDATIONS.md`/
-`docs/CONCIERGE.md`, "AI tools," for the domain-specific tools' exact semantics — none of them contact
-any external merchant, book anything, or spend money on the user's behalf.
+(Sprint 5), `saveConciergePlan`, `reservePlanBudget` (Sprint 6), `markAlertSeen`, `dismissAlert`,
+`updateNotificationPreference` (Sprint 7). See `docs/RECOMMENDATIONS.md`/`docs/CONCIERGE.md`/
+`docs/ALERTS-NOTIFICATIONS.md`, "AI tools," for the domain-specific tools' exact semantics — none of
+them contact any external merchant, book anything, or spend money on the user's behalf.
 
 Tool arguments are expressed in human units the model naturally produces (`amountReais: 500` for
 R$500.00), converted to integer-cent `Money` inside `execute()` via `fromReais` — the model never
@@ -189,6 +191,17 @@ decision vocabulary — selecting an outing plan or reserving a budget for one. 
 "separe" (PT-BR) and "i'll go with", "i choose", "i pick", "select this", "set aside" (English) —
 `saveConciergePlan`/`reservePlanBudget` are gated by the identical `hasExplicitMutationIntent`
 mechanism as every other mutation tool, with no concierge-specific exception.
+
+**Alert mark-seen / dismiss / notification preferences (Sprint 7):** a FOURTH decision vocabulary —
+"marca como visto"/"mark as seen", "pode ignorar"/"dismiss this alert", "não quero mais alertas de X"
+(already covered by the existing "não quero" pattern), "pare de me avisar"/"stop notifying me".
+**Live-discovered bug (DEC-082):** the mark-seen pattern originally required "marcar" and "como visto"
+adjacent, matching only the brief's own bare illustrative example — a real live message naming which
+alert ("Pode marcar o alerta do Safe-to-Spend como visto.") failed as `MUTATION_NOT_EXPLICIT` even
+though intent was unambiguous. Fixed by allowing an object phrase in between. This is the fourth sprint
+in a row this exact CLASS of gap (a pattern tuned only to a brief's shortest example, not real
+phrasing that names its object) was found only through live validation — see DEC-064, DEC-075,
+DEC-082.
 
 ## `getSpendingEnvelope` and daily guidance
 
@@ -241,6 +254,14 @@ template-rendered list of the facts actually available — and adds a warning. T
 narrow (regex-based currency extraction, not general NL verification) — see NON-NEGOTIABLE (Sprint 4):
 "do not over-engineer general NL verification, protect only important monetary values."
 
+**Sprint 7 (DEC-081): declarative, colocated fact extraction.** `extractFinancialFacts` now checks
+`findTool(toolName)?.extractFacts` FIRST, before its own legacy per-tool switch. A tool that can return
+money now declares its OWN extractor inline, in `tools.ts`, right next to its schema and `execute`
+function — see "Application tool layer" above. This exists specifically to end a recurring bug class
+(see DEC-074's paragraph below) at the SOURCE (a reviewer adding a tool is much less likely to skip a
+field on the SAME object they're already editing than to remember a separate file) rather than relying
+on discipline alone. Existing tools' switch cases are unchanged — no forced migration.
+
 **Sprint 5:** `recommendationFacts(recommendation, sourceTool)` extends this coverage to every
 recommendation tool — observed amount, monthly-equivalent amount, projected monthly/annual impact, a
 MODIFIED user target — added proactively (DEC-062), not discovered live, per the Sprint 4.5 lesson
@@ -262,7 +283,16 @@ grounding" (DEC-070).
 completely correct answer, citing the tool's own real numbers, was rejected by grounding as
 "unsupported." This is the third time this exact class of bug has been found (DEC-055, DEC-062,
 DEC-074) — every new tool that can produce a monetary figure the model might cite must ship its fact
-extractor in the same change, not as a follow-up.
+extractor in the same change, not as a follow-up. Sprint 7's declarative `extractFacts` mechanism
+(above) exists specifically because this happened a third time — all six Sprint 7 alert tools use it
+and none needed a live-discovered fix for this class of bug.
+
+**Sprint 7:** `alertFacts(alert)` (colocated in `tools.ts`) exposes every monetary figure an `Alert`'s
+`AlertEvidence` carries — previous/current/delta Safe-to-Spend, a recommendation's observed/impact
+amounts, an upcoming event's known cost. Alert types with no monetary evidence
+(`LIQUIDITY_COVERAGE_DEGRADED`/`CONNECTION_NEEDS_ATTENTION`/`UPCOMING_EVENT_UNKNOWN_COST`/
+`STALE_CONCIERGE_PLAN`) correctly expose zero facts, never a guessed amount. See
+`docs/ALERTS-NOTIFICATIONS.md`, "Grounding."
 
 ## Structured assistant response
 
@@ -287,7 +317,7 @@ propagates as a normalized `AIError` to the caller.
 ## System instructions
 
 `packages/app-services/src/copilot/system-instructions.ts` — a single version-controlled string
-(`CURRENT_SYSTEM_INSTRUCTIONS`, currently `SYSTEM_INSTRUCTIONS_V4`), never inline in a route handler.
+(`CURRENT_SYSTEM_INSTRUCTIONS`, currently `SYSTEM_INSTRUCTIONS_V5`), never inline in a route handler.
 Each version literally interpolates the previous (`` `${PREVIOUS}\n<new rule>` ``), so the full rule
 set stays traceable and additive rather than being rewritten from scratch each sprint.
 
@@ -303,7 +333,12 @@ own explicit decision; accepting is intent, not confirmed savings). **V4 (Sprint
 DOES have real-world venue discovery now — use it; always resolve the financial envelope before
 searching or presenting a plan; never invent a venue's existence/price/rating/address; ask for a
 location if missing; `saveConciergePlan`/`reservePlanBudget` require an explicit decision and never
-book, contact, or spend on the user's behalf.
+book, contact, or spend on the user's behalf. **V5 (Sprint 7)** adds: alert existence/severity/evidence
+is always deterministic — explain via `getAlertDetails` only, never invent a cause; marking seen or
+dismissing requires an explicit decision (dismissing never means the condition is resolved); keep
+alert language calm and non-shaming, never suggest cutting a protected preference even when explaining
+a tighter budget; only change a notification preference on the user's own explicit statement about
+notifications themselves.
 
 **Live-discovered bug (DEC-075):** V1's original rule 9 told the model it did NOT yet have real-world
 venue/product/travel recommendations — true when Sprint 4 wrote it, but left in place unnoticed
@@ -354,7 +389,11 @@ arguments rejected), every tool's JSON Schema satisfying OpenAI's strict-mode `r
 (Sprint 4.5, `tool-schema-strict-mode.test.ts` — see DEC-043), bounded max-iterations,
 tool-execution-failure handling, AI provider failure normalization (rate limit, timeout), grounding
 pass/fail in both languages (including an AI-invented amount being replaced, and a user-supplied
-amount being allowed), and structured facts staying separate from narrative text.
+amount being allowed), and structured facts staying separate from narrative text. **Sprint 7**
+(`orchestrator-alerts.test.ts`) adds: read alert tools never mutate; explicit PT-BR mark-seen/dismiss/
+preference-change mutate exactly once; hypothetical PT-BR dismiss language never mutates; grounding
+passes when the assistant cites an alert's own evidence and fails on an invented alert amount; alert
+explanations never suggest reducing the protected family-support commitment.
 
 ## Live OpenAI smoke test
 

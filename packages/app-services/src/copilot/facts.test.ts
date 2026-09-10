@@ -13,6 +13,7 @@ import {
   type Recommendation,
 } from "@money-copilot/financial-engine";
 import type { RecommendationsSummary } from "../queries";
+import type { Alert } from "../alerts";
 import { extractFinancialFacts } from "./facts";
 
 /**
@@ -182,5 +183,74 @@ describe("extractFinancialFacts", () => {
       currentBudget: budget,
     }).map((f) => f.amountCents);
     expect(evalAmounts).toContain(budget.cautionAmountCents);
+  });
+
+  /**
+   * Sprint 7 (declarative grounding): getAlerts/getAlertDetails/
+   * markAlertSeen/dismissAlert/reevaluateAlertContext all declare
+   * `extractFacts` INLINE, alongside their own tool definition (see
+   * `ToolDefinition.extractFacts`'s doc comment) — this proves the
+   * dispatcher actually reaches that declared function rather than falling
+   * through to the legacy switch (which has no case for these tool names at
+   * all), so a new tool's grounding coverage can never be a separately-
+   * forgettable step.
+   */
+  function buildAlert(overrides: Partial<Alert> = {}): Alert {
+    return {
+      id: createId("alert"),
+      financialProfileId: fixtureProfile.id,
+      type: "SAFE_TO_SPEND_MATERIAL_DROP",
+      status: "ACTIVE_UNSEEN",
+      severity: "ATTENTION",
+      identityKey: `${fixtureProfile.id}:SAFE_TO_SPEND_MATERIAL_DROP`,
+      title: "Seu Safe-to-Spend caiu de forma relevante desde a última atualização.",
+      reasonCode: "RELATIVE_DROP",
+      createdAt: "2026-09-09T00:00:00.000Z",
+      firstTriggeredAt: "2026-09-09T00:00:00.000Z",
+      lastTriggeredAt: "2026-09-09T00:00:00.000Z",
+      evidence: { kind: "SAFE_TO_SPEND_MATERIAL_DROP", previousCents: 100_000, currentCents: 80_000, deltaCents: 20_000, relativeDropRatio: 0.2 },
+      policyVersion: 1,
+      transitions: [{ status: "ACTIVE_UNSEEN", at: "2026-09-09T00:00:00.000Z" }],
+      ...overrides,
+    };
+  }
+
+  it("(Sprint 7) getAlerts exposes every returned alert's evidence amounts", () => {
+    const alert = buildAlert();
+    const amounts = extractFinancialFacts("getAlerts", { active: [alert], unreadCount: 1 }).map((f) => f.amountCents);
+    expect(amounts).toContain(100_000);
+    expect(amounts).toContain(80_000);
+    expect(amounts).toContain(20_000);
+  });
+
+  it("(Sprint 7) getAlertDetails/markAlertSeen/dismissAlert/reevaluateAlertContext each expose one alert's amounts", () => {
+    const alert = buildAlert();
+    for (const toolName of ["getAlertDetails", "markAlertSeen", "dismissAlert", "reevaluateAlertContext"]) {
+      const amounts = extractFinancialFacts(toolName, alert).map((f) => f.amountCents);
+      expect(amounts).toContain(80_000);
+    }
+  });
+
+  it("(Sprint 7) a RECOMMENDATION_DECISION alert exposes its observed/impact amounts", () => {
+    const alert = buildAlert({
+      type: "RECOMMENDATION_FAILED",
+      evidence: {
+        kind: "RECOMMENDATION_DECISION",
+        recommendationId: "rec-1",
+        recommendationTitle: "Recurring subscription: SPOTIFY",
+        observedAmountCents: 5990,
+        projectedMonthlyImpactCents: 5990,
+      },
+    });
+    const amounts = extractFinancialFacts("getAlertDetails", alert).map((f) => f.amountCents);
+    expect(amounts).toContain(5990);
+  });
+
+  it("(Sprint 7) an alert type with no monetary evidence exposes zero facts, never a guessed amount", () => {
+    const alert = buildAlert({
+      type: "CONNECTION_NEEDS_ATTENTION",
+      evidence: { kind: "CONNECTION_NEEDS_ATTENTION", connectionId: "conn-1", connectorName: "Pluggy Bank", status: "LOGIN_ERROR", reasonCode: "REPEATED_SYNC_FAILURE" },
+    });
+    expect(extractFinancialFacts("getAlertDetails", alert)).toEqual([]);
   });
 });

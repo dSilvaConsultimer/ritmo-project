@@ -118,7 +118,7 @@ describe("concierge-service", () => {
 
     const before = await getTransactions(db, fixtureProfile.id, ASOF);
     const { sessionId, plans } = await buildConciergePlansForProfile(db, fixtureProfile.id, ASOF, dinnerOnlyIntent);
-    await saveConciergePlan(db, fixtureProfile.id, sessionId, plans[0]!.id);
+    await saveConciergePlan(db, fixtureProfile.id, sessionId!, plans[0]!.id);
     const after = await getTransactions(db, fixtureProfile.id, ASOF);
 
     expect(after.length).toBe(before.length);
@@ -129,8 +129,8 @@ describe("concierge-service", () => {
     registerDiscoveryProvider("mock", { name: "mock", searchPlaces: async () => [venue()], getPlaceDetails: async () => undefined });
 
     const { sessionId, plans } = await buildConciergePlansForProfile(db, fixtureProfile.id, ASOF, dinnerOnlyIntent);
-    const first = await saveConciergePlan(db, fixtureProfile.id, sessionId, plans[0]!.id);
-    const second = await saveConciergePlan(db, fixtureProfile.id, sessionId, plans[0]!.id);
+    const first = await saveConciergePlan(db, fixtureProfile.id, sessionId!, plans[0]!.id);
+    const second = await saveConciergePlan(db, fixtureProfile.id, sessionId!, plans[0]!.id);
 
     expect(second.id).toBe(first.id);
   });
@@ -170,7 +170,7 @@ describe("concierge-service", () => {
     registerDiscoveryProvider("mock", { name: "mock", searchPlaces: async () => [venue()], getPlaceDetails: async () => undefined });
 
     const { sessionId, plans } = await buildConciergePlansForProfile(db, fixtureProfile.id, ASOF, dinnerOnlyIntent);
-    const fresh = await reevaluateConciergePlan(db, fixtureProfile.id, ASOF, sessionId, plans[0]!.id);
+    const fresh = await reevaluateConciergePlan(db, fixtureProfile.id, ASOF, sessionId!, plans[0]!.id);
     expect(fresh.stale).toBe(false);
 
     // Real spending happens elsewhere, changing the envelope.
@@ -180,7 +180,25 @@ describe("concierge-service", () => {
       date: ASOF,
     });
 
-    const stale = await reevaluateConciergePlan(db, fixtureProfile.id, ASOF, sessionId, plans[0]!.id);
+    const stale = await reevaluateConciergePlan(db, fixtureProfile.id, ASOF, sessionId!, plans[0]!.id);
     expect(stale.stale).toBe(true);
+  });
+
+  it("(Sprint 7, production safety) buildConciergePlansForProfile degrades honestly instead of using mock venues in production", async () => {
+    const db = await freshSeededDb();
+    resetDiscoveryProviderRegistry();
+    const originalEnv = process.env["NODE_ENV"];
+    process.env["NODE_ENV"] = "production";
+    try {
+      const result = await buildConciergePlansForProfile(db, fixtureProfile.id, ASOF, dinnerOnlyIntent);
+      expect(result.discoveryUnavailable).toBe(true);
+      expect(result.sessionId).toBeNull();
+      expect(result.plans).toEqual([]);
+      expect(result.discoveryFacts).toEqual([]);
+      // The financial envelope is STILL resolved deterministically — only discovery is unavailable.
+      expect(result.budget.recommendedAmountCents).toBeGreaterThanOrEqual(0);
+    } finally {
+      process.env["NODE_ENV"] = originalEnv;
+    }
   });
 });

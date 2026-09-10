@@ -15,12 +15,19 @@ import {
   evaluateRecommendations,
   evaluateRecommendationVerifications,
   listSavedConciergePlansForProfile,
+  evaluateAlerts,
+  syncNotificationsForProfile,
+  listAlertsForProfile,
+  activeAlerts,
+  rankAlerts,
   DEMO_PROFILE_ID,
   type RecommendationsSummary,
+  type Alert,
 } from "@money-copilot/app-services";
 import { toReais, type Recommendation } from "@money-copilot/financial-engine";
 import { ConnectedAccountsPanel } from "./components/ConnectedAccountsPanel";
 import { ChatPanel } from "./components/ChatPanel";
+import { AlertCenter, type AlertCardData } from "./components/AlertCenter";
 import { RecommendationsPanel, type RecommendationsData, type RecommendationSummaryItem } from "./components/RecommendationsPanel";
 import { warningKey } from "./lib/warning-key";
 
@@ -241,6 +248,57 @@ function recommendationsDataFromSummary(summary: RecommendationsSummary): Recomm
   };
 }
 
+function fmtBRL(cents: number): string {
+  return (cents / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+}
+
+/** Human-readable evidence line per alert type — mirrors `alertFacts` in `copilot/tools.ts` for which figures are groundable, but this is display-only prose, never re-derived math. */
+function alertDetail(alert: Alert): string {
+  const e = alert.evidence;
+  switch (e.kind) {
+    case "SAFE_TO_SPEND_MATERIAL_DROP":
+      return `De ${fmtBRL(e.previousCents)} para ${fmtBRL(e.currentCents)} (−${fmtBRL(e.deltaCents)}).`;
+    case "RECOMMENDATION_DECISION":
+      return `${e.recommendationTitle} — valor observado ${fmtBRL(e.observedAmountCents)}.`;
+    case "UPCOMING_EVENT_PRESSURE":
+      return `${e.eventLabel}: em ${Math.max(0, Math.round(e.daysUntilStart))} dia(s), custo conhecido de ${fmtBRL(e.knownCostCents)}.`;
+    case "UPCOMING_EVENT_UNKNOWN_COST":
+      return `${e.eventLabel}: em ${Math.max(0, Math.round(e.daysUntilStart))} dia(s), custo ainda não definido.`;
+    case "LIQUIDITY_COVERAGE_DEGRADED":
+      return `Cobertura de saldo: ${e.previousCoverage} → ${e.currentCoverage}.`;
+    case "CONNECTION_NEEDS_ATTENTION":
+      return `${e.connectorName ?? "Conexão"}: status ${e.status}.`;
+    case "STALE_CONCIERGE_PLAN":
+      return `Plano "${e.planLabel}" salvo em ${e.savedAt.slice(0, 10)}.`;
+  }
+}
+
+function relatedActionFor(alert: Alert): string | undefined {
+  switch (alert.type) {
+    case "CONNECTION_NEEDS_ATTENTION":
+      return "Ação sugerida: veja Connected Accounts para reconectar.";
+    case "STALE_CONCIERGE_PLAN":
+      return "Ação sugerida: peça ao assistente para recalcular esse plano.";
+    case "UPCOMING_EVENT_UNKNOWN_COST":
+      return "Ação sugerida: defina um orçamento para esse compromisso pelo chat.";
+    default:
+      return undefined;
+  }
+}
+
+function alertCardDataFromAlert(alert: Alert): AlertCardData {
+  return {
+    id: alert.id,
+    type: alert.type,
+    severity: alert.severity,
+    status: alert.status as "ACTIVE_UNSEEN" | "ACTIVE_SEEN",
+    title: alert.title,
+    detail: alertDetail(alert),
+    ...(relatedActionFor(alert) ? { relatedAction: relatedActionFor(alert) } : {}),
+    lastTriggeredAt: alert.lastTriggeredAt,
+  };
+}
+
 export default async function HomePage() {
   const db = await getDb();
 
@@ -249,6 +307,10 @@ export default async function HomePage() {
   // docs/RECOMMENDATIONS.md, "Sync integration."
   await evaluateRecommendations(db, DEMO_PROFILE_ID, ASOF_DATE);
   await evaluateRecommendationVerifications(db, DEMO_PROFILE_ID, ASOF_DATE);
+  // Sprint 7: same idempotent-by-construction pattern — see
+  // docs/ALERTS-NOTIFICATIONS.md, "Alert evaluation orchestration."
+  await evaluateAlerts(db, DEMO_PROFILE_ID, ASOF_DATE);
+  await syncNotificationsForProfile(db, DEMO_PROFILE_ID);
 
   const [
     snapshot,
@@ -261,6 +323,7 @@ export default async function HomePage() {
     connections,
     recommendationsSummary,
     savedConciergePlans,
+    allAlerts,
   ] = await Promise.all([
     getFinancialSnapshot(db, DEMO_PROFILE_ID, ASOF_DATE),
     getTransactions(db, DEMO_PROFILE_ID, ASOF_DATE),
@@ -272,12 +335,19 @@ export default async function HomePage() {
     getConnections(db, DEMO_PROFILE_ID),
     getRecommendationsSummary(db, DEMO_PROFILE_ID),
     listSavedConciergePlansForProfile(db, DEMO_PROFILE_ID),
+    listAlertsForProfile(db, DEMO_PROFILE_ID),
   ]);
 
   const latestSync = connections[0] ? await getLatestSyncRunForConnection(db, connections[0].id) : undefined;
   const future = snapshot.futureInstallmentCommitments;
   const isDemoMode = connections.length === 0;
   const recommendationsData = recommendationsDataFromSummary(recommendationsSummary);
+
+  // Sprint 7 (Section 42, "Dashboard prioritization"): show only the
+  // highest-priority active alerts here — never every historical alert.
+  const DASHBOARD_ALERT_LIMIT = 5;
+  const rankedActiveAlerts = rankAlerts(activeAlerts(allAlerts), new Date().toISOString());
+  const dashboardAlerts = rankedActiveAlerts.slice(0, DASHBOARD_ALERT_LIMIT).map((r) => alertCardDataFromAlert(r.alert));
 
   return (
     <main style={{ maxWidth: 1040, margin: "0 auto", padding: "32px 20px 64px" }}>
@@ -302,6 +372,22 @@ export default async function HomePage() {
       >
         {isDemoMode ? "DEMO / FIXTURE DATA — no institution connected" : "PROVIDER DATA CONNECTED (SANDBOX)"}
       </div>
+
+      <section style={sectionStyle}>
+        <h2 style={sectionTitleStyle}>
+          Alertas
+          {rankedActiveAlerts.length > 0 ? (
+            <span style={{ fontSize: 13, fontWeight: 400, color: "#8b93a7", marginLeft: 8 }}>
+              ({rankedActiveAlerts.filter((r) => r.alert.status === "ACTIVE_UNSEEN").length} não vistos)
+            </span>
+          ) : null}
+        </h2>
+        <p style={{ color: "#8b93a7", marginTop: 0, marginBottom: 12, fontSize: 14 }}>
+          Sinais deterministicos — nunca decididos pela IA. Mostrando os {DASHBOARD_ALERT_LIMIT} mais
+          relevantes; pergunte &ldquo;Tenho algum alerta?&rdquo; no chat para o histórico completo.
+        </p>
+        <AlertCenter alerts={dashboardAlerts} />
+      </section>
 
       <section style={sectionStyle}>
         <h2 style={sectionTitleStyle}>Ask Money Copilot</h2>

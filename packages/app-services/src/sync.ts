@@ -29,6 +29,8 @@ import * as repo from "@money-copilot/persistence";
 import type { Database } from "@money-copilot/persistence";
 import { getProvider, type ProviderName } from "./provider-registry";
 import { evaluateRecommendations, evaluateRecommendationVerifications } from "./recommendation-service";
+import { evaluateAlerts } from "./alerts";
+import { syncNotificationsForProfile } from "./notifications";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -413,6 +415,20 @@ export async function syncConnection(
     ...(status !== "FAILED" ? { lastSuccessfulSyncAt: finishedAt } : {}),
     updatedAt: finishedAt,
   });
+
+  // Sprint 7: alert evaluation runs regardless of whether THIS sync
+  // succeeded — a FAILED/PARTIAL sync is exactly when a connection-health
+  // alert most needs to fire. Deliberately isolated in its own try/catch,
+  // AFTER the connection row's final status update above, so
+  // `evaluateConnectionAttention` sees this sync's real outcome. Never
+  // fails the sync itself — see docs/ALERTS-NOTIFICATIONS.md, "Alert
+  // evaluation orchestration."
+  try {
+    await evaluateAlerts(db, financialProfileId, finishedAt.slice(0, 10));
+    await syncNotificationsForProfile(db, financialProfileId);
+  } catch {
+    // Never fails the sync — alert evaluation/notification delivery is best-effort here.
+  }
 
   return syncRun;
 }

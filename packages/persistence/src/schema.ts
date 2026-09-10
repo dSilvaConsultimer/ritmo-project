@@ -568,3 +568,116 @@ export const savedConciergePlans = pgTable(
   },
   (table) => [unique().on(table.financialProfileId, table.planId)],
 );
+
+/**
+ * Sprint 7: like `concierge_sessions`/`saved_concierge_plans`, `Alert` is an
+ * APPLICATION-layer type (`packages/app-services/src/alerts/types.ts`), not
+ * a `financial-engine` domain type — its `relatedEntityType`/
+ * `relatedEntityId` can point at an app-services-only concept (a saved
+ * concierge plan), so persistence works with a plain JSON-blob row shape
+ * here too, exactly like DEC-068. No unique constraint on `identityKey`:
+ * unlike a `Recommendation`, an alert IDENTITY can have more than one
+ * historical EPISODE over time (an old one RESOLVED, at most one other
+ * non-terminal) — the app-service layer decides reuse-vs-new-episode by
+ * querying the most recent row for a given `identityKey`, not by relying on
+ * a DB constraint. See docs/ALERTS-NOTIFICATIONS.md, "Episode identity."
+ */
+export const alerts = pgTable("alerts", {
+  id: text("id").primaryKey(),
+  financialProfileId: text("financial_profile_id")
+    .notNull()
+    .references(() => financialProfiles.id),
+  type: text("type").notNull(),
+  status: text("status").notNull(),
+  severity: text("severity").notNull(),
+  identityKey: text("identity_key").notNull(),
+  title: text("title").notNull(),
+  reasonCode: text("reason_code").notNull(),
+  createdAt: text("created_at").notNull(),
+  firstTriggeredAt: text("first_triggered_at").notNull(),
+  lastTriggeredAt: text("last_triggered_at").notNull(),
+  resolvedAt: text("resolved_at"),
+  seenAt: text("seen_at"),
+  dismissedAt: text("dismissed_at"),
+  /** JSON-encoded, per-type plain object — see `AlertEvidence`. Never a raw provider/AI payload. */
+  evidenceJson: text("evidence_json").notNull(),
+  relatedEntityType: text("related_entity_type"),
+  relatedEntityId: text("related_entity_id"),
+  policyVersion: integer("policy_version").notNull(),
+  /** JSON-encoded `AlertTransitionEvent[]` — append-only, mirrors `Recommendation.decisionHistory`. */
+  transitionsJson: text("transitions_json").notNull(),
+});
+
+/**
+ * One row per profile — the deterministic baseline Safe-to-Spend/liquidity
+ * change detection compares against. See docs/ALERTS-NOTIFICATIONS.md,
+ * "Baseline/checkpoint storage" / "Bootstrap semantics." Deliberately
+ * minimal: only what a comparison needs, never a duplicate full snapshot.
+ */
+export const alertEvaluationCheckpoints = pgTable(
+  "alert_evaluation_checkpoints",
+  {
+    id: text("id").primaryKey(),
+    financialProfileId: text("financial_profile_id")
+      .notNull()
+      .references(() => financialProfiles.id),
+    safeToSpendCents: integer("safe_to_spend_cents").notNull(),
+    liquidityAwareSafeToSpendCents: integer("liquidity_aware_safe_to_spend_cents"),
+    liquidityCoverage: text("liquidity_coverage").$type<LiquidityCoverage>().notNull(),
+    /** The baseline value a currently-ACTIVE SAFE_TO_SPEND_MATERIAL_DROP episode was first triggered against — null when no such episode is active. Used for `hasSafeToSpendRecovered`'s hysteresis check, kept separate from the live-fluctuating `safeToSpendCents` above. */
+    activeDropEpisodeBaselineCents: integer("active_drop_episode_baseline_cents"),
+    evaluatedAt: text("evaluated_at").notNull(),
+    policyVersion: integer("policy_version").notNull(),
+  },
+  (table) => [unique().on(table.financialProfileId)],
+);
+
+/**
+ * One row per profile — Sprint 7 in-app notification preferences. Minimal
+ * V1 shape per-category booleans plus quiet hours/privacy — architected so
+ * a future channel (push/email) or delivery-frequency setting can be added
+ * as new columns, never a schema replacement. See docs/ALERTS-
+ * NOTIFICATIONS.md, "Notification preferences."
+ */
+export const notificationPreferences = pgTable(
+  "notification_preferences",
+  {
+    id: text("id").primaryKey(),
+    financialProfileId: text("financial_profile_id")
+      .notNull()
+      .references(() => financialProfiles.id),
+    inAppEnabled: boolean("in_app_enabled").notNull().default(true),
+    financialChangeEnabled: boolean("financial_change_enabled").notNull().default(true),
+    plannedEventsEnabled: boolean("planned_events_enabled").notNull().default(true),
+    recommendationsEnabled: boolean("recommendations_enabled").notNull().default(true),
+    connectionHealthEnabled: boolean("connection_health_enabled").notNull().default(true),
+    conciergeEnabled: boolean("concierge_enabled").notNull().default(true),
+    /** "HH:MM" 24h local strings; both null means no quiet hours configured. */
+    quietHoursStart: text("quiet_hours_start"),
+    quietHoursEnd: text("quiet_hours_end"),
+    privacyMode: text("privacy_mode").$type<"GENERIC" | "AMOUNT_ALLOWED">().notNull().default("AMOUNT_ALLOWED"),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [unique().on(table.financialProfileId)],
+);
+
+/**
+ * One row per delivery ATTEMPT of one alert through one channel — never a
+ * full re-render of the notification content (that's derived at delivery
+ * time from the `Alert` row itself). See docs/ALERTS-NOTIFICATIONS.md,
+ * "Notification delivery model."
+ */
+export const notificationDeliveries = pgTable("notification_deliveries", {
+  id: text("id").primaryKey(),
+  alertId: text("alert_id")
+    .notNull()
+    .references(() => alerts.id),
+  financialProfileId: text("financial_profile_id")
+    .notNull()
+    .references(() => financialProfiles.id),
+  channel: text("channel").notNull(),
+  status: text("status").$type<"PENDING" | "DELIVERED" | "FAILED" | "SUPPRESSED">().notNull(),
+  attemptedAt: text("attempted_at").notNull(),
+  deliveredAt: text("delivered_at"),
+  failureReasonCode: text("failure_reason_code"),
+});

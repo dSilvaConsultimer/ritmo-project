@@ -1,6 +1,6 @@
 import { createId, type Id } from "@money-copilot/shared";
 import { deriveSearchCeiling, evaluateBudgetFit, fromCents, type BudgetFitResult } from "@money-copilot/financial-engine";
-import type { ActivityType, DiscoverySearchCriteria, VenueCandidate } from "@money-copilot/discovery";
+import { DiscoveryError, type ActivityType, type DiscoverySearchCriteria, type LocalDiscoveryProvider, type VenueCandidate } from "@money-copilot/discovery";
 import type { Database } from "@money-copilot/persistence";
 import * as repo from "@money-copilot/persistence";
 import { getSpendingEnvelopeForProfile } from "../queries";
@@ -68,6 +68,29 @@ function buildSearchCriteria(
 export interface ConciergeSearchResult {
   readonly candidates: readonly VenueCandidate[];
   readonly discoveryFacts: readonly DiscoveryFact[];
+  /** True when no real search happened because no live discovery provider is configured for this environment (Sprint 7 production safety) — never populated with fabricated venues. */
+  readonly discoveryUnavailable?: boolean;
+}
+
+/**
+ * Resolves the discovery provider, catching the SPECIFIC
+ * `PROVIDER_NOT_CONFIGURED_FOR_PRODUCTION` case so a production deployment
+ * with no live credential degrades to an honest "unavailable" result
+ * rather than a crashed tool call or (worse) synthetic mock venues shown as
+ * real. Any other error still propagates — this is not a general
+ * catch-all. See docs/CONCIERGE.md, "Discovery degradation."
+ */
+function resolveDiscoveryProviderOrUnavailable(
+  providerName: DiscoveryProviderName,
+): { provider: LocalDiscoveryProvider } | { provider: undefined } {
+  try {
+    return { provider: getDiscoveryProvider(providerName) };
+  } catch (error) {
+    if (error instanceof DiscoveryError && error.code === "PROVIDER_NOT_CONFIGURED_FOR_PRODUCTION") {
+      return { provider: undefined };
+    }
+    throw error;
+  }
 }
 
 function factsFromCandidates(candidates: readonly VenueCandidate[], sourceTool: string): DiscoveryFact[] {
@@ -127,17 +150,22 @@ export async function searchConciergePlaces(
   providerName: DiscoveryProviderName = "mock",
 ): Promise<ConciergeSearchResult> {
   const budget = await getConciergeBudget(db, financialProfileId, asOfDate, intent.userExplicitBudgetCents);
-  const provider = getDiscoveryProvider(providerName);
+  const { provider } = resolveDiscoveryProviderOrUnavailable(providerName);
+  if (!provider) {
+    return { candidates: [], discoveryFacts: [], discoveryUnavailable: true };
+  }
   const criteria = buildSearchCriteria(activityType, intent, budget.searchCeilingCents);
   const candidates = await provider.searchPlaces(criteria);
   return { candidates, discoveryFacts: factsFromCandidates(candidates, "searchPlaces") };
 }
 
 export interface ConciergePlansResult {
-  readonly sessionId: Id<"concierge-session">;
+  readonly sessionId: Id<"concierge-session"> | null;
   readonly budget: ConciergeBudget;
   readonly plans: readonly OutingPlan[];
   readonly discoveryFacts: readonly DiscoveryFact[];
+  /** True when no real search happened because no live discovery provider is configured for this environment (Sprint 7 production safety) — never populated with fabricated venues/plans. */
+  readonly discoveryUnavailable?: boolean;
 }
 
 /**
@@ -158,7 +186,10 @@ export async function buildConciergePlansForProfile(
 ): Promise<ConciergePlansResult> {
   const envelope = await getSpendingEnvelopeForProfile(db, financialProfileId, asOfDate);
   const budget = await getConciergeBudget(db, financialProfileId, asOfDate, intent.userExplicitBudgetCents);
-  const provider = getDiscoveryProvider(providerName);
+  const { provider } = resolveDiscoveryProviderOrUnavailable(providerName);
+  if (!provider) {
+    return { sessionId: null, budget, plans: [], discoveryFacts: [], discoveryUnavailable: true };
+  }
 
   const allComponents = [...intent.requiredComponents, ...intent.optionalComponents];
   const candidatesByComponent = new Map<ActivityType, readonly VenueCandidate[]>();

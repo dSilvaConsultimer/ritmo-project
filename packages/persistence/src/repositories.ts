@@ -20,6 +20,7 @@ import type {
   SyncRun,
   CreditCardBill,
   Recommendation,
+  LiquidityCoverage,
 } from "@money-copilot/financial-engine";
 import type { AIRequestLog, AIToolExecution, Conversation, ConversationMessage } from "@money-copilot/ai";
 import type { Database } from "./db";
@@ -554,6 +555,27 @@ export async function getLatestSyncRun(db: Database, connectionId: string): Prom
   return row ? mappers.rowToSyncRun(row) : undefined;
 }
 
+/**
+ * Sprint 7: the most recent `limit` sync runs for one connection, most
+ * recent first — used by the alert engine's `evaluateConnectionAttention`
+ * to count CONSECUTIVE non-`SUCCEEDED` runs (a real, historical signal for
+ * "repeated failure," never a single transient blip). See
+ * docs/ALERTS-NOTIFICATIONS.md, "Connection health alert."
+ */
+export async function listRecentSyncRunsForConnection(
+  db: Database,
+  connectionId: string,
+  limit = 5,
+): Promise<SyncRun[]> {
+  const rows = await db
+    .select()
+    .from(schema.syncRuns)
+    .where(eq(schema.syncRuns.connectionId, connectionId))
+    .orderBy(desc(schema.syncRuns.startedAt))
+    .limit(limit);
+  return rows.map(mappers.rowToSyncRun);
+}
+
 // ---------- Webhook idempotency ----------
 
 export type WebhookInsertResult = "INSERTED" | "ALREADY_PROCESSED";
@@ -941,4 +963,153 @@ export async function listSavedConciergePlansForProfile(
     .select()
     .from(schema.savedConciergePlans)
     .where(eq(schema.savedConciergePlans.financialProfileId, financialProfileId));
+}
+
+// ---------- Alerts / notifications (Sprint 7) ----------
+//
+// `Alert` is an APPLICATION-layer type (see `concierge`'s comment above for
+// the identical reasoning) — plain JSON-blob rows here, mapping done by
+// `app-services/src/alerts/alert-service.ts`.
+
+export interface AlertRow {
+  readonly id: string;
+  readonly financialProfileId: string;
+  readonly type: string;
+  readonly status: string;
+  readonly severity: string;
+  readonly identityKey: string;
+  readonly title: string;
+  readonly reasonCode: string;
+  readonly createdAt: string;
+  readonly firstTriggeredAt: string;
+  readonly lastTriggeredAt: string;
+  readonly resolvedAt: string | null;
+  readonly seenAt: string | null;
+  readonly dismissedAt: string | null;
+  readonly evidenceJson: string;
+  readonly relatedEntityType: string | null;
+  readonly relatedEntityId: string | null;
+  readonly policyVersion: number;
+  readonly transitionsJson: string;
+}
+
+export async function upsertAlertRow(db: Database, row: AlertRow): Promise<void> {
+  await db.insert(schema.alerts).values(row).onConflictDoUpdate({ target: schema.alerts.id, set: row });
+}
+
+export async function getAlertRowById(db: Database, id: string): Promise<AlertRow | undefined> {
+  const [row] = await db.select().from(schema.alerts).where(eq(schema.alerts.id, id));
+  return row;
+}
+
+/** The single most recent row for a given identity — the entire "episode" lookup mechanism (see docs/ALERTS-NOTIFICATIONS.md, "Episode identity"). */
+export async function findLatestAlertRowByIdentityKey(
+  db: Database,
+  financialProfileId: string,
+  identityKey: string,
+): Promise<AlertRow | undefined> {
+  const [row] = await db
+    .select()
+    .from(schema.alerts)
+    .where(and(eq(schema.alerts.financialProfileId, financialProfileId), eq(schema.alerts.identityKey, identityKey)))
+    .orderBy(desc(schema.alerts.createdAt))
+    .limit(1);
+  return row;
+}
+
+export async function listAlertRowsForProfile(db: Database, financialProfileId: string): Promise<AlertRow[]> {
+  return db.select().from(schema.alerts).where(eq(schema.alerts.financialProfileId, financialProfileId));
+}
+
+export interface AlertEvaluationCheckpointRow {
+  readonly id: string;
+  readonly financialProfileId: string;
+  readonly safeToSpendCents: number;
+  readonly liquidityAwareSafeToSpendCents: number | null;
+  readonly liquidityCoverage: LiquidityCoverage;
+  readonly activeDropEpisodeBaselineCents: number | null;
+  readonly evaluatedAt: string;
+  readonly policyVersion: number;
+}
+
+export async function upsertAlertEvaluationCheckpointRow(
+  db: Database,
+  row: AlertEvaluationCheckpointRow,
+): Promise<void> {
+  await db
+    .insert(schema.alertEvaluationCheckpoints)
+    .values(row)
+    .onConflictDoUpdate({ target: schema.alertEvaluationCheckpoints.financialProfileId, set: row });
+}
+
+export async function getAlertEvaluationCheckpointRow(
+  db: Database,
+  financialProfileId: string,
+): Promise<AlertEvaluationCheckpointRow | undefined> {
+  const [row] = await db
+    .select()
+    .from(schema.alertEvaluationCheckpoints)
+    .where(eq(schema.alertEvaluationCheckpoints.financialProfileId, financialProfileId));
+  return row;
+}
+
+export interface NotificationPreferencesRow {
+  readonly id: string;
+  readonly financialProfileId: string;
+  readonly inAppEnabled: boolean;
+  readonly financialChangeEnabled: boolean;
+  readonly plannedEventsEnabled: boolean;
+  readonly recommendationsEnabled: boolean;
+  readonly connectionHealthEnabled: boolean;
+  readonly conciergeEnabled: boolean;
+  readonly quietHoursStart: string | null;
+  readonly quietHoursEnd: string | null;
+  readonly privacyMode: "GENERIC" | "AMOUNT_ALLOWED";
+  readonly updatedAt: string;
+}
+
+export async function upsertNotificationPreferencesRow(
+  db: Database,
+  row: NotificationPreferencesRow,
+): Promise<void> {
+  await db
+    .insert(schema.notificationPreferences)
+    .values(row)
+    .onConflictDoUpdate({ target: schema.notificationPreferences.financialProfileId, set: row });
+}
+
+export async function getNotificationPreferencesRow(
+  db: Database,
+  financialProfileId: string,
+): Promise<NotificationPreferencesRow | undefined> {
+  const [row] = await db
+    .select()
+    .from(schema.notificationPreferences)
+    .where(eq(schema.notificationPreferences.financialProfileId, financialProfileId));
+  return row;
+}
+
+export interface NotificationDeliveryRow {
+  readonly id: string;
+  readonly alertId: string;
+  readonly financialProfileId: string;
+  readonly channel: string;
+  readonly status: "PENDING" | "DELIVERED" | "FAILED" | "SUPPRESSED";
+  readonly attemptedAt: string;
+  readonly deliveredAt: string | null;
+  readonly failureReasonCode: string | null;
+}
+
+export async function upsertNotificationDeliveryRow(db: Database, row: NotificationDeliveryRow): Promise<void> {
+  await db
+    .insert(schema.notificationDeliveries)
+    .values(row)
+    .onConflictDoUpdate({ target: schema.notificationDeliveries.id, set: row });
+}
+
+export async function listNotificationDeliveriesForAlert(
+  db: Database,
+  alertId: string,
+): Promise<NotificationDeliveryRow[]> {
+  return db.select().from(schema.notificationDeliveries).where(eq(schema.notificationDeliveries.alertId, alertId));
 }

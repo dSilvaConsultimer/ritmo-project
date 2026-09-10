@@ -11,6 +11,8 @@ const PluggyConnect = dynamic(
 
 interface ConnectButtonProps {
   onConnected: () => void;
+  /** "Reconnect" wording for an existing connection that needs re-authorization — same underlying flow, see docs/OPEN-FINANCE.md, "Connection lifecycle." */
+  label?: string;
 }
 
 /**
@@ -21,7 +23,7 @@ interface ConnectButtonProps {
  * successful Item — POSTs the resulting `itemId` to `/api/connections`
  * so the server can persist the connection and run the initial import.
  */
-export function ConnectButton({ onConnected }: ConnectButtonProps) {
+export function ConnectButton({ onConnected, label }: ConnectButtonProps) {
   const [connectToken, setConnectToken] = useState<string | null>(null);
   const [isOpen, setIsOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -79,7 +81,8 @@ export function ConnectButton({ onConnected }: ConnectButtonProps) {
     <div>
       <button
         onClick={handleOpen}
-        disabled={isLoading}
+        disabled={isLoading || isOpen}
+        aria-busy={isLoading}
         style={{
           background: "#3b82f6",
           color: "white",
@@ -88,11 +91,11 @@ export function ConnectButton({ onConnected }: ConnectButtonProps) {
           padding: "10px 18px",
           fontSize: 14,
           fontWeight: 600,
-          cursor: isLoading ? "default" : "pointer",
-          opacity: isLoading ? 0.7 : 1,
+          cursor: isLoading || isOpen ? "default" : "pointer",
+          opacity: isLoading || isOpen ? 0.7 : 1,
         }}
       >
-        {isLoading ? "Loading…" : "Connect institution"}
+        {isLoading ? "Loading…" : isOpen ? "Connecting…" : (label ?? "Connect institution")}
       </button>
       {error ? <p style={{ color: "#e08a8a", fontSize: 13, marginTop: 6 }}>{error}</p> : null}
       {typeof window !== "undefined" && connectToken && isOpen ? (
