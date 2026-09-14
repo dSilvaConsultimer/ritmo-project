@@ -1,4 +1,4 @@
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate, useRouter } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
@@ -22,6 +22,10 @@ import {
   type ConnectionSummaryDTO,
 } from "@/functions/connections";
 import { isAuthExpiredError } from "@/lib/auth-error";
+import {
+  isConfirmedSuccessfulConnectionPhase,
+  type ConnectionFlowPhase,
+} from "@/lib/connection-flow";
 
 /**
  * The dedicated Bank Connection screen (Sprint 9 Phase 4, brief §4/§20) —
@@ -46,8 +50,7 @@ export const Route = createFileRoute("/_protected/conectar-banco")({
   component: ConectarBanco,
 });
 
-type Phase =
-  "idle" | "requesting_token" | "authorizing" | "syncing" | "success" | "partial" | "error";
+type Phase = ConnectionFlowPhase;
 
 const RECONNECT_LABEL = "Reconectar";
 const CONNECT_LABEL = "Conectar meu banco";
@@ -55,6 +58,7 @@ const CONNECT_LABEL = "Conectar meu banco";
 function ConectarBanco() {
   const initialData = Route.useLoaderData();
   const navigate = useNavigate();
+  const router = useRouter();
 
   const [screenData, setScreenData] = useState<ConnectionScreenData>(initialData);
   const [phase, setPhase] = useState<Phase>("idle");
@@ -69,6 +73,26 @@ function ConectarBanco() {
       if (pollTimer.current) clearTimeout(pollTimer.current);
     };
   }, []);
+
+  /**
+   * Regression fix: leaves this screen for Home the moment the connection
+   * is server-confirmed (CONNECTED or PARTIAL_DATA) — no manual "Ir para o
+   * Início" click required. `router.invalidate()` (the same mechanism
+   * `__root.tsx`'s error boundary already uses) marks every route match,
+   * including any previously-matched "/" from before this connection
+   * existed, as invalid — so Home's `beforeLoad` (`getConnectionScreenData`)
+   * is guaranteed to re-read real, fresh server state (`hasAnyConnection`)
+   * rather than ever reusing a stale match, and therefore never bounces
+   * back to /onboarding. This never bypasses Home's own server-side check —
+   * it only ensures that check runs fresh.
+   */
+  const goHome = useCallback(() => {
+    void router.invalidate().then(() => navigate({ to: "/" }));
+  }, [router, navigate]);
+
+  useEffect(() => {
+    if (isConfirmedSuccessfulConnectionPhase(phase)) goHome();
+  }, [phase, goHome]);
 
   const handleAuthError = useCallback(
     (error: unknown) => {
@@ -267,7 +291,13 @@ function ConectarBanco() {
       >
         <div className="flex flex-col items-center gap-4">
           <CheckCircle2 className="h-10 w-10 text-primary" />
-          <Button size="lg" className="w-full rounded-full" onClick={() => navigate({ to: "/" })}>
+          {/*
+            The automatic transition above already navigates on entering this
+            phase; this button stays only as a manual fallback (e.g. if the
+            automatic navigation is still in flight) — it never needs to be
+            clicked in the normal flow.
+          */}
+          <Button size="lg" className="w-full rounded-full" onClick={goHome}>
             Ir para o Início
           </Button>
         </div>

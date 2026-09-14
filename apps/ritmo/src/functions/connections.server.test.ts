@@ -35,6 +35,7 @@ import {
   finishBankConnectionHandler,
   removeBankConnectionHandler,
   requestManualSyncHandler,
+  checkSyncProgressHandler,
 } from "./connections.server";
 
 let tmpDir: string;
@@ -236,5 +237,71 @@ describe("Founder Local Live Bank Pilot — mode wiring and manual sync ownershi
 
     const result = await requestManualSyncHandler({ connectionId });
     expect(result.ok).toBe(true);
+  });
+});
+
+describe("Post-connection automatic Home transition (regression) — server-side state the routing decision depends on", () => {
+  it("(1) a brand-new authenticated user starts with hasAnyConnection false — the condition /onboarding's redirect and Home's beforeLoad both depend on", async () => {
+    currentHeaders = await signUpAndGetSessionHeaders(
+      "regress-home-a@isolation-test.invalid",
+      "supersecret123",
+      "Regress Home A",
+    );
+    const before = await getConnectionScreenDataHandler();
+    expect(before.hasAnyConnection).toBe(false);
+  });
+
+  it("(2, 3) a successful finishBankConnection persists the connection, and the effective routing state (hasAnyConnection) flips true immediately — before, during, and after the initial sync completes", async () => {
+    currentHeaders = await signUpAndGetSessionHeaders(
+      "regress-home-b@isolation-test.invalid",
+      "supersecret123",
+      "Regress Home B",
+    );
+    const finish = await finishBankConnectionHandler({
+      externalConnectionId: "regress-home-b-item",
+    });
+    expect(finish.ok).toBe(true);
+    if (!finish.ok) return;
+
+    // hasAnyConnection is already true the instant the connection is
+    // persisted — this is what Home's beforeLoad (`!hasAnyConnection`) and
+    // /onboarding both key off, independent of sync completion timing.
+    const afterFinish = await getConnectionScreenDataHandler();
+    expect(afterFinish.hasAnyConnection).toBe(true);
+
+    // The MockProvider registered in this suite has zero accounts, so the
+    // initial sync completes synchronously with SUCCEEDED — real,
+    // persisted confirmation, never a fabricated/fake-timer wait.
+    const progress = await checkSyncProgressHandler({ connectionId: finish.connection.id });
+    expect(progress.ok).toBe(true);
+    if (progress.ok) expect(progress.progress).toBe("SUCCESS");
+
+    // (5) Re-reading connection screen data after sync completion — the
+    // same call Home's beforeLoad makes — still reports hasAnyConnection
+    // true: fresh server state never regresses back to "no connection".
+    const afterSync = await getConnectionScreenDataHandler();
+    expect(afterSync.hasAnyConnection).toBe(true);
+  });
+
+  it("(9) this entire flow never accepts or needs a client-supplied financialProfileId, and a second user's own state stays independent", async () => {
+    currentHeaders = await signUpAndGetSessionHeaders(
+      "regress-home-c@isolation-test.invalid",
+      "supersecret123",
+      "Regress Home C",
+    );
+    await finishBankConnectionHandler({ externalConnectionId: "regress-home-c-item" });
+    const ownerData = await getConnectionScreenDataHandler();
+    expect(ownerData.hasAnyConnection).toBe(true);
+
+    currentHeaders = await signUpAndGetSessionHeaders(
+      "regress-home-d@isolation-test.invalid",
+      "supersecret123",
+      "Regress Home D",
+    );
+    // No handler above takes a financialProfileId argument — ownership is
+    // resolved server-side from the session only, so a second, independent
+    // user never inherits the first user's routing state.
+    const otherData = await getConnectionScreenDataHandler();
+    expect(otherData.hasAnyConnection).toBe(false);
   });
 });
