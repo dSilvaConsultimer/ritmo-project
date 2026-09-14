@@ -8,6 +8,7 @@ import { createPlannedFinancialEvent } from "../mutations";
 import { getDiscoveryProvider, type DiscoveryProviderName } from "../discovery-provider-registry";
 import { buildConciergePlans as buildPlansPure } from "./plan-builder";
 import type { ConciergeIntent, ConciergeSession, DiscoveryFact, OutingPlan, SavedConciergePlan } from "./types";
+import { assertOwnedByProfile } from "../ownership";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -247,10 +248,19 @@ function sessionFromRow(row: NonNullable<Awaited<ReturnType<typeof repo.getConci
   };
 }
 
-async function requireSession(db: Database, sessionId: string): Promise<ConciergeSession> {
+/**
+ * Sprint 9: takes the CALLER's own `financialProfileId` — a guessed/leaked
+ * `sessionId` from another profile throws the exact same
+ * `ResourceNotFoundError` as a nonexistent one (see `../ownership`).
+ */
+async function requireSession(
+  db: Database,
+  financialProfileId: string,
+  sessionId: string,
+): Promise<ConciergeSession> {
   const row = await repo.getConciergeSessionRowById(db, sessionId);
-  if (!row) throw new Error(`No concierge session ${sessionId}`);
-  return sessionFromRow(row);
+  const session = row ? sessionFromRow(row) : undefined;
+  return assertOwnedByProfile(session, financialProfileId, `concierge session ${sessionId}`);
 }
 
 function requirePlanInSession(session: ConciergeSession, planId: string): OutingPlan {
@@ -281,7 +291,7 @@ export async function reevaluateConciergePlan(
   sessionId: string,
   planId: string,
 ): Promise<PlanValidityResult> {
-  const originalSession = await requireSession(db, sessionId);
+  const originalSession = await requireSession(db, financialProfileId, sessionId);
   const plan = requirePlanInSession(originalSession, planId);
   const currentEnvelope = await getSpendingEnvelopeForProfile(db, financialProfileId, asOfDate);
   const currentBudget = await getConciergeBudget(db, financialProfileId, asOfDate);
@@ -323,7 +333,7 @@ export async function saveConciergePlan(
     };
   }
 
-  const session = await requireSession(db, sessionId);
+  const session = await requireSession(db, financialProfileId, sessionId);
   const plan = requirePlanInSession(session, planId);
 
   const saved: SavedConciergePlan = {

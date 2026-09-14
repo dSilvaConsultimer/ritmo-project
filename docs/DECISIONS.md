@@ -2296,3 +2296,1279 @@ render real content correctly.
 future model response includes other markdown constructs (lists, links, headers), the same literal-
 character defect will recur until `parseInlineMarkdown` (or a real markdown renderer, if ever
 justified) is extended to cover them.
+
+---
+
+### DEC-087
+
+**Date:** 2026-09-11
+**Context:** Sprint 9 (production authentication and multi-user isolation) needs a single, fail-closed
+notion of "what environment is this process running in" — today only two ad hoc
+`NODE_ENV === "production"` checks exist anywhere in the repo, and there is no way to express
+"staging" at all (a required environment per the Sprint 9 brief, distinct from both local development
+and production). Every later Sprint 9 safety rule (never seed Founder fixture data outside
+development/test, never boot production against file-backed PGlite, never honor a dev-only auth
+bypass flag in production) needs one shared, tested source of truth for this, not each call site
+inventing its own check.
+**Decision:** Added a new package, `@money-copilot/config` (`src/env.ts`):
+`resolveAppEnvironment()` (returns `"development" | "test" | "staging" | "production"`, `APP_ENV`
+authoritative when set since it's the only way to express staging, falling back to conventional
+`NODE_ENV` values, defaulting to `"development"` — never defaulting to `"production"`, so a
+misconfigured deployment fails loudly rather than silently behaving as dev), `requireEnv()` (throws
+`EnvironmentConfigError` on a missing/blank variable, never returns an empty string as if it were
+set), and `assertDevOnlyFlagNotInProduction()` (fails closed if a dev-only flag is `"true"` while the
+resolved environment is production).
+**Rationale:** First placed in `@money-copilot/shared` (reasoning: generic/non-financial, every
+package already depends on it) — this was wrong and caught immediately by `pnpm -r run typecheck`:
+`financial-engine` depends on `shared`, and `financial-engine` is deliberately usable with **no
+Node/framework dependency at all** (`docs/ARCHITECTURE.md`, "Why this split"). Since `shared` ships as
+raw source (no compiled `.d.ts`), any consumer importing from it type-checks the whole module graph
+`shared` re-exports — so a `process.env` read anywhere in `shared` breaks `financial-engine`'s (and
+`ai`'s, `open-finance`'s, `discovery`'s) Node/framework independence, not just conceptually but as a
+real, immediate compile error. Moved to a new, separate `@money-copilot/config` package instead,
+depended on only by the Node-context packages that actually need it (`persistence`, `app-services`,
+`apps/ritmo`) — `financial-engine`/`ai`/`open-finance`/`discovery` do not and must not depend on it. A
+dependency-free, plain-TypeScript implementation (no zod or similar) was kept — the validation here is
+a handful of presence/equality checks, matching this codebase's existing style (`getPluggyClient`,
+`/api/chat`'s `OPENAI_API_KEY` check) of inline checks without a schema library.
+**Status:** Accepted.
+**Consequences:** Phase 1 (production Postgres boot guard, seed gate) and Phase 3 (dev auth bypass
+gate) of Sprint 9 both build directly on these three functions rather than inventing their own
+environment checks. `apps/ritmo/.env.example` (new) documents `APP_ENV` for the first time.
+
+---
+
+### DEC-088
+
+**Date:** 2026-09-11
+**Context:** Sprint 9 must decide which app(s) receive real authentication. `apps/web` has
+`DEMO_PROFILE_ID` hardcoded across 6 separate route files with zero auth infrastructure of any kind;
+`apps/ritmo` has exactly one seam, `getCurrentProfileContext()`
+(`apps/ritmo/src/functions/profile-context.ts`), built in Sprint 8 specifically so a later sprint
+could replace its internals without touching any adapter or route. `apps/web` is already documented
+(Sprint 8, `docs/RITMO.md`) as internal/debug-only, to be retired once `apps/ritmo` reaches parity.
+**Decision:** Sprint 9's authentication work targets `apps/ritmo` exclusively. `apps/web` remains
+local-only and unauthenticated; it must never be deployed to a publicly reachable address, and if it
+is ever run against a shared (non-laptop-local) environment, that access is restricted at the network
+level (VPN/IP allowlist), not by adding application-level auth to a to-be-retired debug tool.
+**Rationale:** Retrofitting real authentication onto 6 hardcoded call sites in an app already
+scheduled for retirement is effort spent on code that's going away, for zero product benefit — the
+brief's own instruction ("if `apps/web` is retained for internal debugging: keep it local/internal or
+explicitly protected") explicitly allows this scoping.
+**Status:** Accepted.
+**Consequences:** Any future session must not assume `apps/web`'s API routes are protected by
+anything beyond "don't expose this host publicly" — this is a documented, deliberate gap, not an
+oversight. `apps/ritmo`'s server/client security boundary and its single profile-context seam (both
+Sprint 8, DEC-084) remain the enforcement points Sprint 9 builds on.
+
+---
+
+### DEC-089
+
+**Date:** 2026-09-11
+**Context:** Sprint 9 requires production-grade authentication infrastructure. The brief's own
+instruction is to evaluate deliberately and document the choice, not default to whatever a scaffold
+happened to include.
+**Decision:** **[Better Auth](https://www.better-auth.com/)** — self-hosted, TypeScript, runs inside
+`apps/ritmo`'s own server functions rather than redirecting to a vendor-hosted screen (so it can never
+own Ritmo's visual identity — a hard constraint the brief repeats across multiple sections), ships a
+Drizzle adapter (no second ORM alongside the existing persistence layer), and provides email/password,
+OAuth, email verification, secure password-reset, and a first-party MFA plugin (satisfying "future MFA
+readiness" without committing to MFA now). **Identity model**: Better Auth's own canonical user record
+is the single source of truth for authentication identity — there is no separate, duplicate "Ritmo
+User" table. `financial_profiles.owner_user_id` references Better Auth's `user.id` directly.
+`FinancialProfile` keeps its own separate, opaque id regardless, because Pluggy's `clientUserId`/
+connection-recovery mechanism (`recoverOrphanedConnection`, DEC-046) already depends on
+`financialProfileId` being a stable value distinct from any auth-provider identity.
+**Rationale:** **Clerk** was considered and rejected — its core value proposition is prebuilt hosted
+UI; its headless "Elements" kit narrows but doesn't remove the visual-ownership tension the brief
+explicitly warns against, plus a recurring per-MAU cost for a pre-revenue product. **Auth.js** was
+considered and rejected — its TanStack Start support is a community pattern, not a first-party
+integration, unlike Better Auth's dedicated TanStack Start guide. Implementation follows that official
+guide exactly (its `/api/auth/*` handler mounted as a TanStack Start server route, its own cookie
+helpers, `getSession` for server-side session retrieval, its client SDK for the login/signup/recovery
+forms, its `signOut` for logout) — no custom password hashing, session tokens, or crypto of any kind.
+**Status:** Accepted.
+**Consequences:** `apps/ritmo/src/functions/profile-context.ts`'s real implementation (Sprint 9 Phase
+3) resolves `FinancialProfile` via `owner_user_id = session.user.id`. If Ritmo ever needs application
+metadata Better Auth's user schema doesn't hold, that becomes a clearly separate, explicitly-named
+metadata relation keyed on the same id — never a second parallel identity table.
+
+---
+
+### DEC-090
+
+**Date:** 2026-09-11
+**Context:** Sprint 9 requires a production Postgres database — file-backed PGlite (DEC-051/DEC-083)
+is development/test infrastructure only, and has no real multi-process/multi-instance story. The
+brief's own instruction is to evaluate deployment/runtime requirements before picking infrastructure,
+not by habit.
+**Decision:** **[Neon](https://neon.tech)** (serverless Postgres) for the production/staging database.
+**Deployment runtime**: override `apps/ritmo`'s Lovable-scaffolded nitro preset from its default
+(`cloudflare-module`, confirmed by reading `@lovable.dev/vite-tanstack-config`'s source and
+`apps/ritmo/vite.config.ts`'s own comment) to `node-server` via `nitro: { preset: "node-server" }`,
+deployed to a plain Node host (Railway recommended for operational simplicity/cost fit; Fly.io or
+Render are reasonable alternatives) — this override does not require ejecting from the Lovable
+scaffold.
+**Rationale:** Neon ships built-in connection pooling (directly relevant to avoiding connection storms
+in serverless/ephemeral environments), branch-per-environment support (a natural fit for the required
+staging environment), and works over both a plain TCP `pg`/node-postgres connection and an HTTP
+driver. The Node-runtime override exists because our actual server-only dependencies — the `openai`
+Node SDK, `pluggy-sdk`, Drizzle with a Postgres driver, Better Auth's Node adapter (DEC-089) — are not
+built for the Cloudflare Workers edge runtime the scaffold defaults to; forcing edge compatibility
+(Neon's WebSocket driver, auditing every SDK for Workers support) is real, avoidable risk for zero
+benefit at this stage, and the brief itself instructs against forcing an edge runtime when server
+dependencies are incompatible.
+**Status:** Accepted.
+**Consequences:** `packages/persistence` gains a second, node-postgres-based database adapter
+alongside the existing PGlite one (Sprint 9 Phase 1), environment-selected via DEC-087's
+`resolveAppEnvironment()`. Both vendor choices are reversible (neither Better Auth's data model nor
+Postgres itself is exotic) — this is a considered default for the first production deployment, not a
+permanent architectural commitment.
+
+---
+
+### DEC-091
+
+**Date:** 2026-09-11
+**Context:** `reconciliation_links` (`packages/persistence/src/schema.ts`) had no
+`financial_profile_id` column at all — a pre-existing, self-flagged gap
+(`docs/OPEN-FINANCE.md`, "Known provider limitations": "harmless with today's single demo profile;
+would need a migration before real multi-profile support"). `repo.listAllReconciliationLinks(db)`
+returned every profile's links to any caller; `reconcileProfile` (`packages/app-services/src/sync.ts`)
+used it to build its de-dup key set, reading every other profile's reconciliation data into a
+computation that should only ever see one profile's own data. Sprint 9's multi-user isolation work
+made this the first concrete fix, since reconciliation is explicitly named in the brief as an area
+that "must never compare/merge economic data across different users/profiles."
+**Decision:** Added `financial_profile_id` to `reconciliation_links` (migration
+`0007_curious_speedball.sql`, hand-edited after `drizzle-kit generate` produced a plain
+`NOT NULL` column add that would fail against any already-populated table: the real migration adds
+the column nullable, backfills it from each link's own `primary_transaction_id`'s
+`financial_transactions.financial_profile_id`, then sets `NOT NULL` and adds the FK — verified against
+a database with pre-migration rows inserted via raw SQL, not just a fresh empty database). Added
+`financialProfileId` to the domain `ReconciliationLink` type
+(`packages/financial-engine/src/domain/reconciliation.ts`), stamped from the matched transaction's own
+`financialProfileId` in both `findTransactionDuplicates` and `reconcileEventLineItems`. Folded it into
+`reconciliationLinkPairKey`'s content-identity key too, as defense in depth. Replaced
+`listAllReconciliationLinks` with `listReconciliationLinksForProfile(db, financialProfileId)`
+(profile-filtered) at all three call sites (`sync.ts`'s `reconcileProfile`, `persistence`'s `seed()`,
+and a test) — the unscoped function no longer exists anywhere in the codebase.
+**Rationale:** A pure schema/signature fix rather than a defense added only at a future API/route
+layer — the same principle as every other profile-scoped repository function already in this
+codebase, extended to the one table that had fallen through the cracks in Sprint 2.
+**Status:** Accepted.
+**Consequences:** New permanent regression coverage:
+`packages/financial-engine/src/domain/reconciliation.test.ts` (stamping),
+`packages/persistence/src/reconciliation-repository.test.ts` (round-trip + two-profile isolation —
+proves a second profile's links are never returned for the first). Any future reconciliation-adjacent
+function must take and filter by `financialProfileId` from here on; there is no longer an unscoped
+read path to reach for by accident.
+
+---
+
+### DEC-092
+
+**Date:** 2026-09-11
+**Context:** DEC-090 chose Neon Postgres for staging/production, alongside the existing PGlite
+database used for development/test. `packages/persistence/src/db.ts` exported a single
+`Database = PgliteDatabase<typeof schema>` type used as a parameter type across 12+ files in
+`app-services`; the migrator (`migrate.ts`) imported PGlite's own `drizzle-orm/pglite/migrator`,
+which is API-incompatible with a Postgres connection.
+**Decision:** `Database` is now driver-neutral: `PgDatabase<PgQueryResultHKT, typeof schema>` from
+`drizzle-orm/pg-core` — the shared base class both `PgliteDatabase`/`NodePgDatabase` extend, verified
+by direct assignability check before adopting it (both driver-specific database objects satisfy the
+neutral type; every repository function's `.select()`/`.insert()`/`.update()`/`.delete()` call is
+defined on the base class, unaffected by which concrete driver produced the instance). Two parallel,
+driver-specific pairs exist for the small "bootstrap" surface that Drizzle doesn't offer a neutral API
+for: `createDatabase`/`runMigrations` (PGlite) and `createPostgresDatabase`/`runPostgresMigrations`
+(node-postgres, a pooled `pg.Pool` with a modest `max: 10` — a single long-lived Node process per
+DEC-090's Node-runtime choice, not a serverless-per-request function that would risk a connection
+storm). `packages/app-services/src/db.ts`'s `initializeDb()` picks the pair via two new pure,
+independently-unit-tested predicates, `shouldUsePostgres(environment)` and
+`shouldSeedDatabase(environment)` (`db.test.ts`) — staging/production always take the Postgres branch
+and never seed; development/test always take the PGlite branch and always seed (idempotently, as
+before). Because these two environment sets are disjoint by construction, production can never
+accidentally boot against file-backed PGlite and can never accidentally seed Founder fixture data —
+not by a separate defensive check, but because no code path connects "production" to either PGlite or
+`seed()` at all.
+**Rationale:** A driver-neutral base type keeps the other ~99% of the codebase (every repository
+function, every app-service) completely unaware that two drivers exist — only the bootstrap surface
+(4 functions total) needs to know. This was verified empirically (a standalone assignability probe)
+before committing to it, rather than assumed from Drizzle's documentation alone.
+**Status:** Accepted.
+**Consequences:** The Postgres adapter is type-checked and unit-tested (driver selection logic) but
+has NOT been exercised against a real Postgres server — no Postgres instance exists in this
+environment. That exercise happens in Sprint 9 Phase 6 (staging validation) once a real Neon database
+exists; until then, `createPostgresDatabase`/`runPostgresMigrations` carry real but unverified-against-
+a-live-server risk, same as any new code path pending its first live run.
+
+---
+
+### DEC-093
+
+**Date:** 2026-09-11
+**Context:** Sprint 9 Phase 2's own research pass (three parallel audits of the auth/API surface,
+persistence layer, and app-services ownership boundaries) produced a confirmed, itemized IDOR
+inventory: `disconnectConnection` (no `financialProfileId` parameter AT ALL — any caller could delete
+another profile's entire connected-account data by guessed id, the single highest-severity finding),
+`syncConnection`/`refetchTransactionsByExternalId` (took `financialProfileId` but never checked the
+fetched connection actually belonged to it — cross-tenant data contamination, not just a read leak),
+`getLatestSyncRunForConnection`, `getRecommendationDetails`, `acceptRecommendation`/
+`modifyRecommendation`/`rejectRecommendation`, `markAlertSeen`/`dismissAlert`/`getAlertById`/
+`reevaluateAlertContext`, `getOrCreateConversation` (read+write access to another profile's entire
+chat history — the most serious conversation-layer gap), `appendMessage`/`listMessagesForConversation`,
+and concierge's `requireSession` (→ `reevaluateConciergePlan`/`saveConciergePlan`) — none of these
+took a resource id without either omitting `financialProfileId` entirely or fetching by id first and
+never checking the result's own stored profile matched the caller.
+**Decision:** Added `packages/app-services/src/ownership.ts`: one `ResourceNotFoundError` and one
+`assertOwnedByProfile(resource, financialProfileId, description)` helper, used everywhere a resource
+is fetched by bare id and then acted on. **Deliberately identical failure for "doesn't exist" and
+"exists but belongs to someone else"** — both throw the same error, same message shape (brief §18:
+"never leak whether another user's sensitive resource exists") — never a distinct "403 exists, not
+yours" signal. Two implementation patterns were used, chosen per call site: (1) push the check into
+the ONE canonical "fetch this resource type by id" function so every current and future caller is
+protected automatically (used for `getAlertById`, `getOrCreateConversation`,
+`listMessagesForConversation` — these had (or became, for conversations) a single choke-point
+function); (2) call `assertOwnedByProfile` directly at each mutation/read site where no single
+choke-point existed (`sync.ts`'s three connection functions, `recommendation-service.ts`'s
+`requireRecommendation`, `concierge-service.ts`'s `requireSession`). Every AI copilot tool
+(`tools.ts`) that calls one of these functions now passes `ctx.financialProfileId` — the
+orchestrator's own already-resolved, trusted value — never a client-supplied id.
+**Rationale:** A single shared error type/helper, used consistently, means the "never leak existence"
+property is enforced in exactly one place's design intent rather than re-derived correctly (or not) at
+every call site. Choosing between the two patterns per call site (rather than forcing one everywhere)
+matched each file's existing structure instead of a wide, riskier refactor.
+**Status:** Accepted.
+**Consequences:** A live bug was found WHILE fixing this (not before): `dismissAlert`'s and
+`markAlertSeen`'s internal calls to `requireAlert` had their `(financialProfileId, alertId)` arguments
+transposed during the first edit pass — caught immediately by the existing pre-Sprint-9 test suite
+(`notification-service.test.ts`, `orchestrator-alerts.test.ts` both failed with a
+`ResourceNotFoundError` for what should have succeeded), fixed before commit. This is direct evidence
+the existing test suite has real teeth, not just coverage theater. A second, more serious gap was
+found the same way while writing Phase 2's adversarial suite — see DEC-094.
+
+---
+
+### DEC-094
+
+**Date:** 2026-09-11
+**Context:** While writing Sprint 9's permanent two-profile adversarial regression suite
+(`packages/app-services/src/two-profile-isolation.test.ts`), a reconciliation-isolation test failed
+with a real cross-tenant read: `packages/persistence/src/repositories.ts`'s
+`loadFinancialSnapshotInput` — the single function `getFinancialSnapshot`, `getCategoryTotals`,
+`getUncategorizedTransactions`, `getReconciliationCandidates`, and `reconcileProfile` all load their
+data through — read `reconciliation_links` with `db.select().from(schema.reconciliationLinks)` and
+**no `WHERE` clause at all**, unlike every other query in the same function (all ten of which
+correctly filter by `financialProfileId`). This is a second, independent instance of the exact gap
+DEC-091 (Phase 1) already fixed at the `listReconciliationLinksForProfile`/`reconcileProfile` call
+site — DEC-091's own fix did not cover this second, separate unscoped read site inside
+`loadFinancialSnapshotInput` itself, which neither that fix's manual review nor its two-profile repo
+test happened to exercise (that test called the scoped list function directly, never
+`loadFinancialSnapshotInput`).
+**Decision:** Added `.where(eq(schema.reconciliationLinks.financialProfileId, financialProfileId))`
+to that query, matching every sibling query in the same `Promise.all`.
+**Rationale:** The real financial impact was likely low in practice (`excludedTransactionIds` matches
+by globally-unique transaction id, so a foreign profile's link couldn't wrongly exclude a real
+transaction from this profile's own spending sum) — but `FinancialSnapshotInput.reconciliationLinks`
+still handed every profile's link records (transaction ids, confidence, method) to any caller of five
+different app-services functions, a genuine read-scope violation regardless of today's specific
+downstream consumers happening not to misuse it.
+**Status:** Accepted.
+**Consequences:** This is the second time in one sprint a reconciliation-adjacent unscoped read was
+found only by writing an adversarial test that actually exercised the real code path, not by manual
+review of the schema/function signatures alone — the same lesson as DEC-064/DEC-075/DEC-082/DEC-093's
+"live phrasing/live behavior gap" pattern, here for cross-tenant data isolation specifically. Any
+future audit of `financial_profile_id`-scoped tables should grep for every raw `db.select().from(schema.X)`
+call on a profile-scoped table, not just the ones already known to be called `list*ForProfile`.
+
+---
+
+### DEC-095
+
+**Date:** 2026-09-11
+**Context:** `packages/persistence/src/auth-schema.ts` and `apps/ritmo/src/routes/api/auth/$.ts` both
+carried a code comment citing this decision number before the decision itself was ever written down —
+a gap surfaced by a later state-recovery audit (this session), not by the original implementation
+pass. Recorded now, retroactively, so the citation resolves to something real.
+**Decision:** Better Auth's identity-table schema (`user`, `session`, `account`, `verification` in
+`auth-schema.ts`) was derived directly from Better Auth 1.7.4's own `getSchema()` function
+(`better-auth/db`), called with this app's real config (email/password enabled) — not guessed from
+documentation or copied from an example. The API mount point follows Better Auth's official TanStack
+Start integration guide exactly: a single catch-all file route (`/api/auth/$`) with `GET`/`POST`
+handlers that call `auth.handler(request)`, no custom routing or method-specific logic layered on top.
+**Rationale:** Hand-guessing Better Auth's schema shape risks drifting from whatever fields/constraints
+a specific installed version actually expects (session token uniqueness, cascade rules, etc.); reading
+them from the library's own schema generator, against the exact config this app uses, removes that
+risk entirely. Following the official integration guide's exact mount shape (rather than a
+hand-rolled equivalent) means future Better Auth upgrades can be diffed against the guide, not against
+this app's own reinvention of it.
+**Status:** Accepted.
+**Consequences:** `auth-schema.ts`'s tables are owned by Better Auth — this codebase never writes to
+them directly except through `auth.api.*`. If a future Better Auth upgrade changes `getSchema()`'s
+output, `auth-schema.ts` must be regenerated the same way (re-run `getSchema()` against this app's
+config), not hand-edited to match a changelog description.
+
+---
+
+### DEC-096
+
+**Date:** 2026-09-11
+**Context:** Same retroactive gap as DEC-095 — `packages/persistence/src/repositories.ts`'s
+`provisionProfileForOwner` cited this decision number before it existed. `loadFinancialSnapshotInput`
+(the function every Ritmo screen's data ultimately flows through) hard-requires exactly one
+`FinancialGoal` per profile and throws otherwise — a pre-existing `financial-engine` invariant, not
+something Sprint 9 changes. A brand-new profile provisioned on first login has no goal a real user has
+ever stated.
+**Decision:** `provisionProfileForOwner` creates a minimal placeholder `FinancialGoal`
+(`monthlySavingsTargetCents: 0`) alongside the profile, but only the first time a given owner's profile
+is genuinely new (guarded by the same `onConflictDoNothing`/`.returning()` race-safe check used for the
+profile row itself).
+**Rationale:** A zero monthly-savings-target, honestly representing "no goal set yet," satisfies the
+existing invariant without fabricating an aspirational number the user never actually stated — the
+brief's explicit rule that a real user never receives fabricated financial data (§11) extends
+naturally to a brand-new user's very first data.
+**Status:** Accepted.
+**Consequences:** Phase 4's onboarding flow (not yet started — see PROJECT_STATE.md) is the natural
+place for a user to later set a real savings goal; until then, every new signup's Safe-to-Spend/goal
+UI honestly reflects "not set" rather than a made-up figure.
+
+---
+
+### DEC-097
+
+**Date:** 2026-09-11
+**Context:** Sprint 9 Phase 3 fix-up, following a state-recovery audit (this session) of Sprint 9's
+uncommitted work. `auth.server.ts`'s `betterAuth({...})` call passed neither `secret` nor `baseURL`.
+Reading Better Auth 1.7.4's own source (`dist/context/create-context.mjs`) showed the actual fallback
+behavior: with no `secret`, it uses `options.secret || env.BETTER_AUTH_SECRET || env.AUTH_SECRET ||
+"better-auth-secret-12345678901234567890"` — a fixed, publicly-known insecure default — and only
+refuses to start (`validateSecret`) when its own internal `isProduction` check trips, which is based on
+`NODE_ENV`, not this codebase's `APP_ENV`/`resolveAppEnvironment()`. Since this app treats `APP_ENV` as
+authoritative and defines a `staging` tier Better Auth has no concept of at all, a staging deployment
+with `NODE_ENV` unset or `"development"` could boot signing real user sessions with the well-known
+default secret, entirely undetected by Better Auth's own guard. `baseURL`, left unset, is silently
+derived per-request instead of failing loudly.
+**Decision:** Added `apps/ritmo/src/functions/auth-config.server.ts`: `resolveBetterAuthSecret(environment,
+env)` and `resolveBetterAuthBaseURL(environment, env)`, both pure and directly unit-tested
+(`auth-config.server.test.ts`). In staging/production, both call `@money-copilot/config`'s `requireEnv`
+for `BETTER_AUTH_SECRET`/`BETTER_AUTH_URL` — missing means the process refuses to start, full stop, no
+implicit fallback of any kind. In development/test, `BETTER_AUTH_SECRET` falls back to an explicit,
+named, checked-into-source constant (`DEV_ONLY_INSECURE_SECRET`) — never Better Auth's own hidden
+default — and `BETTER_AUTH_URL` stays optional. `auth.server.ts`'s `buildAuth()` now passes both
+explicitly into `betterAuth({...})`, which take priority over Better Auth's own env-var fallback.
+**Rationale:** Reuses the exact `requireEnv`/environment-tier pattern DEC-090/092 already established
+for `DATABASE_URL` (`packages/app-services/src/db.ts`) rather than inventing a second fail-closed
+mechanism — one place in this codebase decides "what's required in which tier," and Better Auth's own
+guard (real, but `NODE_ENV`-based and staging-blind) is treated as defense-in-depth, not the actual
+gate.
+**Status:** Accepted.
+**Consequences:** A staging/production `apps/ritmo` boot with either variable unset now fails
+immediately and loudly (`EnvironmentConfigError`) instead of silently signing sessions with a
+guessable, publicly-documented secret. No secret value is ever logged by this resolution path.
+
+---
+
+### DEC-098
+
+**Date:** 2026-09-11
+**Context:** Same Phase 3 fix-up. `auth.server.ts` had no `sendResetPassword` callback at all, which
+makes Better Auth's own `/request-password-reset` endpoint throw `RESET_PASSWORD_DISABLED`
+server-side, on every single call. Reading Better Auth's route source
+(`dist/api/routes/password.mjs`) showed that error never reaches the client: it's passed through
+`ctx.context.runInBackgroundOrAwait`, which (with no `advanced.backgroundTasks.handler` configured,
+which this app doesn't configure) `await`s the callback inside a `try/catch` that only logs, never
+rethrows. The endpoint therefore always returned `{status: true}` regardless, and
+`recuperar-senha.tsx` always rendered "Verifique seu e-mail" — a fake success on every request, not
+merely when delivery happens to fail. No transactional-email provider (Resend, SES, Postmark, SMTP, or
+otherwise) has ever been configured anywhere in this codebase.
+**Decision:** Added `apps/ritmo/src/functions/email.server.ts` as the product-owned transactional-email
+boundary: `isTransactionalEmailConfigured()` (currently always `false` — reads a
+`TRANSACTIONAL_EMAIL_PROVIDER` env var that nothing sets yet), `isPasswordResetAvailable(environment)`
+(true in development/test unconditionally; true in staging/production only once a provider is
+configured), and `sendPasswordResetEmail` (development/test: logs the real reset URL server-side only,
+an honest stand-in for manual/automated testing, never a pretense that an email was sent;
+staging/production: throws `PasswordResetUnavailableError` when unconfigured). Because Better Auth
+swallows that throw (see above), it is NOT the enforcement point — `isPasswordResetAvailable` is.
+`recuperar-senha.tsx`'s route `loader` now calls `checkPasswordResetAvailability()`
+(`password-reset.ts`/`password-reset.server.ts`) BEFORE the form ever renders; when unavailable, the
+page shows an honest "temporarily unavailable" state instead of collecting an email address for a flow
+that cannot deliver anything — this is a global, environment-level flag, identical for every visitor,
+so it leaks nothing about any individual account (the existing "always show the same confirmation"
+anti-enumeration behavior inside the form itself is unchanged).
+**Rationale:** The brief's own instruction was not to hardcode a specific vendor absent one already
+being configured, and none is — inventing a vendor choice here would be a bigger, unreviewed decision
+than a fix-up should make unilaterally. A clean boundary that fails closed in staging/production and
+degrades honestly (not silently) in development/test satisfies "no fake success" without forcing that
+choice prematurely.
+**Status:** Accepted.
+**Consequences:** **A real transactional-email provider is still required before password recovery can
+work in staging/production** — this is an explicit, tracked gap, not an oversight papered over by this
+fix-up. Wiring one in is: implement `isTransactionalEmailConfigured`'s real check and
+`sendPasswordResetEmail`'s production branch in `email.server.ts`, set `TRANSACTIONAL_EMAIL_PROVIDER`,
+document the new required env var(s) in `.env.example` — no other file changes.
+
+---
+
+### DEC-099
+
+**Date:** 2026-09-11
+**Context:** DEC-090 decided `apps/ritmo` should build for a plain Node runtime (`node-server`), not
+the Lovable scaffold's default Cloudflare Workers target — but the actual override was never applied
+to `vite.config.ts`. A state-recovery audit (this session) caught the gap by actually running the
+production build and observing it still emit `wrangler.json`/a Cloudflare Worker config, contradicting
+the documented decision.
+**Decision:** Added `nitro: { preset: "node-server" }` to `apps/ritmo/vite.config.ts`'s
+`defineConfig({...})` call — the officially-supported override surface
+`@lovable.dev/vite-tanstack-config` exposes for exactly this (confirmed by reading its own
+`LovableViteTanstackOptions` type, which documents `nitro.preset` as forwarded directly to `nitro/vite`
+and explicitly designed for hard-pinning a deploy target). No ejection from the Lovable scaffold was
+needed.
+**Rationale:** Using the scaffold's own documented extension point keeps every other Lovable-provided
+plugin/behavior (TanStack devtools, `VITE_*` injection, sandbox detection, etc.) intact and upgradable,
+versus forking `vite.config.ts` away from `defineConfig` entirely.
+**Status:** Accepted.
+**Consequences:** A clean production build now emits `.output/server/index.mjs` (a plain Node ESM
+entry) instead of Cloudflare Worker output, started with `node ./server/index.mjs` (per the build's own
+generated `.output/nitro.json`, `commands.preview`) — deployable to Railway or any other plain Node
+host, matching DEC-090. That option's own doc comment notes the override applies only OUTSIDE a
+Lovable-sandboxed build (`LOVABLE_NITRO_PRESET` pins Cloudflare inside that specific sandbox) — this
+codebase's own production/CI builds never set that variable, so it doesn't apply here.
+
+---
+
+### DEC-100
+
+**Date:** 2026-09-11
+**Context:** Same state-recovery audit flagged that `apps/ritmo/scripts/check-client-bundle.mjs`
+(Sprint 8, DEC-08x) still only checked for `OPENAI_API_KEY`/`PLUGGY_CLIENT_SECRET` and three package
+names (`@electric-sql/pglite`, `pluggy-sdk`, `openai`) — never extended for Sprint 9's new server-only
+surface (Postgres driver, Better Auth's server-only entry points, `BETTER_AUTH_SECRET`, `DATABASE_URL`).
+It happened to still pass, which is not the same as actually covering that surface.
+**Decision:** Extended the script (still zero-dependency, plain Node) with: real secret VALUE checks
+(when locally configured) for `BETTER_AUTH_SECRET`, `DATABASE_URL`, and `BETTER_AUTH_URL`; a literal
+forbidden-name check for `DATABASE_URL`; precise server-only package/entry-point markers —
+`pg-connection-string`/`pg-protocol` (node-postgres's own sub-dependencies, not the bare string `"pg"`,
+which is far too generic and would false-positive constantly), `drizzle-orm/node-postgres`, and
+`better-auth/adapters/drizzle`/`better-auth/tanstack-start`; and a generic pass over any local
+`.env`/`.env.local` file's actual key/value pairs (skipping `VITE_`-prefixed keys, which this app's Vite
+config deliberately inlines into the client bundle on purpose, and values under 12 characters, which
+are ordinary tokens like `"true"` rather than meaningful secrets to search for). Deliberately did
+**not** add a bare literal-name check for `BETTER_AUTH_SECRET`/`BETTER_AUTH_URL`: running the extended
+scanner against a real build surfaced that `better-auth/react`'s own official client bundle legitimately
+enumerates both names itself (a generic cross-runtime env-getter helper it ships with) — checking for
+the bare name would be a permanent false positive against a real, client-safe dependency, not a
+finding; the real VALUE checks for both remain in place.
+**Rationale:** Verified empirically, not assumed: an earlier draft that checked `BETTER_AUTH_SECRET`'s
+bare name and every `.env.local` value regardless of length was run against a real build first, and
+both produced concrete false positives (`better-auth/react`'s own bundle; the literal boolean value of
+a local `DEV_AUTH_BYPASS=true`) — both were narrowed before being kept, rather than shipping a scanner
+whose first real signal would have been ignored as noise.
+**Status:** Accepted.
+**Consequences:** `check-client-bundle.test.ts` (new) locks in both the precision (real client-safe
+Better Auth imports must never be flagged) and the coverage (the new markers/checks fire on synthetic
+server-only content) as permanent regression coverage, run under `apps/ritmo`'s normal `pnpm run test`.
+
+---
+
+### DEC-101
+
+**Date:** 2026-09-11
+**Context:** Sprint 9 Phase 4 (onboarding + Bank Connection product experience) needs a real,
+authenticated, ownership-safe way for `apps/ritmo` to drive the existing Pluggy Connect flow
+(`createConnectToken`/`completeConnection`/`disconnectConnection`/`getConnections`/
+`getLatestSyncRunForConnection`, all pre-existing since Sprint 3–7 — see docs/OPEN-FINANCE.md). No
+Ritmo server function previously called any of this.
+**Decision:** Added `apps/ritmo/src/functions/connections.server.ts` (server-only logic) +
+`connections.ts` (thin `createServerFn` wrappers), following the exact `assistente.server.ts`/
+`assistente.ts` split already established in Phase 3/Sprint 8. Every exported handler
+(`getConnectionScreenDataHandler`, `startBankConnectionHandler`, `finishBankConnectionHandler`,
+`checkSyncProgressHandler`, `removeBankConnectionHandler`) resolves `financialProfileId` itself via
+`getCurrentProfileContext()` and takes no `financialProfileId` parameter at all — structurally
+impossible for a caller to supply one. `toConnectionSummary` collapses the richer
+`ProviderConnectionStatus` (`PENDING`/`CONNECTED`/`SYNCING`/`LOGIN_ERROR`/`USER_ACTION_REQUIRED`/
+`ERROR`/`DISCONNECTED`) into three product-facing health states (`OK`/`SYNCING`/`NEEDS_ATTENTION`/
+`PENDING`) — the UI layer never sees a `ProviderConnection` id described as such, an "Item," a
+`clientUserId`, or a raw provider status string (brief §4). `RECONNECT_STATUSES` (which statuses map
+to `NEEDS_ATTENTION`) is copied verbatim from `apps/web`'s existing `ConnectedAccountsPanel` (Sprint 7,
+DEC-080) — the same product decision, not a new one. Reconnecting reuses the exact same
+`startBankConnectionHandler`/`finishBankConnectionHandler` pair as a first connection, relabeled
+"Reconectar" in the UI — `completeConnection`'s own (profile, provider, externalConnectionId)
+idempotency (DEC-023) is what prevents a duplicate `ProviderConnection`, not new logic here.
+**Rationale:** No second connection architecture — every actual Pluggy interaction still flows through
+the Sprint 3–7 functions, live-validated against the real sandbox in Sprint 4.5. This file only adds
+the authentication/ownership seam and a UI-safe vocabulary on top.
+**Status:** Accepted.
+**Consequences:** `connections.server.test.ts` (new) is a permanent adversarial suite in the same
+real-Better-Auth-session style as `security.adversarial.test.ts` — independent signed-up users, a
+`MockProvider` registered under the real `"pluggy"` provider name (via `registerProvider`, not a
+separate mock-only path), proving: a new user's onboarding state never includes another user's
+connection; a repeated `finishBankConnectionHandler` call for the same external id never creates a
+duplicate; and a connection can only ever be disconnected by its own owner.
+
+---
+
+### DEC-102
+
+**Date:** 2026-09-11
+**Context:** Sprint 9 Phase 4 needed concrete answers to three product questions the brief left to
+this implementation to decide deliberately: (1) how does a new user get routed into onboarding — brief
+§8 explicitly forbids a client-only flag as that source of truth; (2) does "skip for now" exist — brief
+§9 explicitly allows requiring connection instead; (3) how is a mid-session session-expiry (SESSION_
+EXPIRED, brief §J) detected and shown, given the brief explicitly forbids relying on client-side-only
+expiry handling.
+**Decision:**
+1. **Routing.** `apps/ritmo/src/routes/_protected/index.tsx` (Home) gained a `beforeLoad` that calls
+   the SAME `getConnectionScreenData()` (DEC-101) the Bank Connection screen uses, and redirects to
+   `/onboarding` when `hasAnyConnection` is `false` — a real, server-resolved read on every Home
+   navigation, never a flag written once at signup. A connection that merely *needs attention*
+   (`NEEDS_ATTENTION`) does NOT block Home — the existing alert/notification system
+   (docs/ALERTS-NOTIFICATIONS.md) already surfaces that, and `/mais` (or a future Home affordance)
+   routes to `/conectar-banco` to act on it.
+2. **No skip in V1.** `/onboarding` (`onboarding.tsx`) offers exactly one action: "Conectar meu banco."
+   Every other Ritmo screen (Home, Insights, Planejamento) is built assuming real connected-account
+   data; a genuinely honest zero-data empty-state experience across all of them (brief §9's own
+   condition for allowing skip: "the user must enter a real empty-data product state," never Founder
+   fixture data) is real, separate, cross-cutting work this sprint did not scope — see brief §9's own
+   "acceptable to require connection" allowance.
+3. **Session-expired.** `getCurrentProfileContext()`'s `UnauthenticatedError` (Phase 3) is now the
+   single signal two independent layers both react to, without either importing the other's
+   server-only module (the exact bug class Phase 3 fixed): `apps/ritmo/src/lib/auth-error.ts`'s
+   `isAuthExpiredError(error)` checks only `error.name`/`error.message` — verified against
+   `@tanstack/start-server-core`'s actual server-function error path
+   (`server-functions-handler.ts`: any thrown non-Response/non-redirect/non-notFound error is
+   serialized via `seroval`'s `toCrossJSONAsync`, which preserves `name`/`message` across the
+   client/server boundary — confirmed by reading that source directly, not assumed). Two call sites:
+   `__root.tsx`'s root `errorComponent` (catches a LOADER throwing this, e.g. Home's/`conectar-banco`'s
+   own loaders) renders `SessionExpiredScreen` directly, replacing the entire failed route's subtree;
+   every imperative handler in `conectar-banco.tsx` (button clicks, the sync-progress poll) also checks
+   `isAuthExpiredError` in its own `catch` and navigates to `/sessao-expirada` — because `_protected.tsx`'s
+   `beforeLoad` only re-runs on navigation, an imperative call made without a fresh navigation (e.g. a
+   poll firing after the session has since expired) would otherwise surface as an unhandled rejection
+   with no clean UI response.
+**Rationale:** All three follow the same principle already established in Phase 2/3: the real
+enforcement/decision point is server state checked on every relevant action, with the UI layer
+reacting to it — never a separate client-side source of truth that can drift from what the server
+actually knows.
+**Status:** Accepted.
+**Consequences:** A user who disconnects their only connection is not automatically sent back to
+`/onboarding` mid-session (only Home's own `beforeLoad`, i.e. the next navigation to `/`, re-evaluates
+this) — acceptable for V1, revisit if it proves confusing. Skip/empty-state product work remains
+explicitly open for a future sprint, not silently dropped.
+
+---
+
+### DEC-103
+
+**Date:** 2026-09-11
+**Context:** While live-validating Phase 4 against `apps/ritmo`'s production (`node-server`, DEC-099)
+build, `node .output/server/index.mjs` crashed on its very first request — `TypeError: (void 0) is not
+a function` inside the bundled `auth.server` chunk, at a `.map()` call reached during Better Auth's own
+module-level initialization. Root cause: `better-auth@1.7.4` and `@better-auth/core@1.7.4` both declare
+`"zod": "^4.5.4"` in their own `package.json`, but `apps/ritmo`'s own direct dependency was pinned to
+`"zod": "^3.25.76"` (unchanged since before Sprint 9) — pnpm's workspace resolution gave Better Auth's
+bundled code zod 3.x at runtime, whose `z.email()`/`z.toJSONSchema` (zod v4-only top-level APIs Better
+Auth's schema definitions call directly) are `undefined`. This had been silently present since Phase 3
+— `vite build` printed `[IMPORT_IS_UNDEFINED]` warnings for exactly these calls (noted, but assessed as
+build-time-only noise in the Phase 3 report) but never actually crashed under `vite dev`, which resolves
+modules differently than a bundled production build. It reliably crashed every request once actually
+run as `node .output/server/index.mjs` — i.e., **DEC-099's own node-server build target did not
+actually work at runtime until this fix**, independent of anything Phase 4 itself added.
+**Decision:** Upgraded `apps/ritmo`'s own `zod` dependency from `^3.25.76` to `^4.5.4` — matching what
+`packages/app-services` (a dependency already in the same graph) already uses, and what Better Auth
+itself requires. Verified every existing Ritmo zod schema (`assistente.server.ts`'s `sendMessageInput`,
+this sprint's `finishConnectionInput`/`checkSyncProgressInput`/`removeConnectionInput`) uses only the
+basic `z.object({...: z.string()...})` surface, unchanged between v3 and v4.
+**Rationale:** A single dependency version bump, not a Better Auth downgrade or a zod shim — the
+version actually installed should match what the library the whole auth stack depends on declares,
+rather than carrying a stale pin from before Better Auth was introduced.
+**Status:** Accepted.
+**Consequences:** A rebuilt production bundle no longer prints any `IMPORT_IS_UNDEFINED` warnings for
+zod, and `node .output/server/index.mjs` now serves real sign-up/session requests successfully (verified
+live). Separately, and NOT fixed by this change: running that same built server against file-backed
+PGlite fails with `Can't find meta/_journal.json` — the migration SQL files aren't copied into
+`.output`'s bundled directory layout. This is a pre-existing, PGlite-in-a-bundled-server packaging gap
+that does not affect real staging/production (which always uses `createPostgresDatabase`/
+`runPostgresMigrations` via `shouldUsePostgres`, DEC-090/092, never the PGlite migrator) — left for
+Phase 6 (staging validation) to address if a bundled-server-plus-PGlite combination is ever actually
+needed, which it currently is not.
+
+---
+
+### DEC-104
+
+**Date:** 2026-09-11
+**Context:** Phase 4 was visually approved, but the Founder's own local browser was landing on
+`/onboarding` immediately, without ever reaching `/login` — reported as a functional bug to fix before
+Phase 5. Root cause, traced (not guessed) through `session.server.ts`/`profile.server.ts`: 
+`apps/ritmo/.env.local` (the Founder's own local dev env file, gitignored, pre-dating this fix-up) had
+`DEV_AUTH_BYPASS=true`. Both `checkAuthenticatedHandler` (the `_protected.tsx` `beforeLoad` UX check)
+and `getCurrentProfileContext()` (the real security boundary) contain a dev-bypass branch that, when
+that flag is `"true"` and the resolved environment isn't `production`, skips the real Better Auth
+session check entirely — `checkAuthenticatedHandler` always returned `{authenticated: true}`, so
+`_protected.tsx` never redirected to `/login`; `getCurrentProfileContext()` always returned
+`DEMO_PROFILE_ID` (the Founder/demo fixture profile), which has real fixture transactions but zero
+`ProviderConnection` rows — so Home's own `beforeLoad` (Phase 4, DEC-102) correctly saw "no connection"
+for that profile and redirected to `/onboarding`. **Both redirects were individually correct given
+their inputs** — the bug was that `DEV_AUTH_BYPASS=true` fed the auth check a false "yes" before
+onboarding's own (correct) logic ever ran. A second, latent gap found in the same audit: the bypass
+condition was `resolveAppEnvironment() !== "production"`, which would ALSO have activated in a
+`staging` environment — never actually triggered, but a real gap against "impossible in
+staging/production."
+**Decision:**
+1. Set `apps/ritmo/.env.local`'s `DEV_AUTH_BYPASS` to `false` — the normal local product experience
+   now exercises real Better Auth by default, as it always should have.
+2. Documented `DEV_AUTH_BYPASS` in `.env.example` for the first time (it had never been documented
+   there at all) — explicit warning against defaulting it on, explaining exactly what it skips.
+3. Tightened the bypass condition in both `session.server.ts` and `profile.server.ts` from
+   `resolveAppEnvironment() !== "production"` to an explicit `environment === "development" ||
+   environment === "test"` allow-list (`isDevOrTestEnvironment()`, duplicated identically in both
+   files rather than factored into `@money-copilot/config`, which stays generic/domain-agnostic per
+   DEC-087) — closing the staging loophole. `assertDevOnlyFlagNotInProduction`'s own production-only
+   guard is unchanged and remains a second, independent layer.
+4. Added `apps/ritmo/src/functions/dev-seed.server.ts`: `ensureDevTestUserHandler()`, a
+   development/test-only, idempotent provisioning function for a real login
+   (`teste@ritmo.local`/`RitmoTeste123!`) — calls Better Auth's REAL `auth.api.signUpEmail`, catching
+   only the specific `USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL` error as the idempotent "already
+   provisioned" case (verified against `better-call`'s actual `APIError` shape, not guessed). Refuses
+   outside development/test by resolving `resolveAppEnvironment()` itself, the same pattern as every
+   other Sprint 9 fail-closed check. Its `FinancialProfile` is provisioned lazily on first real login,
+   through the exact same `resolveOrProvisionProfileForOwner` path every real user goes through — no
+   special-cased empty-profile logic exists for this account; it's empty because every brand-new
+   profile is. A dev-only route (`GET /api/dev-seed`) triggers it, mirroring `/api/auth/$`'s existing
+   server-route pattern.
+**Rationale:** The fix is at the actual fault line (a bypass flag defaulting on locally, and its
+condition being broader than intended) rather than a new redirect papering over the symptom — per
+the explicit instruction not to hide the problem. The dev-seed mechanism uses Better Auth's real
+password/session mechanism throughout (no fake authentication anywhere), satisfying "use the existing
+real /login screen" while still being fully scriptable/repeatable for local testing.
+**Status:** Accepted.
+**Consequences:** New permanent regression coverage: `dev-seed.server.test.ts` (idempotency; refusal
+in staging AND production specifically; the provisioned account's profile is real-Better-Auth-backed
+and starts genuinely empty — zero connections, `UNKNOWN` coverage; the bypass-unset default and the
+staging-exclusion fix both exercise real Better Auth) plus one new test in
+`security.adversarial.test.ts` proving `auth.api.signOut` really ends a session
+(`checkAuthenticatedHandler` reports unauthenticated again, `getCurrentProfileContext` throws
+`UnauthenticatedError` again). Live-verified end to end against the real dev server: clean
+unauthenticated → `/login`; `/onboarding` and `/conectar-banco` both refuse an unauthenticated request
+(redirect to `/login`, no private content rendered first); the real test login → `/onboarding` (zero
+connections) → `/conectar-banco` reachable; real `auth.api.signOut` → `/`, `/onboarding`, and
+`/conectar-banco` all redirect to `/login` again.
+
+---
+
+### DEC-105
+
+**Date:** 2026-09-11
+**Context:** Sprint 9 Phase 5 (production hardening) requires rate limiting for AI and Open Finance
+action abuse. No Redis/external infrastructure is provisioned this phase (brief §3/§24), and the
+brief explicitly forbids scattering ad-hoc timers/counters across route files.
+**Decision:** Added `apps/ritmo/src/functions/rate-limit.server.ts`: a single, policy-driven,
+in-memory `checkRateLimit(key, policy, now?)` — one exported `RATE_LIMIT_POLICIES` object (AI
+burst/sustained, Open Finance action/poll, webhook) is the one place these numbers live. Keys are
+always a stable internal identifier (`financialProfileId`), never an email/IP/raw PII. `now` is
+injectable for deterministic tests. A one-time `console.warn` fires in staging/production noting the
+storage is process-local — **explicitly not a distributed guarantee**: multiple instances would each
+enforce independent counters. Auth endpoint abuse (sign-in/sign-up/password-reset) deliberately does
+NOT go through this — see DEC-108.
+**Rationale:** A single, testable abstraction (rather than per-call-site counters) makes the
+"process-local, not distributed" caveat something documented and warned about exactly once, and makes
+every policy visible/tunable in one place, per the brief's own requirements.
+**Status:** Accepted.
+**Consequences:** `rate-limit.server.test.ts` proves allow/deny/window-reset/per-key-isolation/
+determinism. Before scaling `apps/ritmo` beyond one instance, this needs a shared backend (Better
+Auth already supports a "secondary storage" option for its own limiter — one candidate, not decided
+here since that's an infrastructure decision out of this phase's scope).
+
+---
+
+### DEC-106
+
+**Date:** 2026-09-11
+**Context:** Sprint 9 Phase 5 requires a structured logging boundary that's safe by default — the
+brief lists a long, specific set of things that must never be logged (passwords, session tokens,
+cookies, every secret name in `.env.example`, connect tokens, reset-password tokens, raw financial
+payloads, arbitrary prompt content).
+**Decision:** Added `apps/ritmo/src/functions/logger.server.ts`: `logger.debug/info/warn/error/audit`,
+each emitting one structured JSON line (`timestamp`, `environment`, `severity`, `event`, plus caller
+fields) to stdout/stderr. Two independent redaction layers, both automatic — callers don't opt in:
+(1) any field NAME matching a sensitive pattern (`password|secret|token|cookie|authorization|api[_-]
+?key|connect[_-]?token|session`, case-insensitive) is redacted wholesale, recursively through nested
+objects/arrays; (2) any string VALUE matching a known secret shape (an OpenAI-style key, a Better Auth
+session cookie fragment) is redacted even under an innocuous field name. A field merely named
+`"tokens"` (plural) is redacted wholesale rather than recursed into — a deliberately safer default,
+not a bug (see the test that pins this down). `logger.audit(...)` is the same shape with
+`severity: "audit"` — see DEC-101's connection-lifecycle calls and DEC-105's rate-limit-denial calls
+for real usage.
+**Rationale:** Safe-by-default redaction (name AND shape based) means a future caller doesn't have to
+remember to redact anything themselves to stay safe — the boundary does it either way.
+**Status:** Accepted.
+**Consequences:** Audit events currently land in the same stdout/stderr stream as everything else,
+distinguished only by `severity: "audit"` — real hosting platforms (Railway included) capture and
+retain process output. Routing audit events to separate, longer-retention persistent storage is an
+explicit Phase 6 concern (brief §13: "do not provision external log infrastructure" here), not a gap
+introduced by this choice. `logger.server.test.ts` proves the redaction rules directly.
+
+---
+
+### DEC-107
+
+**Date:** 2026-09-11
+**Context:** Sprint 9 Phase 5's own review of Phase 3's `email.server.ts` found that a real,
+usable password-reset URL (a live secret — anyone who reads it can reset that account's password) was
+written to ordinary `console.log` output in development/test (DEC-098's original implementation).
+Automated tests (and manual local testing) still need a way to observe reset-link generation without a
+real mailbox.
+**Decision:** Replaced the `console.log` call with an in-memory capture
+(`getLastDevPasswordResetEmail()`/`resetDevPasswordResetCapture()`, development/test only) holding the
+most recent `{to, url, capturedAt}`. A safe, tokenless confirmation (`logger.info("dev_password_reset_
+captured", { environment })`) is logged instead — the event name and environment, never the URL.
+**Rationale:** The capability (prove reset-link generation without a real mailbox) is preserved
+exactly; only the "where does the secret briefly live" answer changes — in-memory, accessible to the
+same process's own tests, never written to any log stream.
+**Status:** Accepted.
+**Consequences:** `email.server.test.ts` was updated to assert against the capture instead of a
+`console.log` spy, and additionally asserts the literal token/URL never appears in ANY log call made
+during the test — a permanent regression proof, not just a behavior change.
+
+---
+
+### DEC-108
+
+**Date:** 2026-09-11
+**Context:** Sprint 9 Phase 5 requires auth endpoint abuse protection (sign-in/sign-up/password-reset)
+that slows brute force/credential stuffing and prevents reset-email flooding, without revealing
+whether an account exists. The brief explicitly instructs reviewing Better Auth's own installed
+capabilities before building duplicate logic.
+**Decision:** Reading Better Auth 1.7.4's own source (`dist/api/rate-limiter/index.mjs`) found it
+already ships a complete, undocumented-by-us-but-real built-in rate limiter with sane default rules
+specifically for `/sign-in*`, `/sign-up*`, `/change-password*`, `/change-email*` (10s window, max 3)
+and `/request-password-reset`/`/forget-password*` (60s window, max 3) — keyed by client IP via
+`getIP`, never by email, so a 429 fires identically for a real or fake account. Its own default is
+`enabled` only in `production`; `auth.server.ts` now passes `rateLimit: { enabled:
+shouldEnableAuthRateLimit(environment), storage: "memory" }`, extending that to `staging` too (this
+app treats both tiers as equally sensitive) while leaving development/test unthrottled (so the
+existing adversarial suites' many rapid sign-ups are unaffected).
+**Rationale:** Using Better Auth's own mechanism (rather than wrapping its endpoints with a second,
+app-level limiter) means the existing anti-enumeration guarantee (identical response shape regardless
+of account existence) is preserved automatically — it was already built with that property, verified
+by reading the source rather than assumed.
+**Status:** Accepted.
+**Consequences:** **Live-verified, not just configured**: `auth-rate-limit.server.test.ts` constructs a
+real Better Auth instance with the limiter forced on and drives 6 rapid sign-in attempts through
+`auth.handler(request)` (the real HTTP entry point) — a 429 reliably appears. A real, load-bearing
+finding from writing this test: **the rate-limit check only fires for requests through
+`auth.handler(request)` — NOT for direct `auth.api.signInEmail(...)` calls**, which bypass that
+router-level `onRequest` hook entirely (an earlier draft of the test called the API directly and never
+observed a 429 across 6 attempts). This does not weaken the real app (its actual entry point,
+`/api/auth/$`, always uses `auth.handler(request)`) but does mean every existing adversarial test file
+using `auth.api.*` directly is correctly unaffected by rate limiting even when enabled. `IP`-based
+keying also means: with no real IP resolvable (no request headers at all, as in a direct API call),
+Better Auth logs a one-time warning and falls back to a single shared bucket across all callers for
+that path — worth knowing if a future test suite's own auth calls ever seem unexpectedly cross-
+contaminated. `trustedOrigins`/CORS: audited, not touched — Better Auth trusts only `baseURL`'s own
+origin by default for both CSRF origin-checking and callback/redirect validation, which is exactly
+what a same-origin-only app (no OAuth, no cross-origin redirect needs) wants; `baseURL` is already
+`requireEnv`-validated in staging/production (DEC-097), so trusted origins already come from validated
+environment config with no wildcard — explicit `trustedOrigins` config would be redundant, not
+additive. CSRF: Better Auth's own origin-check middleware (confirmed live in Phase 3/4 testing — a
+POST without a matching `Origin` header returns 403 "Missing or null Origin") is the real CSRF
+boundary for every state-changing browser operation; no custom token/crypto was added or is needed.
+Provider webhooks (DEC-111) are correctly NOT subject to this — a webhook is a server-to-server
+callback, not a browser flow, and Better Auth's origin-check is not mounted on that route.
+
+---
+
+### DEC-109
+
+**Date:** 2026-09-11
+**Context:** Sprint 9 Phase 5's AI cost-protection review found `OpenAIProvider.generate` called
+`responses.create()` with no `max_output_tokens` at all — a single copilot turn had no ceiling on
+OpenAI-side cost/latency.
+**Decision:** Added `DEFAULT_MAX_OUTPUT_TOKENS = 2000` to `packages/ai/src/model-config.ts` (alongside
+the existing `DEFAULT_OPENAI_MODEL`, the established single home for model-tuning constants) and an
+optional `maxOutputTokens` constructor option on `OpenAIProvider`, defaulting to that constant and
+passed through to every `responses.create()` call.
+**Rationale:** Generous enough for a real financial-assistant answer (docs/AI-COPILOT.md's own scope —
+a few paragraphs plus tool calls) while giving every single request a hard ceiling; centrally defined
+rather than a magic number inline, matching this file's existing convention for `DEFAULT_OPENAI_MODEL`.
+**Status:** Accepted.
+**Consequences:** This is a shared `@money-copilot/ai` package change — `apps/web`'s own AI usage
+inherits the same ceiling. No existing test asserted the exact `responses.create()` call shape, so
+this required no test updates; `packages/ai`'s suite still passes unmodified.
+
+---
+
+### DEC-110
+
+**Date:** 2026-09-11
+**Context:** Sprint 9 Phase 5 requires centralized production HTTP security headers (CSP, clickjacking
+protection, MIME-sniffing protection, referrer policy, permissions policy, HSTS) without breaking
+React/TanStack's own runtime, Better Auth, or the Pluggy Connect widget.
+**Decision:** Added `apps/ritmo/src/functions/security-headers.server.ts`'s `applySecurityHeaders
+(response, environment?)`, wired into `server.ts`'s existing response wrapper (the one place every
+single response — SSR pages, server functions, API routes — already passes through) rather than
+per-route. Skipped entirely in `development` (Vite's HMR client needs an inline-script-friendly,
+websocket-connecting environment a strict CSP would break; dev is local-only, not the security
+boundary this protects). Applied in `test`/`staging`/`production`. External CSP origins
+(`fonts.googleapis.com`/`fonts.gstatic.com`, `connect.pluggy.ai`) were derived from the app's REAL
+integrations — `__root.tsx`'s own `<link>` tags and `pluggy-connect-sdk`'s bundled source
+respectively, both confirmed by reading them directly, not guessed. No wildcard anywhere in the policy.
+**Rationale — a known, deliberate gap, not pretended to be solved:** `script-src` includes
+`'unsafe-inline'`. TanStack Start's own SSR shell emits required inline bootstrap/hydration
+`<script>` tags (confirmed in real rendered output — the `$tsr-stream-barrier` script and scroll-
+restoration script observed during Phase 3/4 live testing); a strict `script-src 'self'` without it
+would break hydration on every single page. A nonce-based CSP (a per-request nonce threaded into
+TanStack Start's own inline scripts) would close this gap but requires deeper customization of its
+document-shell rendering than this phase's scope — a real, explicitly tracked follow-up. The policy
+still meaningfully restricts `frame-ancestors` (clickjacking), `object-src`, `base-uri`, and which
+external origins scripts/styles/connections/frames can reach.
+**Status:** Accepted.
+**Consequences:** `security-headers.server.test.ts` proves the dev no-op, the production/staging
+header set, HSTS gating, and that the original response status/body pass through unchanged.
+
+---
+
+### DEC-111
+
+**Date:** 2026-09-11
+**Context:** Sprint 9 Phase 5's webhook-integrity re-audit (brief §10) found `apps/ritmo` had NO
+webhook receiver at all — only `apps/web` (`/api/webhook`, Sprint 3/4.5) did. Since `apps/ritmo` is now
+the real product (Sprint 8/9) and `apps/web` is scheduled for retirement (DEC-088), this is a real gap,
+not just a documentation one.
+**Decision:** Added `apps/ritmo/src/functions/webhook.server.ts` + `routes/api/webhook.ts` — the SAME
+`handleWebhookEvent` (`@money-copilot/app-services`, unmodified) `apps/web`'s route already calls, the
+SAME shared-secret-in-URL authenticity scheme (`PLUGGY_WEBHOOK_SECRET` as a `?secret=` query param —
+Pluggy documents no payload-signature mechanism for this integration, confirmed, not assumed — see
+docs/OPEN-FINANCE.md "Webhook security"), plus two things `apps/web`'s route didn't have: a generous
+provider-callback rate-limit ceiling (`RATE_LIMIT_POLICIES.webhook`, DEC-105) and a redacted error
+response (the real error goes to `console.error`/`logger.error` server-side only; the client/caller —
+Pluggy itself — gets a generic `"Webhook processing failed"` string, never the raw message).
+**Rationale:** No new webhook architecture — `handleWebhookEvent`'s idempotency (claimed by Pluggy's
+own `eventId`), "never trust the payload, always re-fetch canonical data" rule, and ownership
+resolution (`recoverOrphanedConnection` validates `clientUserId` against a real known
+`FinancialProfile`) all already satisfy the brief's integrity requirements — confirmed by re-reading
+that function, not rewritten. This route is deliberately NOT behind Better Auth's origin-check/CSRF
+middleware (brief §9: "do not accidentally apply browser CSRF assumptions to Pluggy webhooks") — it's
+a server-to-server callback, not a browser flow.
+**Status:** Accepted.
+**Consequences:** `webhook.server.test.ts` proves secret enforcement, graceful handling of malformed
+JSON/missing fields, rate-limiting, and that a processing failure's response body never contains
+stack-trace-shaped content. This route has no public URL to actually receive traffic at yet (no
+staging/production deployment exists) — a Phase 6 concern (registering the real webhook URL, including
+`PLUGGY_WEBHOOK_SECRET`, at Connect Token creation time via `createConnectToken`'s existing
+`webhookUrl` parameter, currently unused by `apps/ritmo`'s `connections.server.ts` — a deliberate,
+documented Phase 6 wiring step, not an oversight, since there is no public URL yet to pass).
+
+---
+
+### DEC-112
+
+**Date:** 2026-09-11
+**Context:** Sprint 9 Phase 5 requires `/health/live` and `/health/ready` endpoints suitable for a
+future Railway deployment's health-check configuration.
+**Decision:** Added `apps/ritmo/src/functions/health.server.ts` + two routes,
+`/api/health/live` (always `{status:"ok"}`, synchronous, zero dependency checks — "is the process
+alive") and `/api/health/ready` (checks staging/production's required config via `requireEnv` and real
+`getDb()` connectivity — "can this instance safely serve traffic," returning HTTP 503 when not).
+Deliberately never calls OpenAI or Pluggy on a readiness check (brief §15) — both are `FEATURE_
+REQUIRED`, not `BOOT_REQUIRED` (DEC-117's classification). Output is minimal: `{status, checks: {config,
+database}}` — no hostname, secret, account id, or detailed internal error ever included.
+**Rationale:** Matches the brief's own LIVE/READY semantic split exactly; reusing `requireEnv`
+(already the fail-closed mechanism for staging/production config, DEC-090/097) rather than a second,
+parallel config-validity check.
+**Status:** Accepted.
+**Consequences:** `health.server.test.ts` proves LIVE never fails, READY degrades safely (never
+throws) when required config is missing, and the output never contains a connection string or key-
+shaped value.
+
+---
+
+### DEC-113
+
+**Date:** 2026-09-11
+**Context:** Sprint 9 Phase 5 requires a deterministic preflight check distinguishing "cannot safely
+run" (ERROR) from "boots fine but is a public-launch blocker" (WARNING) — the brief's own example: a
+missing transactional-email provider must not crash the app, but must remain a tracked go-live blocker.
+**Decision:** Added `apps/ritmo/src/functions/preflight.server.ts`'s `runPreflightChecks(env?,
+environment?)` (pure, environment-injectable, directly testable) + `GET /api/preflight`. In staging/
+production: ERRORs for each missing required variable (`DATABASE_URL`/`BETTER_AUTH_SECRET`/
+`BETTER_AUTH_URL`), `DEV_AUTH_BYPASS=true` (a live tier must never honor this — DEC-104/DEC-087's own
+guards would already refuse at boot; preflight catches it BEFORE deploy), an obviously-placeholder
+`BETTER_AUTH_URL` (localhost/127.0.0.1) or `OPENAI_API_KEY`. A WARNING when `NODE_ENV` doesn't say
+`"production"` — a real, load-bearing finding from earlier Phase 5 work: Better Auth's own rate-limiter
+default and TanStack Start's own dev/prod branching key off `process.env.NODE_ENV` directly,
+independent of this app's own `APP_ENV`-based `resolveAppEnvironment()`; a live tier should have both
+aligned. Missing transactional email is a WARNING (`NO_TRANSACTIONAL_EMAIL_PROVIDER`), never an ERROR —
+the app boots and every other screen works. Never returns a secret VALUE, only which named checks
+passed/failed.
+**Rationale:** A single, testable, environment-injectable function (rather than a shell script)
+means the exact same logic that decides "is this deploy ready" is unit-tested directly, not only
+exercised at actual deploy time.
+**Status:** Accepted.
+**Consequences:** `preflight.server.test.ts` proves the ERROR/WARNING split and that no secret value
+ever appears in a report, even when a real one is passed in. `/api/preflight` is publicly reachable
+with no additional access control — its content is deliberately secret-VALUE-free, but it does reveal
+WHICH checks are configured/misconfigured (e.g., "DEV_AUTH_BYPASS_ENABLED"), a real if bounded
+information-disclosure surface. Gating it behind network-level access control (VPN/IP allowlist,
+matching DEC-088's own precedent for `apps/web`) or wiring it only into CI/CD rather than leaving it
+publicly reachable is an explicit Phase 6 follow-up, not solved here.
+
+---
+
+### DEC-114
+
+**Date:** 2026-09-11
+**Context:** Sprint 9 Phase 5's dev-only-surface audit (brief §19/§20) requires proving the local dev
+test login's real credentials (DEC-104: `teste@ritmo.local`/`RitmoTeste123!`) can never reach a
+production client bundle.
+**Decision:** Extended `check-client-bundle.mjs` with `FORBIDDEN_LITERAL_STRINGS` — both credentials,
+checked unconditionally (not gated on any env var, since they're hardcoded constants in
+`dev-seed.server.ts`, not something that varies per environment).
+**Rationale:** Matches this script's existing pattern exactly (DEC-100) — extend the one automated,
+build-time proof rather than only a stated rule.
+**Status:** Accepted.
+**Consequences:** `check-client-bundle.test.ts` proves both strings are in the always-checked list and
+that the scanner actually flags them if present. A full rebuild was run and confirmed clean (no
+regression — these constants only ever live in `dev-seed.server.ts`, a `.server.ts` file, never
+reachable from client-bundled code). `DEMO_PROFILE_ID`'s use as an auth fallback was separately
+confirmed structurally sound: it is only ever imported inside `profile.server.ts`'s dev-bypass branch
+(`if (isDevOrTestEnvironment() && DEV_AUTH_BYPASS === "true")`), never in client-reachable code — no
+additional bundle check was needed for that specific fact beyond the existing package-name/import-path
+markers already in place (DEC-100).
+
+---
+
+### DEC-115
+
+**Date:** 2026-09-11
+**Context:** Sprint 9 Phase 5 requires migration-safety hardening before Phase 6 — preventing
+destructive schema resets, avoiding accidental dev/PGlite migration behavior in production, and
+reviewing the current release/migration workflow.
+**Decision:** Confirmed by direct audit (grep across every exported function in
+`packages/persistence`) that **no destructive schema operation exists in this codebase at all** — no
+drop/truncate/reset-schema function of any kind; `runMigrations`/`runPostgresMigrations` only ever
+APPLY pending migrations via Drizzle's own migrator. Added `no-destructive-migration.test.ts`: a
+permanent, structural proof (asserts no exported function name matches a
+drop/truncate/wipe/destroy pattern) that catches a future regression by name before it ships, not just
+a one-time audit finding. Separately documented (not changed — brief §1 "preserve all current Phase
+0–4 behavior"): `packages/app-services/src/db.ts`'s `initializeDb()` runs
+`runPostgresMigrations(db)` automatically on every process boot when `shouldUsePostgres(environment)`
+— in a multi-instance staging/production deployment, every instance would attempt this at startup.
+Drizzle's own migrator tracks applied migrations in its own table, so this is not a correctness bug
+under concurrent boots, only a timing/scaling one.
+**Rationale:** Removing/gating the auto-migrate-on-boot behavior is real Phase 1 architecture (DEC-092)
+this fix-up was told to preserve, not change; the safer, correctly-scoped Phase 5 action is to audit,
+document, and structurally prove the ABSENCE of anything destructive, and recommend (not implement,
+since there is no real Postgres/multi-instance deployment to test against yet — brief §17: "Do NOT run
+against a real Postgres server yet") an explicit pre-deploy migration step (e.g., Railway's Pre-Deploy
+Command feature) for Phase 6, decoupling "apply migrations" from "every instance's own boot" once a
+real multi-instance deployment exists.
+**Status:** Accepted.
+**Consequences:** Founder/architecture reviewers evaluating Phase 6 should treat "add an explicit
+Pre-Deploy Command migration step, separate from app boot" as a concrete Phase 6 action item, not
+something this phase already solved (this WAS subsequently implemented — see DEC-117/DEC-119). `shouldSeedDatabase(environment)`'s existing disjoint-by-
+construction guarantee (DEC-092: no environment where both `shouldUsePostgres` and `shouldSeedDatabase`
+are true) remains unchanged and re-verified as part of this phase's full test run.
+
+---
+
+### DEC-116
+
+**Date:** 2026-09-11
+**Context:** Sprint 9 Phase 5 requires a dependency classification (what's required to boot vs. required
+for a specific feature vs. required before public launch vs. truly optional) so a future reviewer
+doesn't have to re-derive this from scratch.
+**Decision:** Classified every external dependency this codebase has:
+
+| Dependency | Classification | Why |
+|---|---|---|
+| `DATABASE_URL` (staging/production) | BOOT_REQUIRED | `requireEnv` throws in `initializeDb()` — the process cannot serve any request without it. |
+| `BETTER_AUTH_SECRET`/`BETTER_AUTH_URL` (staging/production) | BOOT_REQUIRED | `requireEnv` throws in `buildAuth()` (DEC-097) — no request can be authenticated without them. |
+| `OPENAI_API_KEY` | FEATURE_REQUIRED | Every other screen works without it; the Assistente screen returns a clear configuration-error state (Sprint 8) instead of crashing. |
+| `PLUGGY_CLIENT_ID`/`PLUGGY_CLIENT_SECRET` | FEATURE_REQUIRED | Onboarding/Bank Connection returns a clear configuration-error state (`INVALID_CONFIGURATION`, `connections.server.ts`) instead of crashing; every other screen is unaffected. |
+| `PLUGGY_WEBHOOK_SECRET` | OPTIONAL | Recommended (an unguessable shared secret protecting the webhook URL) but not required — `handlePluggyWebhookHandler` processes normally with no secret configured, matching `apps/web`'s existing route's own behavior. |
+| Transactional email provider (none chosen yet) | GO_LIVE_REQUIRED | The app boots and every other screen works; password recovery is honestly unavailable outside development/test until one exists (DEC-098) — brief §16's own worked example. |
+| Neon/a real Postgres instance | GO_LIVE_REQUIRED (Phase 6) | Required before Phase 6 staging validation; the Postgres code path is type-checked/unit-tested but has never run against a real server (DEC-092). |
+| Railway/a real deployment | GO_LIVE_REQUIRED (Phase 6) | No deployment exists yet; `node-server` build target is ready (DEC-099). |
+| An explicit Pre-Deploy Command migration step | GO_LIVE_REQUIRED (Phase 6) | See DEC-115 — recommended before a multi-instance deployment; implemented as `db:migrate:postgres` (DEC-117/119), wired into Railway's Pre-Deploy Command, not yet actually run against real infrastructure. |
+| `DEV_AUTH_BYPASS`/`/api/dev-seed` | OPTIONAL, dev/test only | Never required for any real user; must be verifiably impossible in staging/production (DEC-104, re-verified this phase). |
+
+**Rationale:** A single table (not scattered across a dozen files' own comments) gives a future
+Founder/architecture reviewer one place to check "what actually blocks Phase 6/go-live" without
+re-deriving it.
+**Status:** Accepted.
+**Consequences:** `/api/health/ready` and `/api/preflight` (DEC-112/113) both encode this
+classification directly in their own logic (only BOOT_REQUIRED items gate readiness/preflight
+success; FEATURE_REQUIRED/GO_LIVE_REQUIRED items are warnings or silent degradation, never a hard
+failure).
+
+---
+
+### DEC-117 (supersedes part of DEC-092/DEC-115)
+
+**Date:** 2026-09-11
+**Context:** Sprint 9 Phase 6A (staging preparation) requires migrations to no longer be "hidden
+inside ordinary application boot" — DEC-115 (Phase 5) had audited and DOCUMENTED this exact behavior
+(`initializeDb()` calling `runPostgresMigrations(db)` on every process boot) as a real scaling concern
+for a future multi-instance deployment, but deliberately left it unchanged at the time (Phase 5's own
+scope was "preserve Phase 0–4 behavior"; changing boot-time migration behavior was recommended for
+Phase 6, not done then). Phase 6A is that Phase 6 moment.
+**Decision:** `packages/app-services/src/db.ts`'s `initializeDb()` no longer calls
+`runPostgresMigrations` at all — the Postgres branch now only constructs the connection pool.
+Migrations are applied EXCLUSIVELY via a new, explicit, standalone CLI:
+`packages/persistence/src/migrate.ts` gained a main-module-guarded `migratePostgresCli()` (mirroring
+`seed.ts`'s own `db:seed` CLI pattern exactly — same idiom, not a new one), run via
+`pnpm --filter @money-copilot/persistence run db:migrate:postgres`. It calls `requireEnv("DATABASE_URL")`
+then `runPostgresMigrations` — nothing else; no seeding, no reset capability exists to call even by
+accident (confirmed by DEC-115's own structural test). Exits non-zero on any failure — never prints
+the connection string, only the driver's own error. Development/test PGlite behavior is UNCHANGED —
+`initializeDb()`'s PGlite branch still migrates (and, in dev/test, seeds) on every boot, exactly as
+before; that path has no multi-instance concern to guard against.
+**Rationale:** This is the correct Railway "Pre-Deploy Command" pattern (Railway's current terminology
+for a one-shot step that runs before a new deploy starts receiving traffic — an earlier version of this
+document called it a "release command"; corrected in the Phase 6A runtime-check pass): migrate once,
+before new instances start receiving traffic — never per-instance, which is what made the old behavior
+racy under concurrent boots. Reusing `seed.ts`'s exact CLI idiom (a main-module guard in the same file
+as the exported function, run via `tsx`) means no new pattern was introduced for this.
+**Status:** Accepted — supersedes DEC-092's/DEC-115's "migrations run automatically on Postgres boot"
+description; that was correct for its time and is now explicitly changed, not silently drifted from.
+**Consequences:** A real, unavoidable side effect discovered while making this change: `getDb()` alone
+no longer proves real Postgres connectivity (a `pg.Pool` connects lazily) — DEC-118's `/api/health/
+ready` improvement (`db.execute(sql\`select 1\`)`) closes exactly this gap, in the same turn, not left
+open. **A staging/production boot against a database whose schema is not already current will now
+fail loudly on its first real query** — this is intentional (never silently serve traffic against a
+stale/partial schema) but means the exact deploy ordering (migrate, THEN start new instances) matters
+operationally — see the Phase 6A staging plan for the concrete Railway wiring. `apps/ritmo/package.json`
+gained a direct `drizzle-orm` dependency (previously only transitive via `@money-copilot/persistence`)
+so `health.server.ts` could import `sql` directly.
+
+---
+
+### DEC-118
+
+**Date:** 2026-09-11
+**Context:** Sprint 9 Phase 5's own review flagged `/api/preflight` as publicly reachable with no
+access control — its report is secret-VALUE-free but reveals WHICH checks are configured/
+misconfigured (e.g. "DEV_AUTH_BYPASS_ENABLED"), real if bounded information disclosure. Phase 6A
+requires resolving this before staging is provisioned.
+**Decision:** Added `isPreflightAccessAllowed(providedSecret, env?, environment?)` to
+`preflight.server.ts`: always allowed in development/test (no operational secret exists there, and
+it's local-only); in staging/production, allowed ONLY with an exact match against a new
+`PREFLIGHT_SECRET` operational secret (sent as an `X-Preflight-Secret` header) — **unavailable by
+default**: if `PREFLIGHT_SECRET` itself is unset in a live tier, every request is refused, including
+one bearing a header value (never silently compares against `undefined`). The route returns a plain
+404 on refusal, not 401/403, so it never confirms its own existence to an unauthenticated caller.
+**Rationale:** The simplest of the three architecturally-acceptable options the brief offered
+(unavailable / secret-protected / internal-path-only) that doesn't require any new infrastructure or
+network-topology assumption (an internal/admin-only deployment path would need a real reverse-proxy
+rule this codebase doesn't control) — a single new optional operational secret, entered directly in
+Railway's own environment variable UI (never pasted into chat), following the exact same
+"leave unset in dev, required and validated in a live tier" shape every other Sprint 9 secret already
+uses.
+**Status:** Accepted.
+**Consequences:** `preflight.server.test.ts` proves all three cases (dev/test always open;
+unconfigured secret in a live tier always refuses; configured secret requires an exact match).
+`PREFLIGHT_SECRET` is documented in `.env.example`, left unset there (per the "never commit a value"
+rule every other secret in that file already follows).
+
+---
+
+### DEC-119
+
+**Date:** 2026-09-11
+**Context:** Sprint 9 Phase 6A's own correction pass flagged that a single `DATABASE_URL` serving
+both the running application and the migration command is unsafe: Neon's pooled connection (the right
+choice for a long-lived Node process making many short queries — DEC-090) is documented as less
+predictable for DDL/migration workloads than a direct connection.
+**Decision:** Split into two variables. `DATABASE_URL` — Neon's **pooled** connection string, read
+ONLY by the running application (`packages/app-services/src/db.ts`'s `initializeDb()`, unchanged).
+`DATABASE_DIRECT_URL` — Neon's **direct** (unpooled) connection string, read ONLY by the migration CLI
+(`packages/persistence/src/migrate.ts`'s new `resolveMigrationConnectionString()`, which calls
+`requireEnv("DATABASE_DIRECT_URL")` — never `DATABASE_URL`, even if the latter happens to be set).
+`preflight.server.ts`'s required-variable check now includes `DATABASE_DIRECT_URL` alongside
+`DATABASE_URL` for staging/production — its absence fails the release/migration step, which blocks
+deployment just as surely as a missing `DATABASE_URL` would, even though the running app itself never
+reads it.
+**Rationale:** The two connections serve genuinely different workloads (many short pooled queries vs.
+one long DDL-running session) and should never be assumed interchangeable — making them two distinctly
+named variables, each read by exactly one code path, removes any ambiguity about which one a given
+process needs.
+**Status:** Accepted.
+**Consequences:** `migrate.test.ts` proves `resolveMigrationConnectionString` reads
+`DATABASE_DIRECT_URL` specifically (not `DATABASE_URL`, even when both are set) and fails closed,
+clearly, when it's absent — verified live against both a completely missing variable and an
+unreachable host (neither hung, neither printed the connection string). `.env.example` and the Phase
+6A Railway/Neon plan both now document exactly which Neon connection string goes in which variable.
+
+---
+
+### DEC-120
+
+**Date:** 2026-09-11
+**Context:** Phase 6A's correction: the Founder has already selected Resend (Phase 5/6A's own
+recommendation list named it first) — the transactional-email boundary (DEC-098) was ready to receive
+a provider; this decision wires it in.
+**Decision:** Added `apps/ritmo/src/functions/email-resend.server.ts`: a narrow `ResendEmailClient`
+interface (`emails.send(...)`) the real `Resend` SDK satisfies structurally, `createResendClient
+(apiKey)` (the only place `new Resend(...)` is ever constructed), `renderPasswordResetEmailHtml
+(resetUrl)` (a minimal, Ritmo-branded template — name/identity, clear purpose, a CTA button, an
+"ignore if not requested" line, NO financial data, and an honestly-real "expires in 1 hour" line —
+Better Auth's own actual default `resetPasswordTokenExpiresIn`, confirmed by reading its source, not
+invented), and `sendPasswordResetEmailViaResend` (throws a normalized `PasswordResetDeliveryFailedError`
+on any provider failure — only the bounded `error.name` enum is ever logged, never Resend's free-text
+`error.message`, never the reset URL/token). `email.server.ts`'s `isTransactionalEmailConfigured` now
+requires ALL THREE of `TRANSACTIONAL_EMAIL_PROVIDER === "resend"`, `RESEND_API_KEY`, and
+`TRANSACTIONAL_EMAIL_FROM` — the provider name alone is deliberately NOT sufficient (brief §D: "if
+provider=resend but API key or FROM is missing... password reset must remain honestly unavailable and
+preflight must report it as a GO_LIVE blocker" — both now true by construction). `sendPasswordResetEmail`
+gained an injectable `createClient` parameter (default: the real constructor) so every test uses a
+fake `ResendEmailClient` — no test in this codebase makes or requires a live Resend account or network
+call.
+**Rationale:** The exact same provider-neutral seam DEC-098 built is what makes this a small, contained
+change — `auth.server.ts` and every route are completely unaware Resend exists; only
+`email.server.ts`'s own two functions changed. Dependency injection for the client (rather than only
+mocking the module) keeps the test suite fast and hermetic without needing a network-mocking library.
+**Status:** Accepted.
+**Consequences:** `email-resend.server.test.ts` (6 tests) and `email.server.test.ts`'s expanded Resend
+describe block (5 tests, all against a mocked client) are the permanent regression proof — no real
+Resend account exists or is required for CI to pass. The `resend` npm package (a real dependency, not
+an account) was added to `apps/ritmo/package.json`; `check-client-bundle.mjs` gained a precise marker
+for it (`"resend-node:"`, the SDK's own internal user-agent prefix — not the bare word "resend," which
+collides with plausible UI copy like "reenviar"). Domain verification in Resend's own dashboard (a
+Resend-side action, not code) remains required before `RESEND_API_KEY`/`TRANSACTIONAL_EMAIL_FROM` can
+be real — not done in this turn, per "do not require a live Resend account yet."
+
+---
+
+### DEC-121
+
+**Date:** 2026-09-11
+**Context:** Phase 6A's correction: the Pluggy webhook URL boundary requested in the prior turn's plan
+was never actually implemented — `connections.server.ts`'s `createConnectToken` call still omitted the
+`webhookUrl` parameter entirely, meaning even once a real staging URL exists, nothing would register a
+webhook against it without a further code change.
+**Decision:** Added `apps/ritmo/src/functions/webhook-url.server.ts`'s `resolveWebhookUrl(env?)`:
+returns `undefined` when no public base URL is configured (the current local-dev state — matches
+docs/OPEN-FINANCE.md's documented "Local development caveat," webhooks cannot reach localhost anyway),
+otherwise builds `${BETTER_AUTH_URL}/api/webhook` with `?secret=${PLUGGY_WEBHOOK_SECRET}` appended when
+that secret is configured. Wired into `startBankConnectionHandler`'s `createConnectToken` call, which
+previously passed no `webhookUrl` at all.
+**Rationale:** Reuses `BETTER_AUTH_URL` — already `requireEnv`-validated in staging/production
+(DEC-097) — as "this app's own validated public base URL" rather than inventing a second
+`APP_BASE_URL`-shaped variable; the exact same concept `apps/web` used `NEXT_PUBLIC_APP_URL` for
+(docs/OPEN-FINANCE.md). This means the real webhook URL starts being registered automatically the
+moment a real `BETTER_AUTH_URL` exists (Phase 6B) — no further code change needed then.
+**Status:** Accepted.
+**Consequences:** `webhook-url.server.test.ts` proves the undefined-locally case, correct URL
+construction with and without the secret, and correct handling of a trailing slash on the base URL.
+Still does not call Pluggy and does not require a real staging URL to exist — exactly the "prepare the
+code" scope this turn asked for, nothing further.
+
+---
+
+### DEC-122 (superseded by DEC-123 — see that entry)
+
+**Date:** 2026-09-11
+**Context:** Phase 6A's correction requires an explicit, repository-level Node version pin suitable for
+pnpm, Railway, TanStack/Nitro, Better Auth, and `pg` — the prior `"node": ">=20"` in the root
+`package.json` was too loose to be "explicit."
+**Decision:** Added `.nvmrc` (`26`) at the repository root and tightened the root `package.json`'s
+`engines.node` from `">=20"` to `"26.x"` — the exact major version this entire Sprint 9 body of work
+(every typecheck/lint/test/build run across all ten phases/fix-ups) has actually been validated
+against, per the explicit instruction not to arbitrarily change major runtime beyond what's already
+been proven to work. Railway's Nixpacks builder reads both `.nvmrc` and `engines.node` to select a
+Node version, so both are set for redundancy/clarity rather than relying on either alone.
+**Rationale:** "Explicit" per the brief means a real, validated major version — not a permissive
+range — while still allowing patch/minor updates within that major (a full patch pin would need
+updating on every Node security release, which buys no real safety here).
+**Status:** Accepted.
+**Consequences:** A future Node major upgrade (e.g., to whatever becomes the next LTS) is a deliberate,
+separately-validated decision — re-running the full quality-gate suite against the new version before
+changing this pin — not an incidental side effect of some other change.
+
+---
+
+### DEC-123 (supersedes DEC-122)
+
+**Date:** 2026-09-11
+**Context:** DEC-122 pinned Node `26.x` on the reasoning "the exact version this work was validated
+against." A Phase 6A review correctly flagged that this was the wrong criterion: as of this sprint's
+own timeline (2026-09), Node 26 is the CURRENT release line, not yet LTS — Node 24 is the active LTS.
+The brief's actual requirement was an explicit, SUPPORTED LTS runtime, not merely "whatever the
+Founder's local machine happened to have installed." Using a non-LTS Current release for a staging/
+production pin would mean losing security-patch support on a shorter, unpredictable timeline.
+**Decision:** Installed Node 24 (`24.20.0`, the latest available patch, via a keg-only Homebrew
+formula — `node@26` stayed the linked/default local version, untouched) and re-ran the ENTIRE quality
+gate suite against it before changing anything: `pnpm install --frozen-lockfile`, `pnpm -r run
+typecheck`/`lint`/`test` (all three packages/apps, all 777 tests), a full production build from the
+monorepo root, a live-started production server (confirmed via `lsof` to be the real
+`/opt/homebrew/Cellar/node@24/24.20.0/bin/node` binary, not a stale/wrong process) serving real
+`/api/health/live` requests, and the migration CLI both against a missing `DATABASE_DIRECT_URL` and an
+unreachable host. **Every single check passed identically to Node 26** — TanStack Start/Nitro, Better
+Auth (including the real-HTTP-handler rate-limit test), zod 4, `pg`/Drizzle (including the PGlite-
+backed test suites), the Resend adapter, and the migration CLI all showed zero Node-24-specific
+issues. `.nvmrc` changed from `26` to `24`; root `package.json`'s `engines.node` changed from `"26.x"`
+to `"24.x"`.
+**Rationale:** Validate-then-pin, not pin-then-hope: the brief explicitly warned against reverting to
+Node 26 "silently" if 24 failed — since it didn't fail anywhere, the correct, tested choice is the
+actual LTS line, not the Current one this session's local environment happened to default to.
+**Status:** Accepted — DEC-122 is superseded, not deleted; its reasoning (validate before pinning) was
+sound, only its criterion (local-machine version instead of the LTS requirement) was wrong.
+**Consequences:** One pre-existing, PGlite-specific gap was re-confirmed (not caused by this change):
+running the BUNDLED production server (`node apps/ritmo/.output/server/index.mjs`) against file-backed
+PGlite still fails with the same `ENOENT`/migration-file-packaging issue DEC-103 already documented —
+identical under both Node 24 and Node 26, irrelevant to real staging/production (which always uses
+Postgres via `DATABASE_URL`/`shouldUsePostgres`, never PGlite). No code change was made for this; it
+remains a documented Phase 6 non-issue. Railway's Nixpacks builder will select Node 24 from either
+`.nvmrc` or `engines.node` — both are set, matching DEC-122's original redundancy rationale.
+
+---
+
+### DEC-124
+
+**Date:** 2026-09-11
+**Context:** Phase 6B (real staging infrastructure) is paused. The Founder wants to personally pilot
+Ritmo against their own REAL bank first, but entirely locally: local PGlite, real Better Auth, no Neon/
+Postgres/Railway, no public webhook, no ngrok/tunnel. This needed an explicit, narrow, hard-to-trigger-
+by-accident way to switch Pluggy from sandbox to real institution connectors without touching
+`AppEnvironment` (development/test/staging/production) at all — conflating "which tier is running" with
+"is this Open Finance data real" would make it impossible to later run a real staging deployment against
+sandbox connectors, the actual near-term plan.
+**Decision:** Added `apps/ritmo/src/functions/open-finance-mode.server.ts`'s `OpenFinanceMode` type
+(`"sandbox" | "live"`) and `resolveOpenFinanceMode(env?)`, defaulting to `"sandbox"` everywhere. It
+resolves to `"live"` ONLY when all three hold simultaneously: `resolveAppEnvironment()` is exactly
+`"development"` (staging/production have no override — there is no environment-variable combination
+that escapes this), `OPEN_FINANCE_MODE=live` (exact string match), AND `FOUNDER_LIVE_BANK_PILOT=true`
+(a second, independent flag, so a stray `OPEN_FINANCE_MODE=live` copy-pasted from another `.env` file
+can never alone activate real-bank behavior). Wired through: `ConnectWidget.tsx`'s `includeSandbox` prop
+is now caller-supplied (was hardcoded `true`) — `conectar-banco.tsx` passes
+`openFinanceMode === "sandbox"`; `ConnectionScreenData` now carries `openFinanceMode` (server-resolved,
+never client-supplied, same pattern as `hasAnyConnection`); `connections.server.ts` gained
+`requestManualSyncHandler`, reusing the existing `syncConnection` pipeline unmodified (no second sync
+engine, no polling loop) — the only way to refresh a locally-connected real bank, since no public
+webhook can reach `localhost`; `webhook-url.server.ts`'s `resolveWebhookUrl` now has an explicit
+`environment !== "staging" && environment !== "production"` early return, so it can never build a URL
+in development/test even if `BETTER_AUTH_URL` happens to be set (previously it only returned `undefined`
+incidentally, because `BETTER_AUTH_URL` was unset locally — DEC-121). The Bank Connection screen shows a
+dev-only "Banco real — piloto local" pill and a non-destructive warning banner (never auto-deletes
+anything) when Live mode is active and the profile already has connections, so mixing sandbox test data
+and a real bank on one profile is a deliberate, informed choice rather than a silent one.
+**Rationale:** Two independent explicit opt-in flags plus an environment check with no override
+mirrors `DEV_AUTH_BYPASS`'s fail-closed shape (DEC-104) while being strictly harder to trigger by
+accident (three conditions, not one), matching the brief's requirement that staging/production can
+never inherit this under any circumstance. Reusing `syncConnection`/the existing Connect flow rather
+than building a parallel "live mode" pipeline keeps this a thin, deletable layer over Sprint 3–7's
+existing Pluggy architecture, not a second Open Finance integration.
+**Status:** Accepted. No real bank was connected as part of this change — `PLUGGY_CLIENT_ID`/
+`PLUGGY_CLIENT_SECRET` in `apps/ritmo/.env.local` remain Sandbox credentials; the Founder enters real
+credentials and performs the first real Pluggy Connect consent manually.
+**Consequences:** `open-finance-mode.server.test.ts` (mode resolution: default sandbox, all-three-flags-
+required, staging/production never override, ignores `DEV_AUTH_BYPASS` entirely, never activates in a
+real `test`-environment run even with matching flags/credentials present) and additions to
+`connections.server.test.ts` (`openFinanceMode` surfaces as `"sandbox"` in the real automated test
+environment even with real-looking Pluggy credentials set; manual sync is ownership-checked exactly
+like every other handler here — a forged `connectionId` from another user is rejected) and
+`webhook-url.server.test.ts` (webhook URL stays `undefined` in development/test even when
+`BETTER_AUTH_URL` is set, unchanged staging/production behavior) cover this. `check-client-bundle.mjs`
+re-run clean against the new client code (`ConnectWidget`'s new prop, the new pill/banner) — no
+`PLUGGY_CLIENT_SECRET` value or server-only package reached the client bundle.

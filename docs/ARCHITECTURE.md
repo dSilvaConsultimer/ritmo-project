@@ -326,3 +326,25 @@ template if the model stated an amount that isn't traceable to a tool result or 
 Code review for AI-touching changes should specifically check that no arithmetic on `Money` happens
 outside `packages/financial-engine`, and that no new tool bypasses Zod validation. Full account:
 `docs/AI-COPILOT.md`.
+
+## Production hardening cross-cutting layer (Sprint 9 Phase 5)
+
+`apps/ritmo/src/functions/` gained a small set of framework-agnostic, `.server.ts`-suffixed utility
+modules that every other server function/route composes with, rather than each reimplementing its own
+version:
+
+- `rate-limit.server.ts` — one policy-driven, in-memory limiter (`checkRateLimit`), used by AI
+  (`assistente.server.ts`) and Open Finance action (`connections.server.ts`) protection. Process-local
+  by design — no Redis this phase (docs/DECISIONS.md DEC-105).
+- `logger.server.ts` — structured JSON logging with automatic secret redaction (by field name AND
+  value shape) and a distinct `audit` severity for security/product-sensitive events (DEC-106).
+- `security-headers.server.ts` — CSP/clickjacking/MIME-sniffing/HSTS, applied once in `server.ts`'s
+  existing response wrapper (DEC-110).
+- `health.server.ts` / `preflight.server.ts` — operational readiness and deploy-time config
+  validation (DEC-112/113).
+
+None of these live in a shared package (`@money-copilot/app-services` etc.) — they're specific to
+`apps/ritmo`'s own request/response lifecycle (TanStack Start's `server.ts` entry, its own routes), not
+domain logic `apps/web` would also need. Auth-specific abuse protection is the one exception routed
+differently: it uses Better Auth's own built-in rate limiter (`auth.server.ts`'s `rateLimit` option),
+not this custom one — see docs/DECISIONS.md DEC-108 for why.

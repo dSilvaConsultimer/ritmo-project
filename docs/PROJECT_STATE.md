@@ -12,22 +12,128 @@ identify the conflict, explain the existing rule, do not silently change it, imp
 behavior only if it clearly supersedes the old decision, and record the change in
 `docs/DECISIONS.md` (mark the old decision superseded, add a new one — never rewrite history).
 
-Last updated: **2026-09-10, Sprint 8 complete.** The Founder-approved Lovable prototype ("Ritmo") is
-now the live product UI: a new `apps/ritmo` (TanStack Start) app, ported visually verbatim from
-`meu-ritmo-design`, with all six screens (Home, Transações, Planejamento, Insights, Assistente, Mais)
-wired to the SAME real `@money-copilot/app-services`/financial-engine/persistence stack `apps/web`
-already used — no second business-logic implementation, no financial calculation in React. `apps/web`
-remains temporarily as an internal/debug frontend and is retired once parity is validated further.
-Founder visual and product validation PASSED against the real engine. See `docs/RITMO.md` for the
-full architecture, the 9 data-model gaps found and how each was resolved honestly (never by
-fabricating a number the mock implied but the engine doesn't know), and `docs/DECISIONS.md` DEC-083
-through DEC-086 (DEC-083 extends DEC-051's PGlite single-process rule to `apps/ritmo`; DEC-084–086
-record the sprint's other live-discovered findings). Sprint 7 (alerts/notifications),
-Sprint 6 (concierge), Sprint 5 (recommendation engine), and Sprint 4.5 (both external validations
-PASSED) remain complete/closed; `REAL_PERSONAL_FINANCIAL_DATA_ALLOWED` remains
-`TRUE_PENDING_FOUNDER_APPROVAL` — Sprint 8 did not change the release gate, did not connect any new
-real institution, and did not implement production authentication (explicitly out of scope — see
-`docs/RITMO.md`, "Login exception").
+Last updated: **2026-09-11, Sprint 8 complete; Sprint 9 IN PROGRESS (uncommitted).** Sprint 8's
+Founder-approved Lovable prototype ("Ritmo") remains the live product UI: `apps/ritmo` (TanStack
+Start), all six screens wired to the real `@money-copilot/app-services`/financial-engine/persistence
+stack. See `docs/RITMO.md` for that architecture and `docs/DECISIONS.md` DEC-083 through DEC-086.
+
+**Sprint 9 — Production Foundation, Authentication & Multi-User Isolation — IN PROGRESS.** Everything
+below is real, implemented, and passing its own tests, but **uncommitted** (still sitting in the
+working tree as of this update — HEAD is still the Sprint 8 commit) and has NOT had Founder visual
+sign-off yet. Phase-by-phase status, confirmed by a state-recovery audit plus a follow-up fix-up pass
+(this session):
+- **Phase 0 (env/config foundation) — COMPLETE.** `@money-copilot/config` (`resolveAppEnvironment`,
+  `requireEnv`, `assertDevOnlyFlagNotInProduction`). DEC-087.
+- **Phase 1 (identity/database foundation) — COMPLETE, Postgres path unexercised against a live
+  server.** Better Auth's identity tables (`user`/`session`/`account`/`verification`), driver-neutral
+  `Database` type, `shouldUsePostgres`/`shouldSeedDatabase` environment gating, `reconciliation_links`
+  profile-scoping migration. DEC-089/090/091/092/095/096. **No Neon/Postgres instance has ever been
+  connected to this code — that exercise is Phase 6, not done.**
+- **Phase 2 (IDOR/ownership hardening) — COMPLETE.** `packages/app-services/src/ownership.ts`'s
+  `assertOwnedByProfile`, applied at every previously-vulnerable call site (connections,
+  recommendations, alerts, concierge, AI conversations). A permanent two-profile adversarial suite
+  (`two-profile-isolation.test.ts`) passes live. DEC-093/094.
+- **Phase 3 (auth integration) — APPROVED, COMPLETE.** Real Better Auth server instance
+  (Drizzle/Postgres adapter, email/password), real `/login`, `/cadastro`, `/recuperar-senha` UI wired
+  to `better-auth/react`, real per-request server-side profile provisioning
+  (`getCurrentProfileContext()`), a real adversarial test suite proving the security boundary is
+  independent of router `beforeLoad`. Fail-closed `BETTER_AUTH_SECRET`/`BETTER_AUTH_URL` in
+  staging/production (DEC-097); honest (non-fake-success) password recovery, gated on a
+  transactional-email provider that does not exist yet (DEC-098, **still an open external
+  dependency — see below**); Nitro build target matches DEC-090 (`node-server`, not Cloudflare
+  Workers — DEC-099); `check-client-bundle.mjs` covers the Sprint 9 secret/package surface (DEC-100).
+- **Phase 4 (onboarding + bank-connection UI/states) — APPROVED, COMPLETE.** Founder visual review
+  PASSED. First-time flow: Sign up → Home's `beforeLoad` detects zero connections
+  (real, server-resolved state, never a client flag — DEC-102) → `/onboarding` (Welcome, no skip in
+  V1, a deliberate documented choice — DEC-102) → `/conectar-banco` (one dedicated screen, an internal
+  state machine covering CONNECTING/AUTHENTICATING/SYNCING/CONNECTED/PARTIAL_DATA/RECONNECT_REQUIRED/
+  TEMPORARY_ERROR — DEC-101) → real Pluggy Connect widget (`react-pluggy-connect`, the same widget
+  `apps/web` already uses) → real `completeConnection`/sync-status polling → Home. `/mais`'s
+  "Instituições conectadas" row now routes to `/conectar-banco` for connect/reconnect/manage — `/mais`
+  itself is otherwise unchanged. SESSION_EXPIRED is a real Ritmo-styled screen
+  (`/sessao-expirada`/`SessionExpiredScreen`), reached both from a root-level router error boundary and
+  from every in-flight action in `conectar-banco.tsx` (DEC-102) — verified live against a corrupted
+  session's actual server-thrown error, not assumed. Ownership: every new server function resolves
+  `financialProfileId` via `getCurrentProfileContext()` and accepts none from the caller — a permanent
+  adversarial suite (`connections.server.test.ts`) proves cross-user isolation and duplicate-connect
+  protection against a real Better Auth session, a real (test) database, and a `MockProvider`
+  registered under the real `"pluggy"` name. **Live-verified against the real Pluggy sandbox**
+  (Connect Token creation succeeded against real sandbox credentials). **While validating this
+  Phase, discovered and fixed a real Phase-3-introduced bug, unrelated to Phase 4 itself**: the
+  `node-server` production build (DEC-099) crashed on every request because `apps/ritmo`'s own `zod`
+  dependency (`^3.25.76`) didn't match what Better Auth 1.7.4 itself requires (`^4.5.4`) — fixed by
+  upgrading (DEC-103). **Post-approval entry-flow fix (DEC-104)**: the Founder's own local browser was
+  reaching `/onboarding` directly, skipping `/login` entirely — root cause was `apps/ritmo/.env.local`'s
+  `DEV_AUTH_BYPASS=true` (a local dev convenience left on from before this fix-up), which made both the
+  `beforeLoad` UX check and `getCurrentProfileContext()` skip real Better Auth and resolve to
+  `DEMO_PROFILE_ID` (which honestly has zero connections, hence the onboarding redirect — Phase 4's own
+  logic was correct given that false input). Fixed at the fault line: `DEV_AUTH_BYPASS` now defaults to
+  `false`, documented in `.env.example` for the first time, and its bypass condition tightened to an
+  explicit development/test allow-list (previously `!== production`, which would also have wrongly
+  activated in staging). A new idempotent, real-Better-Auth-backed local test login
+  (`teste@ritmo.local`/`RitmoTeste123!`, `apps/ritmo/src/functions/dev-seed.server.ts`,
+  development/test only) lets this be re-tested repeatably. **The full entry state machine — no
+  session → `/login`; session + no connection → `/onboarding`; session + connection → Home; logout →
+  `/login` again, verified against a real `auth.api.signOut` — is now live-verified end to end.**
+  **Phase 4 is fully approved and complete.**
+- **Phase 5 (production hardening) — IMPLEMENTATION COMPLETE, pending Founder/architecture
+  approval.** Not deployment — the hardening required BEFORE staging is provisioned. Rate limiting:
+  one central, policy-driven, in-memory abstraction (`rate-limit.server.ts`, DEC-105) for AI
+  burst/sustained and Open Finance action/poll limits (the Phase 4 1.5s SYNCING poll verified still
+  unaffected); auth abuse protection reuses Better Auth's OWN built-in limiter (DEC-108, live-verified
+  to actually 429 through the real HTTP handler — not a duplicate mechanism). AI cost protection: a
+  real, previously-missing `max_output_tokens` ceiling added to `OpenAIProvider` (DEC-109). Security
+  headers (CSP/clickjacking/MIME-sniffing/HSTS) applied to every response via `server.ts`'s existing
+  wrapper, skipped only in development (DEC-110) — CSP honestly documents its one known gap
+  (`'unsafe-inline'` for scripts, required by TanStack Start's own SSR hydration; not pretended solved).
+  `apps/ritmo` now has its own Pluggy webhook receiver (DEC-111) — it had none before this phase.
+  Structured logging with automatic secret redaction (DEC-106); the Phase 3 password-reset-link
+  console-log risk fixed (DEC-107). `/api/health/live`, `/api/health/ready`, `/api/preflight` added
+  (DEC-112/113). Bundle scan extended for the local dev test login's real credentials (DEC-114). A
+  full audit found NO destructive schema operation exists anywhere in the codebase — structurally
+  proven, not just asserted (DEC-115) — and produced a full BOOT_REQUIRED/FEATURE_REQUIRED/
+  GO_LIVE_REQUIRED/OPTIONAL dependency classification (DEC-116). CORS/CSRF: audited, not changed —
+  Better Auth's own defaults (trust only `baseURL`'s origin, real origin-check middleware) already
+  satisfy the requirement. **120 tests now pass in `apps/ritmo` alone** (up from 82 after Phase 4's
+  entry-flow fix). **Not yet Founder/architecture-reviewed.**
+- **Phase 6 — split into 6A (staging preparation/plan) and 6B (real deployment/validation). 6A
+  IN PROGRESS; 6B NOT STARTED.** No Neon database, no Railway (or other) deployment, no staging
+  environment stood up, no external accounts created — **No real bank has been connected** under any
+  of this Sprint 9 work (Pluggy sandbox only) — `REAL_PERSONAL_FINANCIAL_DATA_ALLOWED` remains
+  `TRUE_PENDING_FOUNDER_APPROVAL`, unchanged by Sprint 9 so far. Phase 6A's code-side prerequisites are
+  done: migrations are no longer applied on ordinary app boot (DEC-117, a real behavior change,
+  superseding part of DEC-092/115 — see that entry) — `pnpm --filter @money-copilot/persistence run
+  db:migrate:postgres` is now the one explicit, standalone command for staging/production migrations,
+  intended as Railway's Pre-Deploy Command step; `/api/health/ready` now performs a real `select 1`
+  round-trip rather than only constructing a lazy connection pool; `/api/preflight` is no longer
+  publicly open in a live tier — gated behind a new optional `PREFLIGHT_SECRET` operational secret,
+  unavailable (404) by default (DEC-118). **Phase 6A correction pass (same day)** closed six gaps a
+  review found in the first draft: `DATABASE_URL` (pooled, app runtime) and `DATABASE_DIRECT_URL`
+  (direct, migration-only) are now two distinct variables, never interchangeable (DEC-119) —
+  `db:migrate:postgres` reads only the latter, fails clearly if it's missing even when `DATABASE_URL`
+  is set. **Resend is implemented** (Founder's actual decision, not left pending) — a real, tested
+  adapter (`email-resend.server.ts`) behind the unchanged DEC-098 boundary, gated on all three of
+  `TRANSACTIONAL_EMAIL_PROVIDER=resend`/`RESEND_API_KEY`/`TRANSACTIONAL_EMAIL_FROM` being present
+  (DEC-120) — no live Resend account required for any test to pass. The Pluggy webhook URL now
+  actually derives from `BETTER_AUTH_URL` + `PLUGGY_WEBHOOK_SECRET` once those exist (DEC-121) — wired
+  into `createConnectToken`, previously omitted. Node is pinned explicitly (`.nvmrc`, `engines.node
+  = "26.x"` — the exact version this entire sprint was validated against, DEC-122). The build/migrate/
+  start commands were verified live from the monorepo root: `pnpm --filter @money-copilot/ritmo run
+  build` → `apps/ritmo/.output/server/index.mjs`; `pnpm --filter @money-copilot/persistence run
+  db:migrate:postgres` fails clearly and quickly against both a missing `DATABASE_DIRECT_URL` and an
+  unreachable host. The full Neon/Railway/Better-Auth/Pluggy-sandbox/webhook provisioning plan,
+  corrected environment-variable matrix, and staging validation protocols (fresh-DB, upgrade-path,
+  two-user isolation, AI, security) exist as a plan only — no external resource (Neon project, Railway
+  service, Resend account) has been created.
+
+**Open external dependencies, not engineering gaps (see DEC-116's full classification):** the
+transactional-email provider decision is made (Resend, DEC-120) and fully implemented/tested — the
+only remaining step is Resend-side (verifying a real sending domain in Resend's own dashboard, then
+entering the real `RESEND_API_KEY`/`TRANSACTIONAL_EMAIL_FROM` in Railway), not a code gap. A real Neon
+Postgres instance and a Railway (or equivalent) deployment are still required for Phase 6 — neither
+has been provisioned. The explicit Pre-Deploy Command migration step DEC-115 recommended is now
+implemented (`db:migrate:postgres`, DEC-117/119) and live-verified under both Node 26 and Node 24
+(DEC-122/123) — not yet actually run against real infrastructure, since none exists yet.
 
 ---
 
@@ -1090,19 +1196,43 @@ methodology), plus:
 
 ## Next recommended sprint
 
-**Sprint 9 — scope not yet defined by the Founder/Product Lead.** Candidates worth considering when
-that brief is written: real production authentication (the profile-resolution seam,
-`getCurrentProfileContext()` in `apps/ritmo/src/functions/profile-context.ts`, was built in Sprint 8
-specifically so real auth can replace its insides with zero changes to any adapter or route — see
-`docs/RITMO.md`, "Login exception"), retiring `apps/web` once `apps/ritmo` parity is validated
-further, closing the remaining Sprint 8 data-model gaps deliberately (a real bill due-date/paycheck-
-date capture flow, a real scheduled daily-digest notification, the two Insights example categories
-with no engine equivalent yet), a real push/email notification provider (currently `NOT_CONFIGURED`),
-a real discovery-provider credential (Sprint 6's `LIVE_DISCOVERY_VALIDATION =
-BLOCKED_BY_EXTERNAL_PROVIDER_CONFIGURATION` is still unresolved), and a real completion/cancellation
-status on `SavedConciergePlan` (Sprint 7's `STALE_CONCIERGE_PLAN` alert currently approximates this
-with a relevance-window heuristic). **Sprint 8 is complete; Sprint 9 has explicitly not been
-started — in particular, no production/authentication work has begun.**
+**Sprint 9 is IN PROGRESS (see the top of this file for full phase status) — currently uncommitted,
+Phases 0–5 approved/complete, Phase 6A (staging preparation/plan) code-side complete, Phase 6B (real
+deployment) PAUSED (not started) in favor of the Founder Local Live Bank Pilot (DEC-124) — a
+Phase-6B-adjacent, entirely local detour, not a Phase 6B substitute.** The Pre-Deploy Command migration
+step DEC-115 recommended is implemented and tested under both Node 26 and Node 24 (DEC-117/119/123).
+Resend is selected and implemented (DEC-120) — no provider decision remains. `DATABASE_URL`/
+`DATABASE_DIRECT_URL` are correctly split (DEC-119); the Pluggy webhook URL derivation is wired in and
+now explicitly staging/production-only (DEC-121/124); Node is pinned to `24.x`, the validated LTS line
+(DEC-123, superseding DEC-122's Node 26 pin). Remaining Phase 6B work is entirely on the Founder's
+side: verify a sending domain in Resend, then provision Neon + Railway directly in their own UIs (never
+pasting secrets into chat) following Phase 6A's exact checklist, after which Phase 6B (real staging
+deployment and the fresh-DB/upgrade-path/two-user/AI/security validation protocols already written) can
+begin.
+
+**Founder Local Live Bank Pilot (DEC-124, code-side complete, no real bank connected yet):** an explicit
+`OPEN_FINANCE_MODE` axis (`sandbox` default everywhere; `live` only when `APP_ENV=development` AND
+`OPEN_FINANCE_MODE=live` AND `FOUNDER_LIVE_BANK_PILOT=true` are ALL set —
+`open-finance-mode.server.ts`) lets the Founder personally pilot Ritmo against their own real bank via
+Pluggy Live while the app keeps using local PGlite — no Neon, no Railway, no public webhook, no
+deployment. The Connect widget's sandbox/live behavior is now caller-derived (`ConnectWidget`'s
+`includeSandbox` prop, previously hardcoded); a new `requestManualSyncHandler`/`requestManualSync`
+action reuses the existing `syncConnection` pipeline for on-demand refresh (no webhook can reach
+localhost); `resolveWebhookUrl` now explicitly never builds a URL outside staging/production. The Bank
+Connection screen shows a dev-only "Banco real — piloto local" indicator and a non-destructive
+data-isolation warning when Live mode is active on a profile that already has connections. This
+implementation deliberately STOPPED short of connecting any real bank — the Founder enters real Pluggy
+credentials into their own `apps/ritmo/.env.local` and performs the first real Connect consent
+manually.
+
+Deferred from Sprint 8, still relevant once Sprint 9 reaches Phase 4+: retiring `apps/web` once
+`apps/ritmo` parity is validated further, closing the remaining Sprint 8 data-model gaps deliberately
+(a real bill due-date/paycheck-date capture flow, a real scheduled daily-digest notification, the two
+Insights example categories with no engine equivalent yet), a real push/email notification provider
+(currently `NOT_CONFIGURED`), a real discovery-provider credential (Sprint 6's
+`LIVE_DISCOVERY_VALIDATION = BLOCKED_BY_EXTERNAL_PROVIDER_CONFIGURATION` is still unresolved), and a
+real completion/cancellation status on `SavedConciergePlan` (Sprint 7's `STALE_CONCIERGE_PLAN` alert
+currently approximates this with a relevance-window heuristic).
 
 ## Risks
 

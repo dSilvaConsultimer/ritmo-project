@@ -360,7 +360,8 @@ const getRecommendationDetailsTool = tool({
     "Returns one recommendation's full deterministic evidence (merchant, cadence, observed amount, occurrences, confidence) and impact — use this to answer 'why are you recommending this?' or 'how much would I save?'. Read-only.",
   kind: "READ",
   schema: getRecommendationDetailsSchema,
-  execute: (ctx, args) => queries.getRecommendationDetails(ctx.db, args.recommendationId),
+  execute: (ctx, args) =>
+    queries.getRecommendationDetails(ctx.db, ctx.financialProfileId, args.recommendationId),
 });
 
 const acceptRecommendationSchema = z.object({
@@ -380,6 +381,7 @@ const acceptRecommendationTool = tool({
   schema: acceptRecommendationSchema,
   execute: (ctx, args) =>
     recommendationService.acceptRecommendation(ctx.db, {
+      financialProfileId: ctx.financialProfileId,
       recommendationId: args.recommendationId,
       ...(args.effectiveDate ? { effectiveDate: args.effectiveDate } : {}),
     }),
@@ -409,6 +411,7 @@ const modifyRecommendationTool = tool({
   schema: modifyRecommendationSchema,
   execute: (ctx, args) =>
     recommendationService.modifyRecommendation(ctx.db, {
+      financialProfileId: ctx.financialProfileId,
       recommendationId: args.recommendationId,
       ...(args.targetAmountReais !== null ? { targetAmount: fromReais(args.targetAmountReais) } : {}),
       ...(args.effectiveDate ? { effectiveDate: args.effectiveDate } : {}),
@@ -428,7 +431,12 @@ const rejectRecommendationTool = tool({
   kind: "MUTATION",
   schema: rejectRecommendationSchema,
   execute: (ctx, args) =>
-    recommendationService.rejectRecommendation(ctx.db, args.recommendationId, args.reason ?? undefined),
+    recommendationService.rejectRecommendation(
+      ctx.db,
+      ctx.financialProfileId,
+      args.recommendationId,
+      args.reason ?? undefined,
+    ),
 });
 
 // ---------- Concierge (Sprint 6) ----------
@@ -680,7 +688,7 @@ const getAlertDetailsTool = tool({
     "Returns one alert's full deterministic evidence — use this to answer 'por que você está me avisando disso?'. Never invent a cause beyond what this returns. Read-only.",
   kind: "READ",
   schema: getAlertDetailsSchema,
-  execute: (ctx, args) => alertService.getAlertById(ctx.db, args.alertId),
+  execute: (ctx, args) => alertService.getAlertById(ctx.db, ctx.financialProfileId, args.alertId),
   extractFacts: (result) => (result ? alertFacts(result as alertService.Alert) : []),
 });
 
@@ -694,7 +702,7 @@ const markAlertSeenTool = tool({
     "Marks an alert as seen (e.g. 'pode marcar como visto'). Only call this on the user's own explicit instruction — never merely because the user asked about the alert.",
   kind: "MUTATION",
   schema: markAlertSeenSchema,
-  execute: (ctx, args) => alertService.markAlertSeen(ctx.db, args.alertId),
+  execute: (ctx, args) => alertService.markAlertSeen(ctx.db, ctx.financialProfileId, args.alertId),
   extractFacts: (result) => alertFacts(result as alertService.Alert),
 });
 
@@ -709,7 +717,8 @@ const dismissAlertTool = tool({
     "Dismisses an alert the user explicitly wants to stop seeing (e.g. 'pode ignorar esse alerta'). This does NOT mean the underlying condition is resolved — only that the user chose not to keep seeing it. Only call this for an explicit decision, never a hypothetical ('e se eu ignorasse?').",
   kind: "MUTATION",
   schema: dismissAlertSchema,
-  execute: (ctx, args) => alertService.dismissAlert(ctx.db, args.alertId, args.reason ?? undefined),
+  execute: (ctx, args) =>
+    alertService.dismissAlert(ctx.db, ctx.financialProfileId, args.alertId, args.reason ?? undefined),
   extractFacts: (result) => alertFacts(result as alertService.Alert),
 });
 

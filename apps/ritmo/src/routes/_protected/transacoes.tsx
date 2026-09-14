@@ -4,7 +4,7 @@ import { ThemeToggle } from "@/components/ritmo/ThemeToggle";
 import { getTransacoesData } from "@/functions/transacoes";
 import { toTransacoesViewModel } from "@/adapters/transacoes";
 
-export const Route = createFileRoute("/transacoes")({
+export const Route = createFileRoute("/_protected/transacoes")({
   head: () => ({
     meta: [
       { title: "Movimentações e compromissos — Ritmo" },

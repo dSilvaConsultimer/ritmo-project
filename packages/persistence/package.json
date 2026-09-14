@@ -12,17 +12,21 @@
     "test:watch": "vitest",
     "build": "tsc -p tsconfig.json",
     "db:generate": "drizzle-kit generate",
-    "db:seed": "tsx src/seed.ts"
+    "db:seed": "tsx src/seed.ts",
+    "db:migrate:postgres": "tsx src/migrate.ts"
   },
   "dependencies": {
     "@money-copilot/ai": "workspace:*",
+    "@money-copilot/config": "workspace:*",
     "@money-copilot/financial-engine": "workspace:*",
     "@money-copilot/shared": "workspace:*",
     "@electric-sql/pglite": "^0.5.8",
-    "drizzle-orm": "^0.45.2"
+    "drizzle-orm": "^0.45.2",
+    "pg": "^8.16.3"
   },
   "devDependencies": {
     "@types/node": "^26.4.1",
+    "@types/pg": "^8.15.5",
     "drizzle-kit": "^0.31.10",
     "typescript": "^6.0.3",
     "tsx": "^4.23.13",

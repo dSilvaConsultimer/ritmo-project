@@ -1,4 +1,6 @@
 import { boolean, integer, pgTable, text, unique } from "drizzle-orm/pg-core";
+export * from "./auth-schema";
+import { user } from "./auth-schema";
 import type {
   Certainty,
   EventLineItemStatus,
@@ -42,6 +44,24 @@ export const financialProfiles = pgTable("financial_profiles", {
   id: text("id").primaryKey(),
   label: text("label").notNull(),
   createdAt: text("created_at").notNull(),
+  /**
+   * Sprint 9: the authenticated identity that owns this profile — Better
+   * Auth's `user.id` (DEC-089), never a second parallel identity. Nullable
+   * because pre-Sprint-9 fixture/dev profiles have no owning user. Unique
+   * (not just indexed) so one authenticated user can never end up owning
+   * two profiles by accident — multiple NULLs are still allowed by
+   * Postgres, so existing unowned profiles are unaffected. Deliberately NO
+   * `onDelete: cascade` — matching every other `financial_profile_id`
+   * reference in this schema, deletion of financial data is always an
+   * explicit, audited, application-level operation (see
+   * `disconnectConnection`'s own doc comment), never a DB-level side
+   * effect. A future "delete account" feature (explicitly out of scope for
+   * Sprint 9) decides deliberately what to do with the profile first; until
+   * then Postgres simply blocks deleting a `user` row that still owns one.
+   */
+  ownerUserId: text("owner_user_id")
+    .unique()
+    .references(() => user.id),
 });
 
 /**
@@ -219,6 +239,11 @@ export const installmentPlans = pgTable("installment_plans", {
 
 export const reconciliationLinks = pgTable("reconciliation_links", {
   id: text("id").primaryKey(),
+  // Sprint 9 (DEC-091): was global across all profiles until this column —
+  // reconciliation must never compare/merge economic data cross-profile.
+  financialProfileId: text("financial_profile_id")
+    .notNull()
+    .references(() => financialProfiles.id),
   type: text("type").$type<ReconciliationLinkType>().notNull(),
   primaryTransactionId: text("primary_transaction_id")
     .notNull()

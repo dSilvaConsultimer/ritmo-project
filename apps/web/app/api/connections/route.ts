@@ -37,7 +37,7 @@ export async function DELETE(request: NextRequest): Promise<Response> {
     return NextResponse.json({ error: `No connection ${connectionId} for this profile` }, { status: 404 });
   }
 
-  const result = await disconnectConnection(db, connectionId);
+  const result = await disconnectConnection(db, DEMO_PROFILE_ID, connectionId);
   return NextResponse.json(result);
 }
 

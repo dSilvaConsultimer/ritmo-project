@@ -13,7 +13,7 @@ import {
   type SimulationCard,
 } from "@/adapters/assistente";
 
-export const Route = createFileRoute("/assistente")({
+export const Route = createFileRoute("/_protected/assistente")({
   head: () => ({
     meta: [
       { title: "Assistente Ritmo — Converse sobre o seu dinheiro" },

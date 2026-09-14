@@ -5,7 +5,7 @@ import {
   getDb,
   getNotificationPreferences,
 } from "@money-copilot/app-services";
-import { getCurrentProfileContext } from "./profile-context";
+import { getCurrentProfileContext } from "./profile.server";
 
 /**
  * Raw data for the Mais screen. See `src/adapters/mais.ts` for the
@@ -14,7 +14,7 @@ import { getCurrentProfileContext } from "./profile-context";
  * production login is designed or implemented here.
  */
 export const getMaisData = createServerFn({ method: "GET" }).handler(async () => {
-  const { displayName, financialProfileId } = getCurrentProfileContext();
+  const { displayName, financialProfileId } = await getCurrentProfileContext();
   const db = await getDb();
 
   const [connections, categoryRuleCount, notificationPreferences] = await Promise.all([

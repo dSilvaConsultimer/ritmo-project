@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDb, dismissAlert, markAlertSeen } from "@money-copilot/app-services";
+import { getDb, DEMO_PROFILE_ID, dismissAlert, markAlertSeen } from "@money-copilot/app-services";
 
 export const runtime = "nodejs";
 
@@ -20,7 +20,9 @@ export async function PATCH(request: NextRequest): Promise<Response> {
   const db = await getDb();
   try {
     const updated =
-      body.action === "SEEN" ? await markAlertSeen(db, body.alertId) : await dismissAlert(db, body.alertId);
+      body.action === "SEEN"
+        ? await markAlertSeen(db, DEMO_PROFILE_ID, body.alertId)
+        : await dismissAlert(db, DEMO_PROFILE_ID, body.alertId);
     return NextResponse.json({ alert: updated });
   } catch {
     return NextResponse.json({ error: `No alert ${body.alertId} for this profile` }, { status: 404 });

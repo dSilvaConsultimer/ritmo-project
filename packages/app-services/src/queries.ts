@@ -42,6 +42,7 @@ import {
 } from "@money-copilot/financial-engine";
 import * as repo from "@money-copilot/persistence";
 import type { Database } from "@money-copilot/persistence";
+import { assertOwnedByProfile } from "./ownership";
 
 /**
  * The application/query service layer: every read the UI (or a future
@@ -273,7 +274,13 @@ export async function getConnections(
   return repo.listProviderConnections(db, financialProfileId);
 }
 
-export async function getLatestSyncRunForConnection(db: Database, connectionId: string) {
+export async function getLatestSyncRunForConnection(
+  db: Database,
+  financialProfileId: string,
+  connectionId: string,
+) {
+  const connection = await repo.getProviderConnectionById(db, connectionId);
+  assertOwnedByProfile(connection, financialProfileId, `connection ${connectionId}`);
   return repo.getLatestSyncRun(db, connectionId);
 }
 
@@ -465,7 +472,11 @@ export async function getRecommendationsSummary(
 
 export async function getRecommendationDetails(
   db: Database,
+  financialProfileId: string,
   recommendationId: string,
 ): Promise<Recommendation | undefined> {
-  return repo.getRecommendationById(db, recommendationId);
+  const recommendation = await repo.getRecommendationById(db, recommendationId);
+  return recommendation && recommendation.financialProfileId === financialProfileId
+    ? recommendation
+    : undefined;
 }

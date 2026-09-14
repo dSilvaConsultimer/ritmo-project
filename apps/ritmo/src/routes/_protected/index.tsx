@@ -1,12 +1,13 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, redirect } from "@tanstack/react-router";
 import { ArrowUpRight, Sparkles, TrendingUp, Wallet } from "lucide-react";
 import { PhoneShell } from "@/components/ritmo/PhoneShell";
 import { ThemeToggle } from "@/components/ritmo/ThemeToggle";
 import { RitmoMark } from "@/components/ritmo/RitmoMark";
 import { getHomeData } from "@/functions/home";
 import { toHomeViewModel } from "@/adapters/home";
+import { getConnectionScreenData } from "@/functions/connections";
 
-export const Route = createFileRoute("/")({
+export const Route = createFileRoute("/_protected/")({
   head: () => ({
     meta: [
       { title: "Ritmo — Seu ritmo financeiro de hoje" },
@@ -22,6 +23,18 @@ export const Route = createFileRoute("/")({
       },
     ],
   }),
+  // Sprint 9 Phase 4 (brief §8): the onboarding decision is derived from
+  // real, persisted connection state every time — never a client-only
+  // flag. A new user with zero connections never sees Home/fixture-shaped
+  // data; an existing user with a connection needing attention still
+  // reaches Home (the existing alert/notification system already surfaces
+  // that — see docs/ALERTS-NOTIFICATIONS.md), where `/mais` or a future
+  // Home affordance routes to `/conectar-banco` to act on it. See
+  // docs/DECISIONS.md DEC-102.
+  beforeLoad: async () => {
+    const { hasAnyConnection } = await getConnectionScreenData();
+    if (!hasAnyConnection) throw redirect({ to: "/onboarding" });
+  },
   loader: () => getHomeData(),
   component: Home,
 });

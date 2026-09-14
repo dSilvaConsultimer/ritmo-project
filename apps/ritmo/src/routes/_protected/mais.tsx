@@ -1,10 +1,11 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import {
   Bell,
   ChevronRight,
   HelpCircle,
   Landmark,
   ListOrdered,
+  LogOut,
   Lock,
   Sparkles,
   UserRound,
@@ -14,6 +15,7 @@ import { ThemeSelector, ThemeToggle } from "@/components/ritmo/ThemeToggle";
 import { RitmoMark } from "@/components/ritmo/RitmoMark";
 import { getMaisData } from "@/functions/mais";
 import { toMaisViewModel } from "@/adapters/mais";
+import { authClient } from "@/lib/auth-client";
 
 const GROUP_ICONS: Record<string, readonly (typeof UserRound)[]> = {
   Conta: [UserRound, Bell],
@@ -21,7 +23,7 @@ const GROUP_ICONS: Record<string, readonly (typeof UserRound)[]> = {
   Suporte: [HelpCircle, Lock],
 };
 
-export const Route = createFileRoute("/mais")({
+export const Route = createFileRoute("/_protected/mais")({
   head: () => ({
     meta: [
       { title: "Mais — Perfil e preferências do Ritmo" },
@@ -41,6 +43,12 @@ export const Route = createFileRoute("/mais")({
 function Mais() {
   const data = Route.useLoaderData();
   const vm = toMaisViewModel(data);
+  const navigate = useNavigate();
+
+  async function handleLogout() {
+    await authClient.signOut();
+    navigate({ to: "/login" });
+  }
 
   return (
     <PhoneShell>
@@ -71,9 +79,18 @@ function Mais() {
           <div className="surface divide-y divide-border overflow-hidden">
             {g.itens.map(({ label, hint }, index) => {
               const Icon = GROUP_ICONS[g.titulo]![index]!;
+              // Sprint 9 Phase 4 (brief §18): `/mais` stays the account-management
+              // entry point; this row routes to the dedicated Bank Connection
+              // screen for connect/reconnect/manage instead of `/mais` reimplementing
+              // any of that itself.
+              const onClick =
+                label === "Instituições conectadas"
+                  ? () => navigate({ to: "/conectar-banco" })
+                  : undefined;
               return (
                 <button
                   key={label}
+                  onClick={onClick}
                   className="flex w-full items-center gap-3 px-4 py-3.5 text-left"
                 >
                   <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent text-accent-foreground">
@@ -98,6 +115,18 @@ function Mais() {
         </span>
         <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
       </Link>
+
+      <button
+        onClick={handleLogout}
+        className="surface mt-6 flex w-full items-center gap-3 p-4 text-left"
+      >
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-destructive/10 text-destructive">
+          <LogOut className="h-4 w-4" />
+        </div>
+        <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-destructive">
+          Sair da conta
+        </span>
+      </button>
 
       <div className="mt-8 mb-2 flex flex-col items-center gap-2">
         <RitmoMark className="h-8 w-8" />

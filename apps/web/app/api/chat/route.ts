@@ -104,7 +104,7 @@ export async function GET(request: NextRequest): Promise<Response> {
   const conversationId = request.nextUrl.searchParams.get("conversationId");
 
   if (conversationId) {
-    const messages = await listMessagesForConversation(db, conversationId);
+    const messages = await listMessagesForConversation(db, DEMO_PROFILE_ID, conversationId);
     return NextResponse.json({ messages });
   }
 

@@ -50,6 +50,27 @@
       "when": 1789003637601,
       "tag": "0006_neat_virginia_dare",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1789046740491,
+      "tag": "0007_curious_speedball",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1789047050688,
+      "tag": "0008_shocking_celestials",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1789050793883,
+      "tag": "0009_mute_stryfe",
+      "breakpoints": true
     }
   ]
 }

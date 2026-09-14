@@ -115,6 +115,14 @@ describe("pending -> posted reconciliation", () => {
 });
 
 describe("findTransactionDuplicates", () => {
+  it("stamps the resulting link with the primary transaction's own financialProfileId (Sprint 9: reconciliation must never be global across profiles)", () => {
+    const profileId = createId("financial-profile");
+    const a = tx({ financialProfileId: profileId });
+    const b = tx({ id: createId("transaction"), financialProfileId: profileId });
+    const links = findTransactionDuplicates([a, b]);
+    expect(links[0]?.financialProfileId).toBe(profileId);
+  });
+
   it("auto-confirms a provider external-id duplicate", () => {
     const a = tx({ externalProviderId: "pluggy", externalTransactionId: "same-id" });
     const b = tx({

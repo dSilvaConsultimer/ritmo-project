@@ -57,7 +57,7 @@ describe("evaluateAlerts — Safe-to-Spend material drop (A-G, X)", () => {
     await evaluateAlerts(db, fixtureProfile.id, ASOF);
 
     const [alert] = alertsOfType(await listAlertsForProfile(db, fixtureProfile.id), "SAFE_TO_SPEND_MATERIAL_DROP");
-    await markAlertSeen(db, alert!.id);
+    await markAlertSeen(db, fixtureProfile.id, alert!.id);
     await evaluateAlerts(db, fixtureProfile.id, ASOF);
 
     const [after] = alertsOfType(await listAlertsForProfile(db, fixtureProfile.id), "SAFE_TO_SPEND_MATERIAL_DROP");
@@ -72,7 +72,7 @@ describe("evaluateAlerts — Safe-to-Spend material drop (A-G, X)", () => {
     await evaluateAlerts(db, fixtureProfile.id, ASOF);
 
     const [alert] = alertsOfType(await listAlertsForProfile(db, fixtureProfile.id), "SAFE_TO_SPEND_MATERIAL_DROP");
-    await dismissAlert(db, alert!.id);
+    await dismissAlert(db, fixtureProfile.id, alert!.id);
     await evaluateAlerts(db, fixtureProfile.id, ASOF);
     await evaluateAlerts(db, fixtureProfile.id, ASOF);
 
@@ -138,11 +138,11 @@ describe("evaluateAlerts — Safe-to-Spend material drop (A-G, X)", () => {
     await evaluateAlerts(db, fixtureProfile.id, ASOF);
     const [alert] = alertsOfType(await listAlertsForProfile(db, fixtureProfile.id), "SAFE_TO_SPEND_MATERIAL_DROP");
 
-    await markAlertSeen(db, alert!.id);
-    await markAlertSeen(db, alert!.id);
-    await dismissAlert(db, alert!.id);
-    await dismissAlert(db, alert!.id);
-    await dismissAlert(db, alert!.id);
+    await markAlertSeen(db, fixtureProfile.id, alert!.id);
+    await markAlertSeen(db, fixtureProfile.id, alert!.id);
+    await dismissAlert(db, fixtureProfile.id, alert!.id);
+    await dismissAlert(db, fixtureProfile.id, alert!.id);
+    await dismissAlert(db, fixtureProfile.id, alert!.id);
 
     const final = await listAlertsForProfile(db, fixtureProfile.id);
     const target = final.find((a) => a.id === alert!.id)!;
@@ -208,7 +208,7 @@ describe("evaluateAlerts — Recommendation FAILED / VERIFIED (H, I, J)", () => 
     const [recommendation] = (await repo.listRecommendationsForProfile(db, fixtureProfile.id)).filter(
       (r) => r.evidence.normalizedMerchant === "NETFLIX",
     );
-    await acceptRecommendation(db, { recommendationId: recommendation!.id, effectiveDate: "2026-09-05" });
+    await acceptRecommendation(db, { financialProfileId: fixtureProfile.id, recommendationId: recommendation!.id, effectiveDate: "2026-09-05" });
     await repo.upsertTransaction(db, {
       ...(await repo.loadFinancialSnapshotInput(db, fixtureProfile.id, ASOF)).transactions.find((t) => t.externalTransactionId === "n3")!,
       id: createId("transaction"),
@@ -242,7 +242,7 @@ describe("evaluateAlerts — Recommendation FAILED / VERIFIED (H, I, J)", () => 
     const [recommendation] = (await repo.listRecommendationsForProfile(db, fixtureProfile.id)).filter(
       (r) => r.evidence.normalizedMerchant === "NETFLIX",
     );
-    await acceptRecommendation(db, { recommendationId: recommendation!.id, effectiveDate: "2026-09-05" });
+    await acceptRecommendation(db, { financialProfileId: fixtureProfile.id, recommendationId: recommendation!.id, effectiveDate: "2026-09-05" });
     const conn = await repo.getProviderConnectionById(db, connection.id);
     await repo.upsertProviderConnection(db, { ...conn!, lastSuccessfulSyncAt: "2026-10-25T00:00:00.000Z" });
     await evaluateRecommendationVerifications(db, fixtureProfile.id, "2026-10-25");

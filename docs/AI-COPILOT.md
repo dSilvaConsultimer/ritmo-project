@@ -388,6 +388,16 @@ entire transaction history or entire message history "just in case" — `getRece
 explicitly bounded (default 7 days, max 90), and the conversation history sent each turn is exactly
 the persisted messages for that conversation, nothing more.
 
+**Sprint 9 Phase 5** added two more layers, both real gaps found and closed, not preventative-only
+additions (docs/DECISIONS.md DEC-105/109): (1) `OpenAIProvider.generate` previously called
+`responses.create()` with no `max_output_tokens` at all — a single turn had no ceiling on OpenAI-side
+cost/latency; `packages/ai/src/model-config.ts`'s `DEFAULT_MAX_OUTPUT_TOKENS` (2000) now bounds every
+call, overridable via the provider's constructor. (2) `apps/ritmo/src/functions/assistente.server.ts`'s
+`sendAssistenteMessageHandler` now checks a burst limit (3/10s) and a sustained hourly limit (60/hour)
+— both keyed by the server-resolved `financialProfileId`, never a client-supplied value — before ever
+calling OpenAI, returning a calm `AI_RATE_LIMITED` product error instead. This is abuse/cost
+protection, not a commercial usage tier — no pricing concept exists in the domain.
+
 ## Testing
 
 Every default-suite test uses `MockAIProvider` — no `OPENAI_API_KEY` required

@@ -103,7 +103,7 @@ export async function runCopilotTurn(input: RunCopilotTurnInput): Promise<Copilo
   const { db, financialProfileId, asOfDate, userMessageText, aiProvider, model } = input;
 
   const conversation = await getOrCreateConversation(db, financialProfileId, input.conversationId);
-  const userMessage = await appendMessage(db, conversation.id, "USER", userMessageText);
+  const userMessage = await appendMessage(db, financialProfileId, conversation.id, "USER", userMessageText);
 
   const history = await repo.listConversationMessages(db, conversation.id);
   let turnItems: AITurnItem[] = history.map((m) => ({
@@ -328,7 +328,7 @@ export async function runCopilotTurn(input: RunCopilotTurnInput): Promise<Copilo
     warnings.push("The assistant's draft response contained unverified monetary figures and was replaced with a deterministic summary.");
   }
 
-  await appendMessage(db, conversation.id, "ASSISTANT", responseText);
+  await appendMessage(db, financialProfileId, conversation.id, "ASSISTANT", responseText);
 
   return {
     conversationId: conversation.id,

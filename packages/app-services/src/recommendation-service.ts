@@ -11,6 +11,7 @@ import {
 } from "@money-copilot/financial-engine";
 import * as repo from "@money-copilot/persistence";
 import type { Database } from "@money-copilot/persistence";
+import { assertOwnedByProfile } from "./ownership";
 
 /**
  * Sprint 5 (DEC-059 onward): the application/orchestration layer for
@@ -103,13 +104,22 @@ function appendDecision(
   return [...recommendation.decisionHistory, event];
 }
 
-async function requireRecommendation(db: Database, recommendationId: string): Promise<Recommendation> {
+/**
+ * Sprint 9: takes the CALLER's own `financialProfileId` — a guessed/leaked
+ * `recommendationId` belonging to another profile throws the exact same
+ * `ResourceNotFoundError` as a nonexistent one (see `ownership.ts`).
+ */
+async function requireRecommendation(
+  db: Database,
+  recommendationId: string,
+  financialProfileId: string,
+): Promise<Recommendation> {
   const recommendation = await repo.getRecommendationById(db, recommendationId);
-  if (!recommendation) throw new Error(`No recommendation ${recommendationId}`);
-  return recommendation;
+  return assertOwnedByProfile(recommendation, financialProfileId, `recommendation ${recommendationId}`);
 }
 
 export interface AcceptRecommendationInput {
+  readonly financialProfileId: string;
   readonly recommendationId: string;
   /** Defaults to "now" — accepting a cancellation with no stated delay means "starting now." Never invented beyond that reasonable operational default. */
   readonly effectiveDate?: string;
@@ -129,7 +139,7 @@ export async function acceptRecommendation(
   db: Database,
   input: AcceptRecommendationInput,
 ): Promise<Recommendation> {
-  const recommendation = await requireRecommendation(db, input.recommendationId);
+  const recommendation = await requireRecommendation(db, input.recommendationId, input.financialProfileId);
   if (recommendation.status !== "PENDING") {
     throw new Error(`Recommendation ${recommendation.id} is ${recommendation.status}, not PENDING — cannot ACCEPT`);
   }
@@ -153,6 +163,7 @@ export async function acceptRecommendation(
 }
 
 export interface ModifyRecommendationInput {
+  readonly financialProfileId: string;
   readonly recommendationId: string;
   /** Present for a REDUCE — the user's own explicit target monthly amount. Never invented. */
   readonly targetAmount?: Money;
@@ -173,7 +184,7 @@ export async function modifyRecommendation(
   db: Database,
   input: ModifyRecommendationInput,
 ): Promise<Recommendation> {
-  const recommendation = await requireRecommendation(db, input.recommendationId);
+  const recommendation = await requireRecommendation(db, input.recommendationId, input.financialProfileId);
   if (!["PENDING", "ACCEPTED", "MODIFIED"].includes(recommendation.status)) {
     throw new Error(`Recommendation ${recommendation.id} is ${recommendation.status} — cannot MODIFY`);
   }
@@ -235,10 +246,11 @@ export async function modifyRecommendation(
  */
 export async function rejectRecommendation(
   db: Database,
+  financialProfileId: string,
   recommendationId: string,
   reason?: string,
 ): Promise<Recommendation> {
-  const recommendation = await requireRecommendation(db, recommendationId);
+  const recommendation = await requireRecommendation(db, recommendationId, financialProfileId);
   if (recommendation.status !== "PENDING") {
     throw new Error(`Recommendation ${recommendation.id} is ${recommendation.status}, not PENDING — cannot REJECT`);
   }

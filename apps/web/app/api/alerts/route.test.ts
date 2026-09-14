@@ -25,6 +25,7 @@ describe("PATCH /api/alerts", () => {
   it("returns 400 when alertId or action is missing", async () => {
     vi.doMock("@money-copilot/app-services", () => ({
       getDb: vi.fn(async () => ({})),
+      DEMO_PROFILE_ID: "demo-profile",
       markAlertSeen: vi.fn(),
       dismissAlert: vi.fn(),
     }));
@@ -38,6 +39,7 @@ describe("PATCH /api/alerts", () => {
     const markAlertSeen = vi.fn(async () => updated);
     vi.doMock("@money-copilot/app-services", () => ({
       getDb: vi.fn(async () => ({})),
+      DEMO_PROFILE_ID: "demo-profile",
       markAlertSeen,
       dismissAlert: vi.fn(),
     }));
@@ -45,7 +47,7 @@ describe("PATCH /api/alerts", () => {
     const response = await PATCH(request({ alertId: "alert-1", action: "SEEN" }) as never);
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ alert: updated });
-    expect(markAlertSeen).toHaveBeenCalledWith({}, "alert-1");
+    expect(markAlertSeen).toHaveBeenCalledWith({}, "demo-profile", "alert-1");
   });
 
   it("calls dismissAlert for action DISMISS", async () => {
@@ -53,18 +55,20 @@ describe("PATCH /api/alerts", () => {
     const dismissAlert = vi.fn(async () => updated);
     vi.doMock("@money-copilot/app-services", () => ({
       getDb: vi.fn(async () => ({})),
+      DEMO_PROFILE_ID: "demo-profile",
       markAlertSeen: vi.fn(),
       dismissAlert,
     }));
     const { PATCH } = await import("./route");
     const response = await PATCH(request({ alertId: "alert-1", action: "DISMISS" }) as never);
     expect(response.status).toBe(200);
-    expect(dismissAlert).toHaveBeenCalledWith({}, "alert-1");
+    expect(dismissAlert).toHaveBeenCalledWith({}, "demo-profile", "alert-1");
   });
 
   it("returns 404 for an unknown alert id rather than a raw error", async () => {
     vi.doMock("@money-copilot/app-services", () => ({
       getDb: vi.fn(async () => ({})),
+      DEMO_PROFILE_ID: "demo-profile",
       markAlertSeen: vi.fn(async () => {
         throw new Error("No alert unknown-id");
       }),

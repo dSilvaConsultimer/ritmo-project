@@ -5,7 +5,7 @@ import { ThemeToggle } from "@/components/ritmo/ThemeToggle";
 import { getPlanejamentoData } from "@/functions/planejamento";
 import { toPlanejamentoViewModel } from "@/adapters/planejamento";
 
-export const Route = createFileRoute("/planejamento")({
+export const Route = createFileRoute("/_protected/planejamento")({
   head: () => ({
     meta: [
       { title: "Planejamento do mês — Ritmo" },

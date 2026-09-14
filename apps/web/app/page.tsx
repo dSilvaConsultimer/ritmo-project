@@ -338,7 +338,9 @@ export default async function HomePage() {
     listAlertsForProfile(db, DEMO_PROFILE_ID),
   ]);
 
-  const latestSync = connections[0] ? await getLatestSyncRunForConnection(db, connections[0].id) : undefined;
+  const latestSync = connections[0]
+    ? await getLatestSyncRunForConnection(db, DEMO_PROFILE_ID, connections[0].id)
+    : undefined;
   const future = snapshot.futureInstallmentCommitments;
   const isDemoMode = connections.length === 0;
   const recommendationsData = recommendationsDataFromSummary(recommendationsSummary);

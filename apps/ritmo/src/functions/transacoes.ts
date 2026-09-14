@@ -1,6 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { getDb, getFixedExpensesForProfile, getTransactions } from "@money-copilot/app-services";
-import { getCurrentProfileContext } from "./profile-context";
+import { getCurrentProfileContext } from "./profile.server";
 import { ASOF_DATE } from "./config";
 
 /**
@@ -8,7 +8,7 @@ import { ASOF_DATE } from "./config";
  * the presentation reshaping (grouping by Hoje/Ontem/Esta semana, etc.).
  */
 export const getTransacoesData = createServerFn({ method: "GET" }).handler(async () => {
-  const { financialProfileId } = getCurrentProfileContext();
+  const { financialProfileId } = await getCurrentProfileContext();
   const db = await getDb();
 
   const [fixedExpenses, transactions] = await Promise.all([

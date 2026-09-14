@@ -12,6 +12,8 @@ import { useEffect, type ReactNode } from "react";
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 import { ThemeProvider } from "../lib/theme";
+import { isAuthExpiredError } from "../lib/auth-error";
+import { SessionExpiredScreen } from "../components/ritmo/SessionExpiredScreen";
 
 function NotFoundComponent() {
   return (
@@ -39,6 +41,16 @@ function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
   useEffect(() => {
     reportLovableError(error, { boundary: "tanstack_root_error_component" });
   }, [error]);
+
+  // Sprint 9 Phase 4 (brief §J, "SESSION_EXPIRED"): a session that expired
+  // mid-visit surfaces as `UnauthenticatedError` from whichever protected
+  // loader/server function ran next. This replaces the ENTIRE failed
+  // route's subtree — no stale private financial data stays mounted
+  // underneath a generic error message. Never rely on client-side-only
+  // session expiry handling: this fires from a real thrown server error.
+  if (isAuthExpiredError(error)) {
+    return <SessionExpiredScreen />;
+  }
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4">

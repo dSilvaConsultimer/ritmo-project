@@ -6,6 +6,8 @@ export * from "./copilot/index";
 export * from "./db";
 export * from "./discovery-provider-registry";
 export * from "./mutations";
+export * from "./ownership";
+export * from "./profile-service";
 export * from "./queries";
 export * from "./recommendation-service";
 export * from "./sync";

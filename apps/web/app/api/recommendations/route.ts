@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   getDb,
+  DEMO_PROFILE_ID,
   acceptRecommendation,
   modifyRecommendation,
   rejectRecommendation,
@@ -38,6 +39,7 @@ export async function POST(request: NextRequest): Promise<Response> {
     switch (body.action) {
       case "ACCEPT": {
         const result = await acceptRecommendation(db, {
+          financialProfileId: DEMO_PROFILE_ID,
           recommendationId: body.recommendationId,
           ...(body.effectiveDate ? { effectiveDate: body.effectiveDate } : {}),
         });
@@ -45,6 +47,7 @@ export async function POST(request: NextRequest): Promise<Response> {
       }
       case "MODIFY": {
         const result = await modifyRecommendation(db, {
+          financialProfileId: DEMO_PROFILE_ID,
           recommendationId: body.recommendationId,
           ...(body.targetAmountReais !== undefined ? { targetAmount: fromReais(body.targetAmountReais) } : {}),
           ...(body.effectiveDate ? { effectiveDate: body.effectiveDate } : {}),
@@ -52,7 +55,7 @@ export async function POST(request: NextRequest): Promise<Response> {
         return NextResponse.json(result);
       }
       case "REJECT": {
-        const result = await rejectRecommendation(db, body.recommendationId, body.reason);
+        const result = await rejectRecommendation(db, DEMO_PROFILE_ID, body.recommendationId, body.reason);
         return NextResponse.json(result);
       }
       default:

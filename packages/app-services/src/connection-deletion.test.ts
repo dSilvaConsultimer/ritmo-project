@@ -104,6 +104,7 @@ describe("disconnectConnection", () => {
     // belongs to the connection being DISCARDED.
     const crossConnectionLink: ReconciliationLink = {
       id: createId("reconciliation-link"),
+      financialProfileId: fixtureProfile.id,
       type: "TRANSACTION_TRANSACTION",
       primaryTransactionId: keptTransaction.id,
       linkedTransactionId: discardedTransaction.id,
@@ -144,7 +145,7 @@ describe("disconnectConnection", () => {
     };
     await repo.upsertInstallmentPlan(db, discardedInstallmentPlan);
 
-    const result = await disconnectConnection(db, discardedConnection.id);
+    const result = await disconnectConnection(db, fixtureProfile.id, discardedConnection.id);
 
     expect(result.deletedPaymentSourceCount).toBe(1);
     expect(result.deletedTransactionCount).toBe(1);
@@ -167,7 +168,7 @@ describe("disconnectConnection", () => {
 
     // The cross-connection reconciliation link is gone — it referenced a
     // now-deleted transaction, so it could not remain valid.
-    const remainingLinks = await repo.listAllReconciliationLinks(db);
+    const remainingLinks = await repo.listReconciliationLinksForProfile(db, fixtureProfile.id);
     expect(remainingLinks.some((l) => l.id === crossConnectionLink.id)).toBe(false);
 
     // The kept transaction (which was the "primary" side of that link) is untouched.
@@ -188,7 +189,7 @@ describe("disconnectConnection", () => {
     const db = await freshSeededDb();
     const emptyConnection = await setUpConnection(db, "empty-external-id");
 
-    const result = await disconnectConnection(db, emptyConnection.id);
+    const result = await disconnectConnection(db, fixtureProfile.id, emptyConnection.id);
 
     expect(result.deletedPaymentSourceCount).toBe(0);
     expect(result.deletedTransactionCount).toBe(0);
@@ -198,6 +199,6 @@ describe("disconnectConnection", () => {
 
   it("throws for an unknown connectionId rather than silently no-op-ing", async () => {
     const db = await freshSeededDb();
-    await expect(disconnectConnection(db, "does-not-exist")).rejects.toThrow();
+    await expect(disconnectConnection(db, fixtureProfile.id, "does-not-exist")).rejects.toThrow();
   });
 });

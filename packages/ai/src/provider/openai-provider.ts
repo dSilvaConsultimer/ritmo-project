@@ -9,7 +9,7 @@ import {
   RateLimitError,
 } from "openai";
 import type { ResponseInputItem, Tool } from "openai/resources/responses/responses";
-import { DEFAULT_OPENAI_MODEL } from "../model-config";
+import { DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_OPENAI_MODEL } from "../model-config";
 import type { AIGenerateOptions, AIGenerateResult, AIProvider, AITurnItem } from "./types";
 import { AIError } from "./types";
 
@@ -29,12 +29,15 @@ import { AIError } from "./types";
 export interface OpenAIProviderOptions {
   readonly apiKey: string;
   readonly model?: string;
+  /** Sprint 9 Phase 5 (DEC-109) — ceiling on a single call's output tokens; see model-config.ts. */
+  readonly maxOutputTokens?: number;
 }
 
 export class OpenAIProvider implements AIProvider {
   readonly name = "openai";
   private readonly client: OpenAI;
   private readonly model: string;
+  private readonly maxOutputTokens: number;
 
   constructor(options: OpenAIProviderOptions) {
     if (!options.apiKey) {
@@ -42,6 +45,7 @@ export class OpenAIProvider implements AIProvider {
     }
     this.client = new OpenAI({ apiKey: options.apiKey });
     this.model = options.model ?? DEFAULT_OPENAI_MODEL;
+    this.maxOutputTokens = options.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
   }
 
   async generate(options: AIGenerateOptions): Promise<AIGenerateResult> {
@@ -51,6 +55,7 @@ export class OpenAIProvider implements AIProvider {
         instructions: options.instructions,
         input: options.input.map(toResponseInputItem),
         tools: options.tools.map(toOpenAITool),
+        max_output_tokens: this.maxOutputTokens,
       });
 
       const toolCalls = response.output.filter(

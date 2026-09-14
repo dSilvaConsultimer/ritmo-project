@@ -29,6 +29,14 @@ export type ReconciliationStatus = "CONFIRMED" | "CANDIDATE" | "REJECTED";
  */
 export interface ReconciliationLink {
   readonly id: Id<"reconciliation-link">;
+  /**
+   * Sprint 9: reconciliation must never compare/merge economic data across
+   * profiles — this is what makes the link's own persistence and every
+   * lookup of it profile-scoped rather than global. Always the SAME
+   * profile as `primaryTransactionId` (and `linkedTransactionId`/
+   * `linkedEventLineItemId`, when present) — never stamped independently.
+   */
+  readonly financialProfileId: Id<"financial-profile">;
   readonly type: ReconciliationLinkType;
   /** The record retained as the source of truth for downstream calculations. */
   readonly primaryTransactionId: Id<"transaction">;
@@ -53,7 +61,7 @@ export interface ReconciliationLink {
  * link will have DIFFERENT `id`s. See docs/DECISIONS.md DEC-049.
  */
 export function reconciliationLinkPairKey(link: ReconciliationLink): string {
-  return `${link.type}:${link.primaryTransactionId}:${link.linkedTransactionId ?? link.linkedEventLineItemId ?? ""}`;
+  return `${link.financialProfileId}:${link.type}:${link.primaryTransactionId}:${link.linkedTransactionId ?? link.linkedEventLineItemId ?? ""}`;
 }
 
 const FINGERPRINT_DATE_TOLERANCE_DAYS = 3;
@@ -163,6 +171,7 @@ export function findTransactionDuplicates(
       const status = statusForConfidence(confidence);
       links.push({
         id: createId("reconciliation-link"),
+        financialProfileId: a.financialProfileId,
         type: "TRANSACTION_TRANSACTION",
         primaryTransactionId: a.id,
         linkedTransactionId: b.id,
@@ -214,6 +223,7 @@ export function reconcileEventLineItems(
         claimed.add(transaction.id);
         links.push({
           id: createId("reconciliation-link"),
+          financialProfileId: transaction.financialProfileId,
           type: "TRANSACTION_EVENT_LINE_ITEM",
           primaryTransactionId: transaction.id,
           linkedEventLineItemId: item.id,

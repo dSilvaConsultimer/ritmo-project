@@ -5,7 +5,7 @@ import {
   getFixedExpensesForProfile,
   getUpcomingFinancialEventsForProfile,
 } from "@money-copilot/app-services";
-import { getCurrentProfileContext } from "./profile-context";
+import { getCurrentProfileContext } from "./profile.server";
 import { ASOF_DATE } from "./config";
 
 /**
@@ -16,7 +16,7 @@ import { ASOF_DATE } from "./config";
  * engine doesn't actually know (see docs/RITMO.md, "Data-model gaps").
  */
 export const getPlanejamentoData = createServerFn({ method: "GET" }).handler(async () => {
-  const { financialProfileId } = getCurrentProfileContext();
+  const { financialProfileId } = await getCurrentProfileContext();
   const db = await getDb();
 
   const [snapshot, fixedExpenses, upcomingEvents] = await Promise.all([

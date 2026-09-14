@@ -99,7 +99,7 @@ describe("deliverAlertNotification / syncNotificationsForProfile", () => {
   it("(C) a dismissed alert is not delivered by syncNotificationsForProfile", async () => {
     const db = await freshSeededDb();
     const alert = await makeMaterialSafeToSpendAlert(db);
-    await dismissAlert(db, alert.id);
+    await dismissAlert(db, fixtureProfile.id, alert.id);
 
     const result = await syncNotificationsForProfile(db, fixtureProfile.id);
     expect(result.delivered).toBe(0);

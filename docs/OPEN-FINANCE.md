@@ -126,6 +126,20 @@ token-fetch request — closing the exact gap the Sprint 4.5 incident (two sandb
 from repeated clicks) exploited, where the button re-enabled itself the moment the token fetch
 finished even though the widget was still open and waiting for the user.
 
+**Sprint 9 Phase 4**: `apps/ritmo` now ALSO drives this exact same flow (its own dedicated
+`/conectar-banco` screen, `apps/ritmo/src/functions/connections.server.ts`) — same
+`RECONNECT_STATUSES` set, same relabel-not-reimplement approach, same `completeConnection` dedup
+guarantee, same "disable for the whole widget-open duration" rule. No second connection architecture
+was introduced — see docs/DECISIONS.md DEC-101 and docs/RITMO.md, "Onboarding and Bank Connection."
+
+**Sprint 9 Phase 5**: `startBankConnectionHandler`/`finishBankConnectionHandler`/
+`removeBankConnectionHandler` (the expensive, provider-calling actions) are now also rate-limited
+(5/minute per profile) — a second, independent layer against rapid repeated connect/reconnect/
+disconnect requests, on top of the dedup guarantee above. `checkSyncProgressHandler`/
+`getConnectionScreenDataHandler` (read-only polling, no Pluggy call) deliberately use a separate,
+generous poll policy (120/minute) so the Phase 4 1.5s SYNCING poll is never affected — see
+docs/DECISIONS.md DEC-105.
+
 ## Connection deletion (Sprint 4.5, DEC-050; UI added Sprint 7, DEC-080)
 
 The inverse of recovery: fully removing ONE connection and every piece of local data scoped
@@ -272,6 +286,16 @@ see `/api/token`), checked by `/api/webhook` before any processing. This is a pr
 URL-obscurity control, not a cryptographic signature — documented here so it's never mistaken for
 one.
 
+**Sprint 9 Phase 5**: `apps/ritmo` now has its own webhook receiver too
+(`apps/ritmo/src/functions/webhook.server.ts` + `routes/api/webhook.ts`) — it had none before this
+phase; only `apps/web`'s route existed. Same secret scheme, same `handleWebhookEvent` unmodified, plus
+a generous rate-limit ceiling (a sanity check against a misbehaving/duplicating sender, never intended
+to reject Pluggy's real delivery volume) and a redacted error response (the real failure reason goes
+server-side only; the caller gets a generic message). No public URL exists yet to actually register
+with Pluggy (`createConnectToken`'s `webhookUrl` parameter is not yet passed by
+`apps/ritmo/src/functions/connections.server.ts`) — wiring that in is a Phase 6 step, once a real
+deployment has a real URL. See docs/DECISIONS.md DEC-111.
+
 ### Local development / manual sync
 
 For local development, the webhook URL must be reachable from the public internet over HTTPS (or
@@ -280,6 +304,25 @@ HTTPS tunnel tool works (e.g. `ngrok`, Cloudflare Tunnel, or a cloud deployment'
 no specific paid vendor is required. Independent of webhooks, the "Refresh / sync" button
 (`/api/sync`) triggers `syncConnection` directly, so local development never depends entirely on
 webhook delivery (DEC-031).
+
+### Founder Local Live Bank Pilot (`apps/ritmo`, Sprint 9, DEC-124)
+
+`apps/ritmo` has a third, deliberately narrow scenario beyond ordinary Sandbox development and a
+future real Staging/Production deployment: the Founder personally piloting the product against their
+own real bank, entirely on their own machine — `open-finance-mode.server.ts`'s `resolveOpenFinanceMode`
+resolves to `"live"` only when `APP_ENV=development` AND `OPEN_FINANCE_MODE=live` AND
+`FOUNDER_LIVE_BANK_PILOT=true` are ALL explicitly set (any one missing stays `"sandbox"`, the default
+everywhere including this app's own automated tests). No tunnel, no public webhook, no deployed
+environment — `resolveWebhookUrl` (above) never builds a URL outside staging/production, full stop, so
+this scenario is intentionally webhook-less by construction, not merely by omission. The Bank
+Connection screen's "Sincronizar agora" manual action (`requestManualSyncHandler`, reusing
+`syncConnection` unmodified) is how a locally-connected real bank's transactions ever refresh after the
+first sync. `ConnectWidget`'s `includeSandbox` prop is derived from this same resolved mode — Sandbox
+mode includes Pluggy's own sandbox/test connector; Live mode does not, so only real institution
+connectors are offered. This mode carries no special data-isolation guarantee beyond a visible warning:
+connecting a real bank on a profile that already has Sandbox test connections adds to the same profile
+rather than segregating automatically (nothing is ever auto-deleted) — the Founder Bank Connection
+screen surfaces this explicitly before they proceed.
 
 ## Accounts / payment sources
 

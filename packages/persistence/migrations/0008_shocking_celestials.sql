@@ -1,0 +1,2 @@
+ALTER TABLE "financial_profiles" ADD COLUMN "owner_user_id" text;--> statement-breakpoint
+ALTER TABLE "financial_profiles" ADD CONSTRAINT "financial_profiles_owner_user_id_unique" UNIQUE("owner_user_id");

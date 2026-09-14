@@ -51,16 +51,19 @@ built.
 
 ## Profile resolution seam
 
-`apps/ritmo/src/functions/profile-context.ts` exports the ONE function, `getCurrentProfileContext()`,
-that every other server function calls to get `{ financialProfileId, displayName }`. No server
-function references `DEMO_PROFILE_ID` directly. For Sprint 8 it resolves unconditionally to the
-existing demo/founder fixture profile — **this is explicitly not an authentication
-implementation.** It's the seam a future sprint's real auth replaces by changing the inside of this
-one function, with zero changes required to any adapter or route.
+`getCurrentProfileContext()` (Sprint 8; real implementation Sprint 9 Phase 3) is the ONE function
+every other server function calls to get `{ financialProfileId, displayName }` — no server function
+references `DEMO_PROFILE_ID` directly (`apps/web` is the one exception, deliberately — DEC-088). As of
+Sprint 9 Phase 3 this is a REAL authentication implementation, not a placeholder: it resolves the
+caller's real Better Auth session (`apps/ritmo/src/functions/profile.server.ts`) and
+provisions/resolves that user's own `FinancialProfile` — see docs/DECISIONS.md DEC-089/097 for the
+auth architecture and docs/PROJECT_STATE.md for current approval status. The Sprint 8 seam design
+(a single function every route/adapter goes through) is exactly what let real auth replace its inside
+with zero changes to any adapter or route, as originally intended.
 
-**Login exception:** no login/auth UI exists or is designed. The natural slot for it is the "Perfil
-e dados" row on `/mais` (see `src/adapters/mais.ts` and `src/routes/mais.tsx`) — noted for later,
-not built now.
+**Login UI**: `/login`, `/cadastro`, `/recuperar-senha` (Sprint 9 Phase 3) — see DEC-089/097/098.
+**Onboarding UI**: `/onboarding`, `/conectar-banco` (Sprint 9 Phase 4) — see the section below and
+DEC-101/102.
 
 ## Server/client security boundary
 
@@ -73,9 +76,12 @@ protection without colliding with that literal pattern.
 
 **Automated build-time proof**, not just a stated rule: `apps/ritmo/scripts/check-client-bundle.mjs`
 runs after every `vite build`, scanning ONLY the client-targeted output (`.output/public/`, never
-`.output/server/`) for: the real `OPENAI_API_KEY`/`PLUGGY_CLIENT_SECRET` values (when set in the
-build environment), the literal strings `OPENAI_API_KEY`/`PLUGGY_CLIENT_SECRET`, and the
-server-only package names `@electric-sql/pglite`, `pluggy-sdk`, `openai`. Run it via:
+`.output/server/`) for real secret values (`OPENAI_API_KEY`/`PLUGGY_CLIENT_SECRET`/
+`BETTER_AUTH_SECRET`/`DATABASE_URL`/`BETTER_AUTH_URL`, when set in the build environment), the
+literal secret-name strings, precise server-only package/entry-point markers
+(`@electric-sql/pglite`, `pluggy-sdk`, `openai`, the node-postgres driver, Better Auth's server-only
+Drizzle adapter/TanStack Start cookie plugin — see docs/DECISIONS.md DEC-100), and any local
+`.env`/`.env.local` file's actual values. Run it via:
 
 ```
 pnpm --filter @money-copilot/ritmo build   # runs vite build && node scripts/check-client-bundle.mjs
@@ -83,6 +89,60 @@ pnpm --filter @money-copilot/ritmo build   # runs vite build && node scripts/che
 
 Verified clean after wiring the Assistente screen (the first screen to touch `OPENAI_API_KEY`,
 transitively via `@money-copilot/ai`'s `OpenAIProvider`).
+
+## Production hardening (Sprint 9 Phase 5)
+
+Rate limiting (AI, Open Finance actions), auth abuse protection (Better Auth's own built-in limiter),
+security headers, structured logging with secret redaction, a webhook receiver, and health/preflight
+endpoints — see docs/ARCHITECTURE.md, "Production hardening cross-cutting layer" for the module map,
+and docs/DECISIONS.md DEC-105 through DEC-116 for the full rationale/detail. Not duplicated here to
+avoid drift between two descriptions of the same thing.
+
+## Onboarding and Bank Connection (Sprint 9 Phase 4)
+
+The first-time product journey: Sign up → `/onboarding` (Welcome, one CTA, no skip — DEC-102) →
+`/conectar-banco` (the dedicated Bank Connection screen) → the real Pluggy Connect widget
+(`react-pluggy-connect`, `apps/ritmo/src/components/ritmo/ConnectWidget.tsx` — the same widget
+`apps/web`'s `ConnectButton.tsx` already uses) → Home. See docs/DECISIONS.md DEC-101/102 for the full
+architecture and rationale; this section is the short version.
+
+**Routing decision** (`apps/ritmo/src/routes/_protected/index.tsx`'s `beforeLoad`): a real,
+server-resolved check (`getConnectionScreenData()`) on every Home navigation — a user with zero
+connections is redirected to `/onboarding`; a connection needing attention does NOT block Home (the
+existing alert system already surfaces that).
+
+**`/conectar-banco`** is one route, an internal state machine, not a route per state: idle/connect CTA
+→ requesting a Connect Token → the Pluggy widget open (its own hosted UI is the distinguishable
+AUTHENTICATING step) → polling `checkSyncProgress` against the real persisted `SyncRun`/
+`ProviderConnection` state (never a fixed timer) → success/partial-data/error. Reconnecting an
+unhealthy connection (`LOGIN_ERROR`/`USER_ACTION_REQUIRED`/`ERROR` — the same set `apps/web`'s
+`ConnectedAccountsPanel` uses, DEC-080) reuses the identical connect flow, relabeled — no separate
+reconnect implementation. Disconnecting reuses `disconnectConnection` unmodified.
+
+**`/mais`** stays the account-management entry point (unchanged layout) — its "Instituições
+conectadas" row now routes to `/conectar-banco`.
+
+**Ownership**: every new server function (`apps/ritmo/src/functions/connections.server.ts`) resolves
+`financialProfileId` via `getCurrentProfileContext()` and accepts none from the caller — see
+`connections.server.test.ts` for the permanent adversarial proof.
+
+**SESSION_EXPIRED**: `apps/ritmo/src/components/ritmo/SessionExpiredScreen.tsx`, reached both as a
+real route (`/sessao-expirada`) and via the root router error boundary (`__root.tsx`) when a loader
+throws `UnauthenticatedError` — verified against the real serialized error shape crossing the
+server-function boundary, not assumed (DEC-102).
+
+**Deliberately not built in V1** (see DEC-102): a "skip onboarding" path — every other Ritmo screen
+assumes real connected-account data, and a genuinely honest empty-data experience across all of them
+is separate, future work.
+
+**Entry state machine** (fixed post-Founder-approval, DEC-104): no session → `/login`; session + zero
+connections → `/onboarding`; session + a connection → Home; a connection needing attention still
+reaches Home. `DEV_AUTH_BYPASS` (development/test only, disabled by default, documented in
+`.env.example`) skips the real Better Auth check when explicitly set to `"true"` — never on by
+default, never usable in staging/production. For repeatable local testing of the real flow, `GET
+/api/dev-seed` (development/test only, idempotent) provisions a real Better Auth account
+(`teste@ritmo.local`/`RitmoTeste123!`) usable through the actual `/login` screen — no fake
+authentication, no shortcut.
 
 ## Local environment
 

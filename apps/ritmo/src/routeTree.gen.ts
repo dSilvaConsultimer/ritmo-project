@@ -9,159 +9,437 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as IndexRouteImport } from './routes/index'
-import { Route as AssistenteRouteImport } from './routes/assistente'
-import { Route as InsightsRouteImport } from './routes/insights'
-import { Route as MaisRouteImport } from './routes/mais'
-import { Route as PlanejamentoRouteImport } from './routes/planejamento'
-import { Route as TransacoesRouteImport } from './routes/transacoes'
+import { Route as ProtectedRouteImport } from './routes/_protected'
+import { Route as CadastroRouteImport } from './routes/cadastro'
+import { Route as LoginRouteImport } from './routes/login'
+import { Route as RecuperarSenhaRouteImport } from './routes/recuperar-senha'
+import { Route as SessaoExpiradaRouteImport } from './routes/sessao-expirada'
+import { Route as ProtectedIndexRouteImport } from './routes/_protected/index'
+import { Route as ProtectedAssistenteRouteImport } from './routes/_protected/assistente'
+import { Route as ProtectedConectarBancoRouteImport } from './routes/_protected/conectar-banco'
+import { Route as ProtectedInsightsRouteImport } from './routes/_protected/insights'
+import { Route as ProtectedMaisRouteImport } from './routes/_protected/mais'
+import { Route as ProtectedOnboardingRouteImport } from './routes/_protected/onboarding'
+import { Route as ProtectedPlanejamentoRouteImport } from './routes/_protected/planejamento'
+import { Route as ProtectedTransacoesRouteImport } from './routes/_protected/transacoes'
+import { Route as ApiDevSeedRouteImport } from './routes/api/dev-seed'
+import { Route as ApiPreflightRouteImport } from './routes/api/preflight'
+import { Route as ApiWebhookRouteImport } from './routes/api/webhook'
+import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
+import { Route as ApiHealthLiveRouteImport } from './routes/api/health/live'
+import { Route as ApiHealthReadyRouteImport } from './routes/api/health/ready'
 
-const IndexRoute = IndexRouteImport.update({
+const ProtectedRoute = ProtectedRouteImport.update({
+  id: '/_protected',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CadastroRoute = CadastroRouteImport.update({
+  id: '/cadastro',
+  path: '/cadastro',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const RecuperarSenhaRoute = RecuperarSenhaRouteImport.update({
+  id: '/recuperar-senha',
+  path: '/recuperar-senha',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SessaoExpiradaRoute = SessaoExpiradaRouteImport.update({
+  id: '/sessao-expirada',
+  path: '/sessao-expirada',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ProtectedIndexRoute = ProtectedIndexRouteImport.update({
   id: '/',
   path: '/',
-  getParentRoute: () => rootRouteImport,
+  getParentRoute: () => ProtectedRoute,
 } as any)
-const AssistenteRoute = AssistenteRouteImport.update({
+const ProtectedAssistenteRoute = ProtectedAssistenteRouteImport.update({
   id: '/assistente',
   path: '/assistente',
-  getParentRoute: () => rootRouteImport,
+  getParentRoute: () => ProtectedRoute,
 } as any)
-const InsightsRoute = InsightsRouteImport.update({
+const ProtectedConectarBancoRoute = ProtectedConectarBancoRouteImport.update({
+  id: '/conectar-banco',
+  path: '/conectar-banco',
+  getParentRoute: () => ProtectedRoute,
+} as any)
+const ProtectedInsightsRoute = ProtectedInsightsRouteImport.update({
   id: '/insights',
   path: '/insights',
-  getParentRoute: () => rootRouteImport,
+  getParentRoute: () => ProtectedRoute,
 } as any)
-const MaisRoute = MaisRouteImport.update({
+const ProtectedMaisRoute = ProtectedMaisRouteImport.update({
   id: '/mais',
   path: '/mais',
-  getParentRoute: () => rootRouteImport,
+  getParentRoute: () => ProtectedRoute,
 } as any)
-const PlanejamentoRoute = PlanejamentoRouteImport.update({
+const ProtectedOnboardingRoute = ProtectedOnboardingRouteImport.update({
+  id: '/onboarding',
+  path: '/onboarding',
+  getParentRoute: () => ProtectedRoute,
+} as any)
+const ProtectedPlanejamentoRoute = ProtectedPlanejamentoRouteImport.update({
   id: '/planejamento',
   path: '/planejamento',
-  getParentRoute: () => rootRouteImport,
+  getParentRoute: () => ProtectedRoute,
 } as any)
-const TransacoesRoute = TransacoesRouteImport.update({
+const ProtectedTransacoesRoute = ProtectedTransacoesRouteImport.update({
   id: '/transacoes',
   path: '/transacoes',
+  getParentRoute: () => ProtectedRoute,
+} as any)
+const ApiDevSeedRoute = ApiDevSeedRouteImport.update({
+  id: '/api/dev-seed',
+  path: '/api/dev-seed',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiPreflightRoute = ApiPreflightRouteImport.update({
+  id: '/api/preflight',
+  path: '/api/preflight',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiWebhookRoute = ApiWebhookRouteImport.update({
+  id: '/api/webhook',
+  path: '/api/webhook',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
+  id: '/api/auth/$',
+  path: '/api/auth/$',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiHealthLiveRoute = ApiHealthLiveRouteImport.update({
+  id: '/api/health/live',
+  path: '/api/health/live',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiHealthReadyRoute = ApiHealthReadyRouteImport.update({
+  id: '/api/health/ready',
+  path: '/api/health/ready',
   getParentRoute: () => rootRouteImport,
 } as any)
 
 export interface FileRoutesByFullPath {
-  '/': typeof IndexRoute
-  '/assistente': typeof AssistenteRoute
-  '/insights': typeof InsightsRoute
-  '/mais': typeof MaisRoute
-  '/planejamento': typeof PlanejamentoRoute
-  '/transacoes': typeof TransacoesRoute
+  '/': typeof ProtectedIndexRoute
+  '/cadastro': typeof CadastroRoute
+  '/login': typeof LoginRoute
+  '/recuperar-senha': typeof RecuperarSenhaRoute
+  '/sessao-expirada': typeof SessaoExpiradaRoute
+  '/assistente': typeof ProtectedAssistenteRoute
+  '/conectar-banco': typeof ProtectedConectarBancoRoute
+  '/insights': typeof ProtectedInsightsRoute
+  '/mais': typeof ProtectedMaisRoute
+  '/onboarding': typeof ProtectedOnboardingRoute
+  '/planejamento': typeof ProtectedPlanejamentoRoute
+  '/transacoes': typeof ProtectedTransacoesRoute
+  '/api/dev-seed': typeof ApiDevSeedRoute
+  '/api/preflight': typeof ApiPreflightRoute
+  '/api/webhook': typeof ApiWebhookRoute
+  '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/health/live': typeof ApiHealthLiveRoute
+  '/api/health/ready': typeof ApiHealthReadyRoute
 }
 export interface FileRoutesByTo {
-  '/': typeof IndexRoute
-  '/assistente': typeof AssistenteRoute
-  '/insights': typeof InsightsRoute
-  '/mais': typeof MaisRoute
-  '/planejamento': typeof PlanejamentoRoute
-  '/transacoes': typeof TransacoesRoute
+  '/cadastro': typeof CadastroRoute
+  '/login': typeof LoginRoute
+  '/recuperar-senha': typeof RecuperarSenhaRoute
+  '/sessao-expirada': typeof SessaoExpiradaRoute
+  '/assistente': typeof ProtectedAssistenteRoute
+  '/conectar-banco': typeof ProtectedConectarBancoRoute
+  '/insights': typeof ProtectedInsightsRoute
+  '/mais': typeof ProtectedMaisRoute
+  '/onboarding': typeof ProtectedOnboardingRoute
+  '/planejamento': typeof ProtectedPlanejamentoRoute
+  '/transacoes': typeof ProtectedTransacoesRoute
+  '/api/dev-seed': typeof ApiDevSeedRoute
+  '/api/preflight': typeof ApiPreflightRoute
+  '/api/webhook': typeof ApiWebhookRoute
+  '/': typeof ProtectedIndexRoute
+  '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/health/live': typeof ApiHealthLiveRoute
+  '/api/health/ready': typeof ApiHealthReadyRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
-  '/': typeof IndexRoute
-  '/assistente': typeof AssistenteRoute
-  '/insights': typeof InsightsRoute
-  '/mais': typeof MaisRoute
-  '/planejamento': typeof PlanejamentoRoute
-  '/transacoes': typeof TransacoesRoute
+  '/_protected': typeof ProtectedRouteWithChildren
+  '/cadastro': typeof CadastroRoute
+  '/login': typeof LoginRoute
+  '/recuperar-senha': typeof RecuperarSenhaRoute
+  '/sessao-expirada': typeof SessaoExpiradaRoute
+  '/_protected/assistente': typeof ProtectedAssistenteRoute
+  '/_protected/conectar-banco': typeof ProtectedConectarBancoRoute
+  '/_protected/insights': typeof ProtectedInsightsRoute
+  '/_protected/mais': typeof ProtectedMaisRoute
+  '/_protected/onboarding': typeof ProtectedOnboardingRoute
+  '/_protected/planejamento': typeof ProtectedPlanejamentoRoute
+  '/_protected/transacoes': typeof ProtectedTransacoesRoute
+  '/api/dev-seed': typeof ApiDevSeedRoute
+  '/api/preflight': typeof ApiPreflightRoute
+  '/api/webhook': typeof ApiWebhookRoute
+  '/_protected/': typeof ProtectedIndexRoute
+  '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/health/live': typeof ApiHealthLiveRoute
+  '/api/health/ready': typeof ApiHealthReadyRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/cadastro'
+    | '/login'
+    | '/recuperar-senha'
+    | '/sessao-expirada'
     | '/assistente'
+    | '/conectar-banco'
     | '/insights'
     | '/mais'
+    | '/onboarding'
     | '/planejamento'
     | '/transacoes'
+    | '/api/dev-seed'
+    | '/api/preflight'
+    | '/api/webhook'
+    | '/api/auth/$'
+    | '/api/health/live'
+    | '/api/health/ready'
   fileRoutesByTo: FileRoutesByTo
   to:
-    | '/'
+    | '/cadastro'
+    | '/login'
+    | '/recuperar-senha'
+    | '/sessao-expirada'
     | '/assistente'
+    | '/conectar-banco'
     | '/insights'
     | '/mais'
+    | '/onboarding'
     | '/planejamento'
     | '/transacoes'
+    | '/api/dev-seed'
+    | '/api/preflight'
+    | '/api/webhook'
+    | '/'
+    | '/api/auth/$'
+    | '/api/health/live'
+    | '/api/health/ready'
   id:
     | '__root__'
-    | '/'
-    | '/assistente'
-    | '/insights'
-    | '/mais'
-    | '/planejamento'
-    | '/transacoes'
+    | '/_protected'
+    | '/cadastro'
+    | '/login'
+    | '/recuperar-senha'
+    | '/sessao-expirada'
+    | '/_protected/assistente'
+    | '/_protected/conectar-banco'
+    | '/_protected/insights'
+    | '/_protected/mais'
+    | '/_protected/onboarding'
+    | '/_protected/planejamento'
+    | '/_protected/transacoes'
+    | '/api/dev-seed'
+    | '/api/preflight'
+    | '/api/webhook'
+    | '/_protected/'
+    | '/api/auth/$'
+    | '/api/health/live'
+    | '/api/health/ready'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
-  IndexRoute: typeof IndexRoute
-  AssistenteRoute: typeof AssistenteRoute
-  InsightsRoute: typeof InsightsRoute
-  MaisRoute: typeof MaisRoute
-  PlanejamentoRoute: typeof PlanejamentoRoute
-  TransacoesRoute: typeof TransacoesRoute
+  ProtectedRoute: typeof ProtectedRouteWithChildren
+  CadastroRoute: typeof CadastroRoute
+  LoginRoute: typeof LoginRoute
+  RecuperarSenhaRoute: typeof RecuperarSenhaRoute
+  SessaoExpiradaRoute: typeof SessaoExpiradaRoute
+  ApiDevSeedRoute: typeof ApiDevSeedRoute
+  ApiPreflightRoute: typeof ApiPreflightRoute
+  ApiWebhookRoute: typeof ApiWebhookRoute
+  ApiAuthSplatRoute: typeof ApiAuthSplatRoute
+  ApiHealthLiveRoute: typeof ApiHealthLiveRoute
+  ApiHealthReadyRoute: typeof ApiHealthReadyRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/': {
-      id: '/'
+    '/_protected': {
+      id: '/_protected'
+      path: ''
+      fullPath: '/'
+      preLoaderRoute: typeof ProtectedRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/cadastro': {
+      id: '/cadastro'
+      path: '/cadastro'
+      fullPath: '/cadastro'
+      preLoaderRoute: typeof CadastroRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/recuperar-senha': {
+      id: '/recuperar-senha'
+      path: '/recuperar-senha'
+      fullPath: '/recuperar-senha'
+      preLoaderRoute: typeof RecuperarSenhaRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/sessao-expirada': {
+      id: '/sessao-expirada'
+      path: '/sessao-expirada'
+      fullPath: '/sessao-expirada'
+      preLoaderRoute: typeof SessaoExpiradaRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/_protected/': {
+      id: '/_protected/'
       path: '/'
       fullPath: '/'
-      preLoaderRoute: typeof IndexRouteImport
-      parentRoute: typeof rootRouteImport
+      preLoaderRoute: typeof ProtectedIndexRouteImport
+      parentRoute: typeof ProtectedRoute
     }
-    '/assistente': {
-      id: '/assistente'
+    '/_protected/assistente': {
+      id: '/_protected/assistente'
       path: '/assistente'
       fullPath: '/assistente'
-      preLoaderRoute: typeof AssistenteRouteImport
-      parentRoute: typeof rootRouteImport
+      preLoaderRoute: typeof ProtectedAssistenteRouteImport
+      parentRoute: typeof ProtectedRoute
     }
-    '/insights': {
-      id: '/insights'
+    '/_protected/conectar-banco': {
+      id: '/_protected/conectar-banco'
+      path: '/conectar-banco'
+      fullPath: '/conectar-banco'
+      preLoaderRoute: typeof ProtectedConectarBancoRouteImport
+      parentRoute: typeof ProtectedRoute
+    }
+    '/_protected/insights': {
+      id: '/_protected/insights'
       path: '/insights'
       fullPath: '/insights'
-      preLoaderRoute: typeof InsightsRouteImport
-      parentRoute: typeof rootRouteImport
+      preLoaderRoute: typeof ProtectedInsightsRouteImport
+      parentRoute: typeof ProtectedRoute
     }
-    '/mais': {
-      id: '/mais'
+    '/_protected/mais': {
+      id: '/_protected/mais'
       path: '/mais'
       fullPath: '/mais'
-      preLoaderRoute: typeof MaisRouteImport
-      parentRoute: typeof rootRouteImport
+      preLoaderRoute: typeof ProtectedMaisRouteImport
+      parentRoute: typeof ProtectedRoute
     }
-    '/planejamento': {
-      id: '/planejamento'
+    '/_protected/onboarding': {
+      id: '/_protected/onboarding'
+      path: '/onboarding'
+      fullPath: '/onboarding'
+      preLoaderRoute: typeof ProtectedOnboardingRouteImport
+      parentRoute: typeof ProtectedRoute
+    }
+    '/_protected/planejamento': {
+      id: '/_protected/planejamento'
       path: '/planejamento'
       fullPath: '/planejamento'
-      preLoaderRoute: typeof PlanejamentoRouteImport
-      parentRoute: typeof rootRouteImport
+      preLoaderRoute: typeof ProtectedPlanejamentoRouteImport
+      parentRoute: typeof ProtectedRoute
     }
-    '/transacoes': {
-      id: '/transacoes'
+    '/_protected/transacoes': {
+      id: '/_protected/transacoes'
       path: '/transacoes'
       fullPath: '/transacoes'
-      preLoaderRoute: typeof TransacoesRouteImport
+      preLoaderRoute: typeof ProtectedTransacoesRouteImport
+      parentRoute: typeof ProtectedRoute
+    }
+    '/api/dev-seed': {
+      id: '/api/dev-seed'
+      path: '/api/dev-seed'
+      fullPath: '/api/dev-seed'
+      preLoaderRoute: typeof ApiDevSeedRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/preflight': {
+      id: '/api/preflight'
+      path: '/api/preflight'
+      fullPath: '/api/preflight'
+      preLoaderRoute: typeof ApiPreflightRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/webhook': {
+      id: '/api/webhook'
+      path: '/api/webhook'
+      fullPath: '/api/webhook'
+      preLoaderRoute: typeof ApiWebhookRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/auth/$': {
+      id: '/api/auth/$'
+      path: '/api/auth/$'
+      fullPath: '/api/auth/$'
+      preLoaderRoute: typeof ApiAuthSplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/health/live': {
+      id: '/api/health/live'
+      path: '/api/health/live'
+      fullPath: '/api/health/live'
+      preLoaderRoute: typeof ApiHealthLiveRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/health/ready': {
+      id: '/api/health/ready'
+      path: '/api/health/ready'
+      fullPath: '/api/health/ready'
+      preLoaderRoute: typeof ApiHealthReadyRouteImport
       parentRoute: typeof rootRouteImport
     }
   }
 }
 
+interface ProtectedRouteChildren {
+  ProtectedAssistenteRoute: typeof ProtectedAssistenteRoute
+  ProtectedConectarBancoRoute: typeof ProtectedConectarBancoRoute
+  ProtectedInsightsRoute: typeof ProtectedInsightsRoute
+  ProtectedMaisRoute: typeof ProtectedMaisRoute
+  ProtectedOnboardingRoute: typeof ProtectedOnboardingRoute
+  ProtectedPlanejamentoRoute: typeof ProtectedPlanejamentoRoute
+  ProtectedTransacoesRoute: typeof ProtectedTransacoesRoute
+  ProtectedIndexRoute: typeof ProtectedIndexRoute
+}
+
+const ProtectedRouteChildren: ProtectedRouteChildren = {
+  ProtectedAssistenteRoute: ProtectedAssistenteRoute,
+  ProtectedConectarBancoRoute: ProtectedConectarBancoRoute,
+  ProtectedInsightsRoute: ProtectedInsightsRoute,
+  ProtectedMaisRoute: ProtectedMaisRoute,
+  ProtectedOnboardingRoute: ProtectedOnboardingRoute,
+  ProtectedPlanejamentoRoute: ProtectedPlanejamentoRoute,
+  ProtectedTransacoesRoute: ProtectedTransacoesRoute,
+  ProtectedIndexRoute: ProtectedIndexRoute,
+}
+
+const ProtectedRouteWithChildren = ProtectedRoute._addFileChildren(
+  ProtectedRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
-  IndexRoute: IndexRoute,
-  AssistenteRoute: AssistenteRoute,
-  InsightsRoute: InsightsRoute,
-  MaisRoute: MaisRoute,
-  PlanejamentoRoute: PlanejamentoRoute,
-  TransacoesRoute: TransacoesRoute,
+  ProtectedRoute: ProtectedRouteWithChildren,
+  CadastroRoute: CadastroRoute,
+  LoginRoute: LoginRoute,
+  RecuperarSenhaRoute: RecuperarSenhaRoute,
+  SessaoExpiradaRoute: SessaoExpiradaRoute,
+  ApiDevSeedRoute: ApiDevSeedRoute,
+  ApiPreflightRoute: ApiPreflightRoute,
+  ApiWebhookRoute: ApiWebhookRoute,
+  ApiAuthSplatRoute: ApiAuthSplatRoute,
+  ApiHealthLiveRoute: ApiHealthLiveRoute,
+  ApiHealthReadyRoute: ApiHealthReadyRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

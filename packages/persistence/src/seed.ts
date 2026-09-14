@@ -66,7 +66,7 @@ export async function seed(db: Database): Promise<void> {
   for (const plan of installmentPlans) {
     await repo.upsertInstallmentPlan(db, plan);
   }
-  const existingLinks = await repo.listAllReconciliationLinks(db);
+  const existingLinks = await repo.listReconciliationLinksForProfile(db, fixtureProfile.id);
   const existingKeys = new Map(existingLinks.map((l) => [reconciliationLinkPairKey(l), l.id]));
   for (const link of reconciliationLinks) {
     const existingId = existingKeys.get(reconciliationLinkPairKey(link));

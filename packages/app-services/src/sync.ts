@@ -31,6 +31,7 @@ import { getProvider, type ProviderName } from "./provider-registry";
 import { evaluateRecommendations, evaluateRecommendationVerifications } from "./recommendation-service";
 import { evaluateAlerts } from "./alerts";
 import { syncNotificationsForProfile } from "./notifications";
+import { assertOwnedByProfile } from "./ownership";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -244,7 +245,7 @@ async function reconcileProfile(
   const profileData = await repo.loadFinancialSnapshotInput(db, financialProfileId, asOfDate);
   const allTransactions = profileData.transactions;
   const events: readonly FinancialEvent[] = profileData.events;
-  const existingLinks = await repo.listAllReconciliationLinks(db);
+  const existingLinks = await repo.listReconciliationLinksForProfile(db, financialProfileId);
   const existingKeys = new Set(existingLinks.map(reconciliationLinkPairKey));
 
   const candidateLinks = [
@@ -284,10 +285,11 @@ export async function syncConnection(
   financialProfileId: string,
   connectionId: string,
 ): Promise<SyncRun> {
-  const connection = await repo.getProviderConnectionById(db, connectionId);
-  if (!connection) {
-    throw new Error(`No provider connection ${connectionId}`);
-  }
+  const connection = assertOwnedByProfile(
+    await repo.getProviderConnectionById(db, connectionId),
+    financialProfileId,
+    `provider connection ${connectionId}`,
+  );
 
   const startedAt = nowIso();
   const metrics: MutableMetrics = { ...EMPTY_SYNC_RUN_METRICS };
@@ -448,8 +450,11 @@ export async function refetchTransactionsByExternalId(
   externalAccountId: string,
   externalTransactionIds: readonly string[],
 ): Promise<void> {
-  const connection = await repo.getProviderConnectionById(db, connectionId);
-  if (!connection) throw new Error(`No provider connection ${connectionId}`);
+  const connection = assertOwnedByProfile(
+    await repo.getProviderConnectionById(db, connectionId),
+    financialProfileId,
+    `provider connection ${connectionId}`,
+  );
 
   const provider: OpenFinanceProvider = getProvider(connection.provider as ProviderName);
   const existingSource = await repo.findPaymentSourceByExternalId(
@@ -549,12 +554,14 @@ export interface DisconnectConnectionResult {
  */
 export async function disconnectConnection(
   db: Database,
+  financialProfileId: string,
   connectionId: string,
 ): Promise<DisconnectConnectionResult> {
-  const connection = await repo.getProviderConnectionById(db, connectionId);
-  if (!connection) {
-    throw new Error(`No provider connection ${connectionId}`);
-  }
+  const connection = assertOwnedByProfile(
+    await repo.getProviderConnectionById(db, connectionId),
+    financialProfileId,
+    `provider connection ${connectionId}`,
+  );
 
   let providerDeletionSucceeded = false;
   let providerDeletionError: string | undefined;

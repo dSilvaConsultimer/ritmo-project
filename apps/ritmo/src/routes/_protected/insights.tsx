@@ -5,7 +5,7 @@ import { ThemeToggle } from "@/components/ritmo/ThemeToggle";
 import { getInsightsData } from "@/functions/insights";
 import { toInsightsViewModel } from "@/adapters/insights";
 
-export const Route = createFileRoute("/insights")({
+export const Route = createFileRoute("/_protected/insights")({
   head: () => ({
     meta: [
       { title: "Insights — Ritmo" },

@@ -127,7 +127,7 @@ describe("recommendation-service integration", () => {
     const [recommendation] = (await repo.listRecommendationsForProfile(db, fixtureProfile.id)).filter(
       (r) => r.evidence.normalizedMerchant === "NETFLIX",
     );
-    await rejectRecommendation(db, recommendation!.id, "User wants to keep it");
+    await rejectRecommendation(db, fixtureProfile.id, recommendation!.id, "User wants to keep it");
 
     await evaluateRecommendations(db, fixtureProfile.id, ASOF);
     await evaluateRecommendations(db, fixtureProfile.id, ASOF);
@@ -157,7 +157,7 @@ describe("recommendation-service integration", () => {
     const [original] = (await repo.listRecommendationsForProfile(db, fixtureProfile.id)).filter(
       (r) => r.evidence.normalizedMerchant === "NETFLIX",
     );
-    await rejectRecommendation(db, original!.id);
+    await rejectRecommendation(db, fixtureProfile.id, original!.id);
 
     // Price genuinely increased (e.g. NETFLIX raised its price) — three new
     // charges at a materially different amount produce a NEW identityKey.
@@ -218,7 +218,7 @@ describe("recommendation-service integration", () => {
     const [recommendation] = (await repo.listRecommendationsForProfile(db, fixtureProfile.id)).filter(
       (r) => r.evidence.normalizedMerchant === "NETFLIX",
     );
-    await acceptRecommendation(db, { recommendationId: recommendation!.id });
+    await acceptRecommendation(db, { financialProfileId: fixtureProfile.id, recommendationId: recommendation!.id });
     const after = await getSafeToSpend(db, fixtureProfile.id, ASOF);
 
     expect(after.total.cents).toBe(before.total.cents);
@@ -243,6 +243,7 @@ describe("recommendation-service integration", () => {
       (r) => r.evidence.normalizedMerchant === "NETFLIX",
     );
     const modified = await modifyRecommendation(db, {
+      financialProfileId: fixtureProfile.id,
       recommendationId: recommendation!.id,
       targetAmount: fromReais(20),
       note: "Quero reduzir para R$ 20",
@@ -274,7 +275,7 @@ describe("recommendation-service integration", () => {
       (r) => r.evidence.normalizedMerchant === "NETFLIX",
     );
     await expect(
-      modifyRecommendation(db, { recommendationId: recommendation!.id, targetAmount: fromReais(50) }),
+      modifyRecommendation(db, { financialProfileId: fixtureProfile.id, recommendationId: recommendation!.id, targetAmount: fromReais(50) }),
     ).rejects.toThrow();
   });
 
@@ -296,7 +297,7 @@ describe("recommendation-service integration", () => {
     const [recommendation] = (await repo.listRecommendationsForProfile(db, fixtureProfile.id)).filter(
       (r) => r.evidence.normalizedMerchant === "NETFLIX",
     );
-    await acceptRecommendation(db, { recommendationId: recommendation!.id, effectiveDate: "2026-09-05" });
+    await acceptRecommendation(db, { financialProfileId: fixtureProfile.id, recommendationId: recommendation!.id, effectiveDate: "2026-09-05" });
 
     // Sync recency must also be within policy — advance the connection's
     // lastSuccessfulSyncAt without any new NETFLIX charge appearing.
@@ -329,7 +330,7 @@ describe("recommendation-service integration", () => {
     const [recommendation] = (await repo.listRecommendationsForProfile(db, fixtureProfile.id)).filter(
       (r) => r.evidence.normalizedMerchant === "NETFLIX",
     );
-    await acceptRecommendation(db, { recommendationId: recommendation!.id, effectiveDate: "2026-09-05" });
+    await acceptRecommendation(db, { financialProfileId: fixtureProfile.id, recommendationId: recommendation!.id, effectiveDate: "2026-09-05" });
 
     // The charge continued after the user "cancelled" it.
     await repo.upsertTransaction(db, {
@@ -368,7 +369,7 @@ describe("recommendation-service integration", () => {
     const [recommendation] = (await repo.listRecommendationsForProfile(db, fixtureProfile.id)).filter(
       (r) => r.evidence.normalizedMerchant === "NETFLIX",
     );
-    await acceptRecommendation(db, { recommendationId: recommendation!.id, effectiveDate: "2026-09-05" });
+    await acceptRecommendation(db, { financialProfileId: fixtureProfile.id, recommendationId: recommendation!.id, effectiveDate: "2026-09-05" });
 
     // Connection has NOT synced recently — its lastSuccessfulSyncAt is from
     // right after the original sync, long before the "now" we check at.
@@ -398,7 +399,7 @@ describe("recommendation-service integration", () => {
     const [recommendation] = (await repo.listRecommendationsForProfile(db, fixtureProfile.id)).filter(
       (r) => r.evidence.normalizedMerchant === "NETFLIX",
     );
-    await acceptRecommendation(db, { recommendationId: recommendation!.id, effectiveDate: "2026-09-05" });
+    await acceptRecommendation(db, { financialProfileId: fixtureProfile.id, recommendationId: recommendation!.id, effectiveDate: "2026-09-05" });
     const conn = await repo.getProviderConnectionById(db, connection.id);
     await repo.upsertProviderConnection(db, { ...conn!, lastSuccessfulSyncAt: "2026-10-25T00:00:00.000Z" });
 

@@ -21,6 +21,7 @@ import {
   getRecommendationsSummary,
 } from "../queries";
 import { listSavedConciergePlansForProfile, reevaluateConciergePlan } from "../concierge";
+import { ResourceNotFoundError } from "../ownership";
 import type { Alert, AlertEvidence, AlertEvaluationSummary, AlertStatus, AlertSeverity, AlertTransitionEvent, AlertType } from "./types";
 
 function nowIso(): string {
@@ -501,9 +502,23 @@ export async function evaluateAlerts(
   return counters;
 }
 
-export async function getAlertById(db: Database, alertId: string): Promise<Alert | undefined> {
+/**
+ * Sprint 9: takes the CALLER's own `financialProfileId` and returns
+ * `undefined` if the alert either doesn't exist OR belongs to a different
+ * profile — the two cases are indistinguishable by design (brief §18:
+ * never leak whether another user's resource exists). This is the ONLY
+ * function that reads an alert by id in this codebase; every caller
+ * (including the AI tool layer) goes through it, so there is no separate
+ * unscoped path to reach for by accident.
+ */
+export async function getAlertById(
+  db: Database,
+  financialProfileId: string,
+  alertId: string,
+): Promise<Alert | undefined> {
   const row = await repo.getAlertRowById(db, alertId);
-  return row ? alertFromRow(row) : undefined;
+  const alert = row ? alertFromRow(row) : undefined;
+  return alert && alert.financialProfileId === financialProfileId ? alert : undefined;
 }
 
 export async function listAlertsForProfile(db: Database, financialProfileId: string): Promise<Alert[]> {
@@ -511,9 +526,9 @@ export async function listAlertsForProfile(db: Database, financialProfileId: str
   return rows.map(alertFromRow);
 }
 
-async function requireAlert(db: Database, alertId: string): Promise<Alert> {
-  const alert = await getAlertById(db, alertId);
-  if (!alert) throw new Error(`No alert ${alertId}`);
+async function requireAlert(db: Database, financialProfileId: string, alertId: string): Promise<Alert> {
+  const alert = await getAlertById(db, financialProfileId, alertId);
+  if (!alert) throw new ResourceNotFoundError(`alert ${alertId}`);
   return alert;
 }
 
@@ -523,8 +538,12 @@ async function requireAlert(db: Database, alertId: string): Promise<Alert> {
  * transition or resets `seenAt`. See docs/ALERTS-NOTIFICATIONS.md,
  * "Idempotency."
  */
-export async function markAlertSeen(db: Database, alertId: string): Promise<Alert> {
-  const alert = await requireAlert(db, alertId);
+export async function markAlertSeen(
+  db: Database,
+  financialProfileId: string,
+  alertId: string,
+): Promise<Alert> {
+  const alert = await requireAlert(db, financialProfileId, alertId);
   if (alert.status !== "ACTIVE_UNSEEN") return alert;
   const at = nowIso();
   const updated: Alert = {
@@ -544,8 +563,13 @@ export async function markAlertSeen(db: Database, alertId: string): Promise<Aler
  * dismissed even while `evaluateAlerts` keeps finding the condition true,
  * and only a genuinely NEW episode (after resolution) can surface again.
  */
-export async function dismissAlert(db: Database, alertId: string, reason?: string): Promise<Alert> {
-  const alert = await requireAlert(db, alertId);
+export async function dismissAlert(
+  db: Database,
+  financialProfileId: string,
+  alertId: string,
+  reason?: string,
+): Promise<Alert> {
+  const alert = await requireAlert(db, financialProfileId, alertId);
   if (alert.status === "DISMISSED" || alert.status === "RESOLVED") return alert;
   const at = nowIso();
   const updated: Alert = {
@@ -572,7 +596,7 @@ export async function reevaluateAlertContext(
   alertId: string,
 ): Promise<Alert> {
   await evaluateAlerts(db, financialProfileId, asOfDate);
-  return requireAlert(db, alertId);
+  return requireAlert(db, financialProfileId, alertId);
 }
 
 export { alertFromRow, alertToRow, severityFor };

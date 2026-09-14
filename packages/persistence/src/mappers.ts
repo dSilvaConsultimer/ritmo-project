@@ -342,6 +342,7 @@ export function reconciliationLinkToRow(
 ): typeof schema.reconciliationLinks.$inferInsert {
   return {
     id: l.id,
+    financialProfileId: l.financialProfileId,
     type: l.type,
     primaryTransactionId: l.primaryTransactionId,
     linkedTransactionId: l.linkedTransactionId ?? null,
@@ -356,6 +357,7 @@ export function reconciliationLinkToRow(
 export function rowToReconciliationLink(row: ReconciliationLinkRow): ReconciliationLink {
   return {
     id: row.id as Id<"reconciliation-link">,
+    financialProfileId: row.financialProfileId as Id<"financial-profile">,
     type: row.type,
     primaryTransactionId: row.primaryTransactionId as Id<"transaction">,
     ...(row.linkedTransactionId

@@ -12,7 +12,7 @@ import {
   evaluateRecommendationVerifications,
   syncNotificationsForProfile,
 } from "@money-copilot/app-services";
-import { getCurrentProfileContext } from "./profile-context";
+import { getCurrentProfileContext } from "./profile.server";
 import { ASOF_DATE } from "./config";
 
 /**
@@ -22,7 +22,7 @@ import { ASOF_DATE } from "./config";
  * presentation reshaping (never done in a server function or a component).
  */
 export const getHomeData = createServerFn({ method: "GET" }).handler(async () => {
-  const { financialProfileId, displayName } = getCurrentProfileContext();
+  const { financialProfileId, displayName } = await getCurrentProfileContext();
   const db = await getDb();
 
   // Same idempotent, safe-to-re-run-on-every-load pattern apps/web's

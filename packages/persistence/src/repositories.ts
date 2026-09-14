@@ -23,6 +23,7 @@ import type {
   LiquidityCoverage,
 } from "@money-copilot/financial-engine";
 import type { AIRequestLog, AIToolExecution, Conversation, ConversationMessage } from "@money-copilot/ai";
+import { createId } from "@money-copilot/shared";
 import type { Database } from "./db";
 import * as schema from "./schema";
 import * as mappers from "./mappers";
@@ -50,6 +51,72 @@ export async function upsertProfile(db: Database, profile: FinancialProfile): Pr
 export async function getProfileById(db: Database, id: string): Promise<FinancialProfile | undefined> {
   const [row] = await db.select().from(schema.financialProfiles).where(eq(schema.financialProfiles.id, id));
   return row as FinancialProfile | undefined;
+}
+
+/**
+ * Sprint 9: the ownership lookup `apps/ritmo/src/functions/profile-context.ts`
+ * uses to resolve an authenticated Better Auth `user.id` to its
+ * `FinancialProfile` — the one supported way a request's identity becomes a
+ * `financialProfileId` anywhere downstream.
+ */
+export async function getProfileByOwnerUserId(
+  db: Database,
+  ownerUserId: string,
+): Promise<FinancialProfile | undefined> {
+  const [row] = await db
+    .select()
+    .from(schema.financialProfiles)
+    .where(eq(schema.financialProfiles.ownerUserId, ownerUserId));
+  return row ? ({ id: row.id, label: row.label, createdAt: row.createdAt } as FinancialProfile) : undefined;
+}
+
+/**
+ * Idempotent, race-safe provisioning: a Better Auth user's FIRST successful
+ * login creates exactly one `FinancialProfile` for them. The `owner_user_id`
+ * column's UNIQUE constraint (schema.ts) is what makes this safe under
+ * concurrent requests — `onConflictDoNothing` means at most one INSERT ever
+ * actually lands for a given owner; `.returning()` tells each caller whether
+ * ITS OWN insert was the one that won, so a `FinancialGoal` (see below) is
+ * only ever created once, not once per login.
+ *
+ * Also creates a minimal placeholder `FinancialGoal` — but ONLY the first
+ * time, when the profile itself is genuinely new.
+ * `loadFinancialSnapshotInput` hard-requires exactly one goal per profile
+ * (throws otherwise; this is an existing financial-engine invariant, not
+ * something Sprint 9 changes) — a zero monthly-savings-target, honestly
+ * labeled "no goal set yet," satisfies that invariant without fabricating
+ * an aspirational number the user never actually stated (brief §11: a real
+ * user never receives fabricated financial data). See docs/DECISIONS.md
+ * DEC-096.
+ */
+export async function provisionProfileForOwner(
+  db: Database,
+  ownerUserId: string,
+  label: string,
+  createdAt: string,
+): Promise<FinancialProfile> {
+  const candidate: FinancialProfile = { id: createId("financial-profile"), label, createdAt };
+  const inserted = await db
+    .insert(schema.financialProfiles)
+    .values({ ...candidate, ownerUserId })
+    .onConflictDoNothing({ target: schema.financialProfiles.ownerUserId })
+    .returning();
+
+  if (inserted.length > 0) {
+    await db.insert(schema.financialGoals).values({
+      id: createId("financial-goal"),
+      financialProfileId: candidate.id,
+      label: "Sem meta definida",
+      monthlySavingsTargetCents: 0,
+    });
+    return candidate;
+  }
+
+  const existing = await getProfileByOwnerUserId(db, ownerUserId);
+  if (!existing) {
+    throw new Error(`Failed to provision or find a profile for owner ${ownerUserId}`);
+  }
+  return existing;
 }
 
 /**
@@ -202,14 +269,18 @@ export async function upsertReconciliationLink(db: Database, link: Reconciliatio
 }
 
 /**
- * All reconciliation links currently persisted. NOTE: `reconciliation_links`
- * has no `financialProfileId` column of its own (Sprint 2 schema) — this
- * is global across every profile. Harmless with today's single demo
- * profile; revisit if/when multi-profile support is added. See
- * docs/PROJECT_STATE.md, "Technical debt."
+ * All reconciliation links for one profile — was global across every
+ * profile until Sprint 9 (DEC-091) added `financial_profile_id`; every
+ * caller must only ever see/dedupe against its OWN profile's links.
  */
-export async function listAllReconciliationLinks(db: Database): Promise<ReconciliationLink[]> {
-  const rows = await db.select().from(schema.reconciliationLinks);
+export async function listReconciliationLinksForProfile(
+  db: Database,
+  financialProfileId: string,
+): Promise<ReconciliationLink[]> {
+  const rows = await db
+    .select()
+    .from(schema.reconciliationLinks)
+    .where(eq(schema.reconciliationLinks.financialProfileId, financialProfileId));
   return rows.map(mappers.rowToReconciliationLink);
 }
 
@@ -328,7 +399,10 @@ export async function loadFinancialSnapshotInput(
         .select()
         .from(schema.installmentPlans)
         .where(eq(schema.installmentPlans.financialProfileId, financialProfileId)),
-      db.select().from(schema.reconciliationLinks),
+      db
+        .select()
+        .from(schema.reconciliationLinks)
+        .where(eq(schema.reconciliationLinks.financialProfileId, financialProfileId)),
       db
         .select()
         .from(schema.financialPositions)
