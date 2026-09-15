@@ -10,6 +10,7 @@ import type {
   ListTransactionsOptions,
   OpenFinanceProvider,
 } from "./provider";
+import type { ProviderConnectionStatus } from "@money-copilot/financial-engine";
 
 /**
  * A fully deterministic, in-memory `OpenFinanceProvider` — no network, no
@@ -26,17 +27,26 @@ export class MockProvider implements OpenFinanceProvider {
   private readonly billsByAccount: ReadonlyMap<string, readonly ExternalBillInput[]>;
   /** Simulates Pluggy's `Item.clientUserId` — set per externalConnectionId so connection-recovery tests can exercise `getConnection`'s `clientUserId` field without real Pluggy access. */
   private readonly clientUserIdByExternalConnectionId: ReadonlyMap<string, string>;
+  /**
+   * DEC-128: lets a test simulate a provider Item that is still assembling
+   * data (Pluggy's `UPDATING`/`MERGING`, mapped to `"SYNCING"`) — the exact
+   * condition `syncConnection` must not treat as a completed, watermark-
+   * advancing success when nothing was actually imported yet.
+   */
+  private readonly status: ProviderConnectionStatus;
 
   constructor(options: {
     accounts: readonly ExternalAccountInput[];
     transactionsByAccount: ReadonlyMap<string, readonly ExternalTransactionInput[]>;
     billsByAccount?: ReadonlyMap<string, readonly ExternalBillInput[]>;
     clientUserIdByExternalConnectionId?: ReadonlyMap<string, string>;
+    status?: ProviderConnectionStatus;
   }) {
     this.accounts = options.accounts;
     this.transactionsByAccount = options.transactionsByAccount;
     this.billsByAccount = options.billsByAccount ?? new Map();
     this.clientUserIdByExternalConnectionId = options.clientUserIdByExternalConnectionId ?? new Map();
+    this.status = options.status ?? "CONNECTED";
   }
 
   async createConnectionToken(
@@ -49,7 +59,7 @@ export class MockProvider implements OpenFinanceProvider {
     const clientUserId = this.clientUserIdByExternalConnectionId.get(externalConnectionId);
     return {
       externalConnectionId,
-      status: "CONNECTED",
+      status: this.status,
       connectorId: "mock-connector",
       connectorName: "Mock Bank",
       ...(clientUserId ? { clientUserId } : {}),

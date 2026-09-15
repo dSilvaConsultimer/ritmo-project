@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { fixtureProfile } from "@money-copilot/financial-engine";
-import type { ExternalAccountInput, ExternalBillInput, ExternalTransactionInput } from "@money-copilot/financial-engine";
+import { fixtureProfile, ProviderError } from "@money-copilot/financial-engine";
+import type {
+  ExternalAccountInput,
+  ExternalBillInput,
+  ExternalTransactionInput,
+} from "@money-copilot/financial-engine";
+import type { OpenFinanceProvider, ExternalConnectionStatus } from "@money-copilot/open-finance";
 import * as repo from "@money-copilot/persistence";
 import { createId } from "@money-copilot/shared";
 import {
@@ -10,7 +15,7 @@ import {
   getInstallmentPlanMatchCandidates,
 } from "./sync";
 import { getFinancialSnapshot, getCategoryTotals, getTransactions } from "./queries";
-import { resetProviderRegistry } from "./provider-registry";
+import { resetProviderRegistry, registerProvider } from "./provider-registry";
 import { freshSeededDb, installMockProvider } from "./test-helpers";
 
 const ASOF = "2026-09-05";
@@ -366,5 +371,299 @@ describe("bill deduplication (Sprint 4.5, DEC-048)", () => {
     expect(afterSecondSync).toHaveLength(1);
     expect(afterSecondSync[0]?.id).toBe(afterFirstSync[0]?.id);
     expect(afterSecondSync[0]?.createdAt).toBe(afterFirstSync[0]?.createdAt);
+  });
+});
+
+describe("syncConnection — provider still updating (DEC-128, decisions 1 & 2)", () => {
+  it("never reports SUCCEEDED when the provider Item is still SYNCING and nothing was imported", async () => {
+    const db = await freshSeededDb();
+    installMockProvider({ accounts: [], transactionsByAccount: new Map(), status: "SYNCING" });
+
+    const connection = await setUpConnection(db);
+    const run = await syncConnection(db, fixtureProfile.id, connection.id);
+
+    expect(run.status).toBe("PENDING");
+    expect(run.metrics.accountsDiscovered).toBe(0);
+    expect(run.errors).toHaveLength(0);
+  });
+
+  it("does not advance lastSuccessfulSyncAt while the provider Item is still SYNCING", async () => {
+    const db = await freshSeededDb();
+    installMockProvider({ accounts: [], transactionsByAccount: new Map(), status: "SYNCING" });
+
+    const connection = await setUpConnection(db);
+    await syncConnection(db, fixtureProfile.id, connection.id);
+
+    const updated = await repo.getProviderConnectionById(db, connection.id);
+    expect(updated?.lastSuccessfulSyncAt).toBeUndefined();
+    expect(updated?.status).toBe("SYNCING");
+  });
+
+  it("does not advance lastSuccessfulSyncAt for a connection that genuinely has zero accounts, even though nothing failed", async () => {
+    const db = await freshSeededDb();
+    installMockProvider({ accounts: [], transactionsByAccount: new Map(), status: "CONNECTED" });
+
+    const connection = await setUpConnection(db);
+    const run = await syncConnection(db, fixtureProfile.id, connection.id);
+
+    // Genuinely nothing to sync (not "still updating") — errors is empty and
+    // this is not a failure, but decision 2 requires the watermark to only
+    // ever advance once a real data sync actually succeeded, never merely
+    // because nothing went wrong.
+    expect(run.status).toBe("SUCCEEDED");
+    const updated = await repo.getProviderConnectionById(db, connection.id);
+    expect(updated?.lastSuccessfulSyncAt).toBeUndefined();
+  });
+});
+
+describe("syncConnection — self-healing a never-baselined payment source (DEC-128, decision 3)", () => {
+  const salary: ExternalTransactionInput = {
+    provider: "mock",
+    externalTransactionId: "mock-tx-salary-1",
+    paymentSourceExternalRef: mockNubankAccount.externalAccountId,
+    amountCents: 850_000,
+    direction: "CREDIT",
+    financialEffect: "INCOME",
+    certainty: "ACTUAL",
+    date: "2026-09-05",
+    rawDescription: "SALARIO EMPRESA XYZ LTDA",
+    rawMerchant: "EMPRESA XYZ LTDA",
+    status: "POSTED",
+  };
+
+  it("backfills a payment source's transactions on the very next sync, even though the connection's own watermark already advanced past their date", async () => {
+    const db = await freshSeededDb();
+
+    // First sync: the account itself is discovered (so `anySucceeded` is
+    // true and the connection's watermark legitimately advances to "now"),
+    // but the provider has not returned this account's transactions yet —
+    // exactly the real-world Pluggy race this connection hit in staging.
+    installMockProvider({
+      accounts: [mockNubankAccount],
+      transactionsByAccount: new Map(),
+      status: "CONNECTED",
+    });
+    const connection = await setUpConnection(db);
+    const firstRun = await syncConnection(db, fixtureProfile.id, connection.id);
+    expect(firstRun.status).toBe("SUCCEEDED");
+    const afterFirstSync = await repo.getProviderConnectionById(db, connection.id);
+    expect(afterFirstSync?.lastSuccessfulSyncAt).toBeDefined();
+
+    // The salary transaction (dated well before that stamped watermark) now
+    // becomes available from the provider — simulating Pluggy finishing its
+    // own backfill. A naive `since: lastSuccessfulSyncAt` sweep would never
+    // see it again; the payment source has zero persisted transactions, so
+    // it must get a full pull instead.
+    installMockProvider({
+      accounts: [mockNubankAccount],
+      transactionsByAccount: new Map([[mockNubankAccount.externalAccountId, [salary]]]),
+      status: "CONNECTED",
+    });
+    await syncConnection(db, fixtureProfile.id, connection.id);
+
+    const transactions = await getTransactions(db, fixtureProfile.id, "2026-09-30");
+    const found = transactions.filter((t) => t.externalTransactionId === "mock-tx-salary-1");
+    expect(found).toHaveLength(1);
+    expect(found[0]?.amount.cents).toBe(850_000);
+    expect(found[0]?.financialEffect).toBe("INCOME");
+  });
+
+  it("returns to normal incremental (since-filtered) behavior once the payment source has at least one real transaction", async () => {
+    const db = await freshSeededDb();
+    installMockProvider({
+      accounts: [mockNubankAccount],
+      transactionsByAccount: new Map([[mockNubankAccount.externalAccountId, [salary]]]),
+      status: "CONNECTED",
+    });
+    const connection = await setUpConnection(db);
+    await syncConnection(db, fixtureProfile.id, connection.id);
+
+    // A transaction the provider has always had, dated long before any real
+    // sync in this test could have run — if incremental filtering is
+    // correctly back in effect now that a baseline exists, this must NOT
+    // appear on the next sync.
+    const veryOld: ExternalTransactionInput = {
+      ...salary,
+      externalTransactionId: "mock-tx-ancient",
+      date: "2020-01-01",
+      rawDescription: "TRANSACAO ANTIGA NAO RELACIONADA",
+    };
+    installMockProvider({
+      accounts: [mockNubankAccount],
+      transactionsByAccount: new Map([[mockNubankAccount.externalAccountId, [salary, veryOld]]]),
+      status: "CONNECTED",
+    });
+    await syncConnection(db, fixtureProfile.id, connection.id);
+
+    // Checked directly against persistence (not `getTransactions`, which
+    // filters to the current month anyway) — this must reflect that the
+    // sync itself never even asked the provider to re-import it.
+    const salaryRow = await repo.findTransactionByExternalId(db, fixtureProfile.id, "mock", "mock-tx-salary-1");
+    const ancientRow = await repo.findTransactionByExternalId(db, fixtureProfile.id, "mock", "mock-tx-ancient");
+    expect(salaryRow).toBeDefined();
+    expect(ancientRow).toBeUndefined();
+  });
+});
+
+describe("syncConnection — transaction idempotency (DEC-128, decision 4 / acceptance)", () => {
+  it("a repeated full sync, then a repeated incremental sync, never duplicates the same external transaction", async () => {
+    const db = await freshSeededDb();
+    const salary: ExternalTransactionInput = {
+      provider: "mock",
+      externalTransactionId: "mock-tx-salary-idempotent",
+      paymentSourceExternalRef: mockNubankAccount.externalAccountId,
+      amountCents: 850_000,
+      direction: "CREDIT",
+      financialEffect: "INCOME",
+      certainty: "ACTUAL",
+      date: "2026-09-05",
+      rawDescription: "SALARIO EMPRESA XYZ LTDA",
+      rawMerchant: "EMPRESA XYZ LTDA",
+      status: "POSTED",
+    };
+    installMockProvider({
+      accounts: [mockNubankAccount],
+      transactionsByAccount: new Map([[mockNubankAccount.externalAccountId, [salary]]]),
+      status: "CONNECTED",
+    });
+    const connection = await setUpConnection(db);
+
+    // sync #1 (full, no prior baseline) -> exists once.
+    await syncConnection(db, fixtureProfile.id, connection.id);
+    let transactions = await getTransactions(db, fixtureProfile.id, "2026-09-30");
+    expect(transactions.filter((t) => t.externalTransactionId === "mock-tx-salary-idempotent")).toHaveLength(1);
+
+    // sync #2 (full pipeline run again, same provider data) -> still once.
+    await syncConnection(db, fixtureProfile.id, connection.id);
+    transactions = await getTransactions(db, fixtureProfile.id, "2026-09-30");
+    expect(transactions.filter((t) => t.externalTransactionId === "mock-tx-salary-idempotent")).toHaveLength(1);
+
+    // sync #3 (now incremental, since a baseline exists) -> still once.
+    await syncConnection(db, fixtureProfile.id, connection.id);
+    transactions = await getTransactions(db, fixtureProfile.id, "2026-09-30");
+    expect(transactions.filter((t) => t.externalTransactionId === "mock-tx-salary-idempotent")).toHaveLength(1);
+  });
+});
+
+/**
+ * Minimal `OpenFinanceProvider` that always throws from `listAccounts` — used
+ * only to exercise `syncConnection`'s error path (DEC-128, decision 5)
+ * without adding failure-injection knobs to the shared `MockProvider`.
+ */
+class AlwaysFailingProvider implements OpenFinanceProvider {
+  readonly name = "mock";
+  async createConnectionToken(): Promise<never> {
+    throw new Error("not used in this test");
+  }
+  async getConnection(externalConnectionId: string): Promise<ExternalConnectionStatus> {
+    return { externalConnectionId, status: "CONNECTED" };
+  }
+  async listAccounts(): Promise<never> {
+    throw new ProviderError("PROVIDER_UNAVAILABLE", "mock", "Simulated provider outage", { retryable: true });
+  }
+  async listTransactions(): Promise<never> {
+    throw new Error("not used in this test");
+  }
+  async listBills(): Promise<never> {
+    throw new Error("not used in this test");
+  }
+  async syncConnection(): Promise<void> {}
+  async deleteConnection(): Promise<void> {}
+}
+
+describe("syncConnection — error handling and retry (DEC-128, decision 5)", () => {
+  it("a provider outage returns a controlled FAILED SyncRun, is logged as an error, and never throws past syncConnection", async () => {
+    const db = await freshSeededDb();
+    resetProviderRegistry();
+    registerProvider("mock", new AlwaysFailingProvider());
+    const connection = await setUpConnection(db);
+
+    const run = await syncConnection(db, fixtureProfile.id, connection.id);
+
+    expect(run.status).toBe("FAILED");
+    expect(run.errors.length).toBeGreaterThan(0);
+    expect(run.errors[0]).not.toContain("undefined");
+    // The failure is a persisted, queryable record — never just a swallowed
+    // exception — so it is always available as an audit trail even without
+    // a live log line.
+    const persisted = await repo.listRecentSyncRunsForConnection(db, connection.id);
+    expect(persisted.some((r) => r.status === "FAILED" && r.errors.length > 0)).toBe(true);
+  });
+
+  it("a failed sync does not delete previously-synchronized valid data, and a later successful sync can still recover", async () => {
+    const db = await freshSeededDb();
+    const priorTransaction: ExternalTransactionInput = {
+      provider: "mock",
+      externalTransactionId: "mock-tx-preexisting-1",
+      paymentSourceExternalRef: mockNubankAccount.externalAccountId,
+      amountCents: 12_000,
+      direction: "DEBIT",
+      financialEffect: "CONSUMPTION",
+      certainty: "ACTUAL",
+      date: "2026-09-04",
+      rawDescription: "COMPRA ANTERIOR VALIDA",
+      rawMerchant: "COMPRA ANTERIOR VALIDA",
+      status: "POSTED",
+    };
+    installMockProvider({
+      accounts: [mockNubankAccount],
+      transactionsByAccount: new Map([[mockNubankAccount.externalAccountId, [priorTransaction]]]),
+      status: "CONNECTED",
+    });
+    const connection = await setUpConnection(db);
+    await syncConnection(db, fixtureProfile.id, connection.id);
+    const beforeFailure = await repo.findTransactionByExternalId(
+      db,
+      fixtureProfile.id,
+      "mock",
+      "mock-tx-preexisting-1",
+    );
+    expect(beforeFailure).toBeDefined();
+
+    // Provider now fails outright — the connection must still be retryable,
+    // and nothing already-imported may disappear.
+    resetProviderRegistry();
+    registerProvider("mock", new AlwaysFailingProvider());
+    const failedRun = await syncConnection(db, fixtureProfile.id, connection.id);
+    expect(failedRun.status).toBe("FAILED");
+
+    const stillThere = await repo.findTransactionByExternalId(
+      db,
+      fixtureProfile.id,
+      "mock",
+      "mock-tx-preexisting-1",
+    );
+    expect(stillThere).toEqual(beforeFailure);
+
+    // Provider recovers — the same connection, un-mutated, syncs normally
+    // again. The payment source already has a baseline transaction, so this
+    // sync is correctly incremental (`since: lastSuccessfulSyncAt` from the
+    // FIRST successful sync, before the failed attempt) — the new
+    // transaction must be dated on/after that watermark to be picked up,
+    // exactly like a genuinely new real-world transaction would be.
+    const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const newTransaction: ExternalTransactionInput = {
+      ...priorTransaction,
+      externalTransactionId: "mock-tx-after-recovery-1",
+      rawDescription: "COMPRA APOS RECUPERACAO",
+      date: tomorrow,
+    };
+    installMockProvider({
+      accounts: [mockNubankAccount],
+      transactionsByAccount: new Map([
+        [mockNubankAccount.externalAccountId, [priorTransaction, newTransaction]],
+      ]),
+      status: "CONNECTED",
+    });
+    const recoveredRun = await syncConnection(db, fixtureProfile.id, connection.id);
+    expect(recoveredRun.status).toBe("SUCCEEDED");
+
+    const recovered = await repo.findTransactionByExternalId(
+      db,
+      fixtureProfile.id,
+      "mock",
+      "mock-tx-after-recovery-1",
+    );
+    expect(recovered).toBeDefined();
   });
 });

@@ -384,12 +384,8 @@ function ConectarBanco() {
             actionLabel="Desconectar"
             onAction={() => void handleDisconnect(connection.id)}
             destructive
-            {...(isLivePilot
-              ? {
-                  onSync: () => void handleManualSync(connection.id),
-                  syncing: syncingConnectionId === connection.id,
-                }
-              : {})}
+            onSync={() => void handleManualSync(connection.id)}
+            syncing={syncingConnectionId === connection.id}
           />
         ))}
 
@@ -449,9 +445,10 @@ function ConnectionRow({
   readonly attention?: boolean;
   readonly destructive?: boolean;
   /**
-   * Founder Local Live Bank Pilot only (brief §7) — a manual, request-driven
-   * refresh, since no public webhook exists for a localhost Live connection.
-   * Omitted entirely outside that mode.
+   * Manual, request-driven refresh (DEC-128) — reuses `syncConnection`
+   * exactly as the webhook path does, so a user is never blocked on a
+   * webhook (misconfigured or delayed) to see a connection's latest data.
+   * Available for any healthy connection, not only the local Live pilot.
    */
   readonly onSync?: () => void;
   readonly syncing?: boolean;

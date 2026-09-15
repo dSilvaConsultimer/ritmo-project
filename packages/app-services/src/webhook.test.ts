@@ -168,3 +168,88 @@ describe("handleWebhookEvent — transactions/deleted marks the transaction REVE
     expect(found?.status).toBe("REVERSED");
   });
 });
+
+describe("handleWebhookEvent — provider still SYNCING does not poison the watermark (DEC-128)", () => {
+  it("an item/updated webhook that arrives while the provider Item is still assembling data never advances lastSuccessfulSyncAt", async () => {
+    const db = await freshSeededDb();
+    installMockProvider({ accounts: [], transactionsByAccount: new Map(), status: "SYNCING" });
+    const connection = await setUpConnection(db);
+
+    const outcome = await handleWebhookEvent(
+      db,
+      {
+        id: connection.externalConnectionId,
+        eventId: "webhook-event-still-syncing",
+        event: "item/updated" as const,
+        itemId: connection.externalConnectionId,
+      },
+      "mock",
+    );
+    expect(outcome).toBe("PROCESSED");
+
+    const updated = await repo.getProviderConnectionById(db, connection.id);
+    expect(updated?.lastSuccessfulSyncAt).toBeUndefined();
+    expect(updated?.status).toBe("SYNCING");
+  });
+
+  it("a later item/updated webhook, once the provider reports CONNECTED, recovers the data the still-SYNCING attempt missed", async () => {
+    const db = await freshSeededDb();
+    const salary: ExternalTransactionInput = {
+      provider: "mock",
+      externalTransactionId: "mock-tx-webhook-salary-1",
+      paymentSourceExternalRef: mockAccount.externalAccountId,
+      amountCents: 850_000,
+      direction: "CREDIT",
+      financialEffect: "INCOME",
+      certainty: "ACTUAL",
+      date: "2026-09-05",
+      rawDescription: "SALARIO EMPRESA XYZ LTDA",
+      rawMerchant: "EMPRESA XYZ LTDA",
+      status: "POSTED",
+    };
+    installMockProvider({ accounts: [], transactionsByAccount: new Map(), status: "SYNCING" });
+    const connection = await setUpConnection(db);
+
+    // First delivery: the Item is still SYNCING — nothing importable yet.
+    await handleWebhookEvent(
+      db,
+      {
+        id: connection.externalConnectionId,
+        eventId: "webhook-event-first-attempt",
+        event: "item/updated" as const,
+        itemId: connection.externalConnectionId,
+      },
+      "mock",
+    );
+
+    // Provider finishes assembling the Item's data and reports CONNECTED —
+    // a second, later webhook delivery (a real, distinct eventId, exactly
+    // as Pluggy would send once the Item transitions) must recover it.
+    installMockProvider({
+      accounts: [mockAccount],
+      transactionsByAccount: new Map([[mockAccount.externalAccountId, [salary]]]),
+      status: "CONNECTED",
+    });
+    const outcome = await handleWebhookEvent(
+      db,
+      {
+        id: connection.externalConnectionId,
+        eventId: "webhook-event-second-attempt-connected",
+        event: "item/updated" as const,
+        itemId: connection.externalConnectionId,
+      },
+      "mock",
+    );
+    expect(outcome).toBe("PROCESSED");
+
+    const found = await repo.findTransactionByExternalId(
+      db,
+      fixtureProfile.id,
+      "mock",
+      "mock-tx-webhook-salary-1",
+    );
+    expect(found).toBeDefined();
+    expect(found?.amount.cents).toBe(850_000);
+    expect(found?.financialEffect).toBe("INCOME");
+  });
+});

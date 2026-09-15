@@ -279,6 +279,15 @@ async function reconcileProfile(
  * case uses `refetchTransactionsByExternalId` instead, which targets
  * specific ids regardless of date — matching Pluggy's own reference
  * pattern (`fetchAllTransactions(accountId, { ids })`).
+ *
+ * DEC-128: `since` is only applied to a payment source that already has at
+ * least one persisted transaction (`hasAnyTransactionForPaymentSource`) — a
+ * never-baselined source always gets a full pull, regardless of the
+ * connection's own `lastSuccessfulSyncAt`. This is both the fix and the
+ * self-healing path for a connection whose watermark was ever advanced
+ * before a source's first real import (the provider still assembling data,
+ * `SyncRunStatus: "PENDING"` below): the very next sync for that source
+ * ignores the stale watermark and backfills everything.
  */
 export async function syncConnection(
   db: Database,
@@ -327,8 +336,22 @@ export async function syncConnection(
         await repo.upsertPaymentSource(db, paymentSource, financialProfileId);
         metrics.accountsDiscovered += 1;
 
+        // DEC-128: the connection-level `lastSuccessfulSyncAt` watermark is
+        // only trustworthy as an incremental cutoff for a payment source
+        // that has actually imported at least one transaction before — a
+        // source can otherwise end up with a watermark stamped from an
+        // earlier sync attempt that discovered accounts but, for whatever
+        // reason, never got this specific source's transactions (e.g. the
+        // provider was still assembling data — see `providerStillUpdating`
+        // below). Falling back to `since: undefined` (a full pull) for a
+        // never-baselined source is what makes a connection self-heal on
+        // its own next real sync, with no manual backfill required. Cheap:
+        // `hasAnyTransactionForPaymentSource` is an indexed EXISTS/LIMIT 1.
+        const hasBaseline = await repo.hasAnyTransactionForPaymentSource(db, paymentSource.id);
+        const since = hasBaseline ? connection.lastSuccessfulSyncAt : undefined;
+
         const externalTransactions = await provider.listTransactions(account.externalAccountId, {
-          ...(connection.lastSuccessfulSyncAt ? { since: connection.lastSuccessfulSyncAt } : {}),
+          ...(since ? { since } : {}),
         });
         metrics.transactionsReceived += externalTransactions.length;
         await importTransactionBatch(
@@ -396,8 +419,23 @@ export async function syncConnection(
   }
 
   const finishedAt = nowIso();
+  // DEC-128: a provider Item reporting SYNCING (Pluggy's UPDATING/MERGING —
+  // see packages/open-finance/src/pluggy/status.ts) is still assembling its
+  // own data; if nothing was imported this attempt, that is not a genuine
+  // "nothing to sync" success — it is the provider not being ready yet.
+  // Reusing the existing (previously unused) SyncRunStatus "PENDING" value
+  // rather than adding a new one keeps this a minimum-scope fix. A webhook
+  // (item/updated, once the Item finishes) or a later manual/webhook sync
+  // retries normally — see docs/DECISIONS.md DEC-128.
+  const providerStillUpdating = connectionStatusUpdate.status === "SYNCING";
   const status: SyncRunStatus =
-    !anySucceeded && errors.length > 0 ? "FAILED" : errors.length > 0 ? "PARTIAL" : "SUCCEEDED";
+    !anySucceeded && errors.length > 0
+      ? "FAILED"
+      : errors.length > 0
+        ? "PARTIAL"
+        : !anySucceeded && providerStillUpdating
+          ? "PENDING"
+          : "SUCCEEDED";
 
   const syncRun: SyncRun = {
     id: createId("sync-run"),
@@ -414,7 +452,16 @@ export async function syncConnection(
     ...connection,
     ...connectionStatusUpdate,
     lastAttemptedSyncAt: startedAt,
-    ...(status !== "FAILED" ? { lastSuccessfulSyncAt: finishedAt } : {}),
+    // DEC-128: advancing this watermark means "it is now safe to ask the
+    // provider only for what changed since this moment" — that is only true
+    // once real account data actually came back (`anySucceeded`). Checking
+    // `status !== "FAILED"` alone (the previous rule) let a zero-account
+    // response with zero errors (PENDING or a genuinely empty connection)
+    // silently stamp `finishedAt` anyway, permanently excluding any
+    // transaction dated before that moment from every future incremental
+    // sync — including ones the provider had simply not finished assembling
+    // yet. See docs/DECISIONS.md DEC-128.
+    ...(anySucceeded ? { lastSuccessfulSyncAt: finishedAt } : {}),
     updatedAt: finishedAt,
   });
 

@@ -5,6 +5,7 @@ import type {
   ExternalAccountInput,
   ExternalTransactionInput,
   ExternalBillInput,
+  ProviderConnectionStatus,
 } from "@money-copilot/financial-engine";
 import type { Id } from "@money-copilot/shared";
 import { registerProvider, resetProviderRegistry } from "./provider-registry";
@@ -57,6 +58,8 @@ export function installMockProvider(options: {
   transactionsByAccount: ReadonlyMap<string, readonly ExternalTransactionInput[]>;
   billsByAccount?: ReadonlyMap<string, readonly ExternalBillInput[]>;
   clientUserIdByExternalConnectionId?: ReadonlyMap<string, string>;
+  /** DEC-128: simulate the provider Item still assembling data (e.g. "SYNCING"). Defaults to "CONNECTED". */
+  status?: ProviderConnectionStatus;
 }): MockProvider {
   resetProviderRegistry();
   const provider = new MockProvider(options);

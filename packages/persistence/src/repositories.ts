@@ -230,6 +230,26 @@ export async function findTransactionByExternalId(
   return mappers.rowToTransaction(row, mappers.rowToPaymentSource(paymentSourceRow));
 }
 
+/**
+ * Cheap existence check — never loads a transaction row, just whether at
+ * least one exists for this payment source (DEC-128: used by `syncConnection`
+ * to decide whether a payment source's incremental `since` watermark can be
+ * trusted, or whether it must be treated as never-yet-baselined and given a
+ * full pull instead). `limit(1)` so a payment source with thousands of
+ * transactions costs the same as one with none.
+ */
+export async function hasAnyTransactionForPaymentSource(
+  db: Database,
+  paymentSourceId: string,
+): Promise<boolean> {
+  const rows = await db
+    .select({ id: schema.financialTransactions.id })
+    .from(schema.financialTransactions)
+    .where(eq(schema.financialTransactions.paymentSourceId, paymentSourceId))
+    .limit(1);
+  return rows.length > 0;
+}
+
 export async function markTransactionReversed(db: Database, transactionId: string, updatedAt: string): Promise<void> {
   await db
     .update(schema.financialTransactions)
