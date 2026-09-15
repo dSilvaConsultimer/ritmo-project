@@ -15,7 +15,7 @@ import {
   getInstallmentPlanMatchCandidates,
   reclassifyMisclassifiedCardPayments,
 } from "./sync";
-import { getFinancialSnapshot, getCategoryTotals, getTransactions } from "./queries";
+import { getFinancialSnapshot, getFinancialPosition, getCategoryTotals, getTransactions } from "./queries";
 import { resetProviderRegistry, registerProvider } from "./provider-registry";
 import { freshSeededDb, installMockProvider } from "./test-helpers";
 
@@ -821,5 +821,156 @@ describe("reclassifyMisclassifiedCardPayments (DEC-130, test 11: stale CARD_PAYM
 
     const result = await reclassifyMisclassifiedCardPayments(db, fixtureProfile.id);
     expect(result.reclassified).toBe(0);
+  });
+});
+
+describe("DEC-130 follow-up — sync identity & idempotency (checking-balance double-counting bug)", () => {
+  // Mirrors the real staging payload: balance === availableBalance (Pluggy's
+  // `closingBalance`), with a genuine reservation on top — see
+  // `packages/open-finance/src/pluggy/dec130-full-pipeline.test.ts`.
+  const dupAccount: ExternalAccountInput = {
+    provider: "mock",
+    externalAccountId: "mock-checking-dup-1",
+    connectionExternalId: "mock-conn-dup-1",
+    kind: "BANK",
+    displayName: "Mock Checking",
+    currency: "BRL",
+    balanceCents: 3_599_575,
+    balanceCertainty: "ACTUAL",
+    availableBalanceCents: 3_599_575,
+    reservedBalanceCents: 100_004,
+    lastSyncedAt: "2026-09-15T00:00:00.000Z",
+  };
+  const dupCard: ExternalAccountInput = {
+    provider: "mock",
+    externalAccountId: "mock-card-dup-1",
+    connectionExternalId: "mock-conn-dup-1",
+    kind: "CREDIT_CARD",
+    displayName: "Mock Card",
+    currency: "BRL",
+    balanceCents: 96_195,
+    balanceCertainty: "ACTUAL",
+    lastSyncedAt: "2026-09-15T00:00:00.000Z",
+  };
+  const EXPECTED_CASH_ONCE = 3_499_571; // 35,995.75 - 1,000.04
+
+  async function setUpNamedConnection(db: Awaited<ReturnType<typeof freshSeededDb>>, externalConnectionId: string) {
+    const connection = {
+      id: createId("provider-connection"),
+      financialProfileId: fixtureProfile.id,
+      provider: "mock" as const,
+      externalConnectionId,
+      status: "PENDING" as const,
+      createdAt: "2026-09-15",
+      updatedAt: "2026-09-15",
+    };
+    await repo.upsertProviderConnection(db, connection);
+    return connection;
+  }
+
+  it("test 1: syncing the same Item twice produces exactly one PaymentSource for its account, never two", async () => {
+    const db = await freshSeededDb();
+    installMockProvider({ accounts: [dupAccount], transactionsByAccount: new Map() });
+    const connection = await setUpNamedConnection(db, dupAccount.connectionExternalId);
+
+    await syncConnection(db, fixtureProfile.id, connection.id);
+    await syncConnection(db, fixtureProfile.id, connection.id);
+
+    const sources = await repo.listPaymentSourcesForProfile(db, fixtureProfile.id);
+    expect(sources.filter((s) => s.externalAccountId === dupAccount.externalAccountId)).toHaveLength(1);
+  });
+
+  it("test 2: a repeated sync after the account's balance changes updates the existing record instead of duplicating it", async () => {
+    const db = await freshSeededDb();
+    installMockProvider({ accounts: [dupAccount], transactionsByAccount: new Map() });
+    const connection = await setUpNamedConnection(db, dupAccount.connectionExternalId);
+    await syncConnection(db, fixtureProfile.id, connection.id);
+
+    const changedBalance: ExternalAccountInput = {
+      ...dupAccount,
+      balanceCents: 4_000_000,
+      availableBalanceCents: 4_000_000,
+    };
+    installMockProvider({ accounts: [changedBalance], transactionsByAccount: new Map() });
+    await syncConnection(db, fixtureProfile.id, connection.id);
+
+    const sources = await repo.listPaymentSourcesForProfile(db, fixtureProfile.id);
+    const matching = sources.filter((s) => s.externalAccountId === dupAccount.externalAccountId);
+    expect(matching).toHaveLength(1);
+    expect(matching[0]?.balance?.amount?.cents).toBe(4_000_000);
+  });
+
+  it("test 3: an account reporting both balance and a distinct availableBalance contributes cash exactly once, never balance+availableBalance summed", async () => {
+    const db = await freshSeededDb();
+    installMockProvider({ accounts: [dupAccount], transactionsByAccount: new Map() });
+    const connection = await setUpNamedConnection(db, dupAccount.connectionExternalId);
+    await syncConnection(db, fixtureProfile.id, connection.id);
+
+    const position = await getFinancialPosition(db, fixtureProfile.id, ASOF);
+    expect(position.cashBalance.amount?.cents).toBe(EXPECTED_CASH_ONCE);
+  });
+
+  it("test 4: two genuinely different accounts both legitimately contribute to cash, even with identical balances (never deduplicated by amount)", async () => {
+    const db = await freshSeededDb();
+    const { availableBalanceCents: _availableBalanceCents, reservedBalanceCents: _reservedBalanceCents, ...dupAccountBase } = dupAccount;
+    const secondGenuineAccount: ExternalAccountInput = {
+      ...dupAccountBase,
+      externalAccountId: "mock-checking-dup-2",
+    };
+    installMockProvider({
+      accounts: [dupAccount, secondGenuineAccount],
+      transactionsByAccount: new Map(),
+    });
+    const connection = await setUpNamedConnection(db, dupAccount.connectionExternalId);
+    await syncConnection(db, fixtureProfile.id, connection.id);
+
+    const sources = await repo.listPaymentSourcesForProfile(db, fixtureProfile.id);
+    expect(sources.filter((s) => s.provider === "mock" && s.type !== "CREDIT_CARD")).toHaveLength(2);
+
+    const position = await getFinancialPosition(db, fixtureProfile.id, ASOF);
+    expect(position.cashBalance.amount?.cents).toBe(EXPECTED_CASH_ONCE + 3_599_575);
+  });
+
+  it("test 5: the same externalAccountId reported under two different ProviderConnections cannot inflate Safe-to-Spend — the second sync updates the same record", async () => {
+    const db = await freshSeededDb();
+    installMockProvider({ accounts: [dupAccount], transactionsByAccount: new Map() });
+    const connectionA = await setUpNamedConnection(db, "mock-conn-dup-a");
+    const connectionB = await setUpNamedConnection(db, "mock-conn-dup-b");
+
+    await syncConnection(db, fixtureProfile.id, connectionA.id);
+    await syncConnection(db, fixtureProfile.id, connectionB.id);
+
+    const sources = await repo.listPaymentSourcesForProfile(db, fixtureProfile.id);
+    expect(sources.filter((s) => s.externalAccountId === dupAccount.externalAccountId)).toHaveLength(1);
+
+    const position = await getFinancialPosition(db, fixtureProfile.id, ASOF);
+    expect(position.cashBalance.amount?.cents).toBe(EXPECTED_CASH_ONCE);
+  });
+
+  it("test 6: reservedBalance remains deducted exactly once end-to-end through the full snapshot pipeline", async () => {
+    const db = await freshSeededDb();
+    installMockProvider({ accounts: [dupAccount], transactionsByAccount: new Map() });
+    const connection = await setUpNamedConnection(db, dupAccount.connectionExternalId);
+    await syncConnection(db, fixtureProfile.id, connection.id);
+
+    const snapshot = await getFinancialSnapshot(db, fixtureProfile.id, ASOF);
+    const cashComponent = snapshot.liquidity.components.find((c) => c.type === "CURRENT_AVAILABLE_CASH");
+    expect(cashComponent?.amount.cents).toBe(EXPECTED_CASH_ONCE);
+  });
+
+  it("test 7: the card's outstanding balance remains counted exactly once — never once as a card obligation and again as a separate debt", async () => {
+    const db = await freshSeededDb();
+    installMockProvider({ accounts: [dupAccount, dupCard], transactionsByAccount: new Map() });
+    const connection = await setUpNamedConnection(db, dupAccount.connectionExternalId);
+    await syncConnection(db, fixtureProfile.id, connection.id);
+
+    const snapshot = await getFinancialSnapshot(db, fixtureProfile.id, ASOF);
+    // The seeded founder fixture already carries its own plan-based
+    // commitments (fixed expenses, etc.) — this asserts only that the
+    // synced card's own outstanding balance appears as a SINGLE
+    // CARD_OBLIGATIONS component, never duplicated into a second entry.
+    const cardComponents = snapshot.liquidity.components.filter((c) => c.type === "CARD_OBLIGATIONS");
+    expect(cardComponents).toHaveLength(1);
+    expect(cardComponents[0]?.amount.cents).toBe(-96_195);
   });
 });
