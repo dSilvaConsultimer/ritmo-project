@@ -3696,3 +3696,80 @@ mode-valid). No existing test needed a behavior change beyond the two apps/ritmo
 already depended on `ASOF_DATE`'s value, which now construct it via `resolveAsOfDate(new Date(...))`
 with an explicit injected instant instead of importing a literal — demonstrating the same
 injectability the new clock module provides, and avoiding any future flakiness as real time passes.
+
+**Update (2026-09-15) — branch/deploy separation, not a reversal of this decision:** the Founder
+discovered Railway's staging and production environments were both deploying from `main`, so this
+commit reached production unvalidated. This DEC's technical decision is unaffected: `main` was reverted
+back to pre-DEC-127 (a clean `git revert`, not a rewrite) purely to remove it from production pending
+staging validation; a new `staging` branch was created at the DEC-127 commit and pointed at Railway's
+staging environment so the fix can be validated for real before being promoted back to `main`. See
+DEC-128 for the sync-layer bug this validation surfaced, and for the branch/environment separation
+itself. This DEC stays **Accepted** — nothing about the realized-income/clock design was wrong.
+
+---
+
+### DEC-128
+
+**Date:** 2026-09-15
+**Context:** Validating DEC-127 against the real Railway staging environment (Neon-backed, a genuine
+Pluggy Sandbox connection already `CONNECTED`) surfaced that Home still showed "Entradas do mês =
+R$0,00" — not because DEC-127's read logic was wrong, but because the salary transaction
+(`SALARIO EMPRESA XYZ LTDA`, +R$8.500,00, 2026-09-05) had never actually reached
+`financial_transactions` in Neon at all. `getRealizedIncomeForProfile` was reading the right table; the
+table was simply missing the row. Root-caused in `packages/app-services/src/sync.ts`: Pluggy reports a
+newly-created Item's status as `UPDATING`/`MERGING` (mapped to `"SYNCING"`,
+`packages/open-finance/src/pluggy/status.ts`) while it is still assembling account/transaction data —
+a normal, documented Pluggy behavior. `syncConnection` ignored this: if `provider.listAccounts()` ran
+before the Item finished (the Connect widget's `onSuccess` calls `completeConnection` -> `syncConnection`
+synchronously, immediately after the widget closes — no wait for readiness), it returned `[]`, and with
+zero accounts and zero errors the old status ternary resolved to `"SUCCEEDED"`, which then stamped
+`lastSuccessfulSyncAt = now`. Every later sync (including a correctly-configured `item/updated`
+webhook, once the Item actually finished) used that watermark as an incremental `since` cutoff —
+permanently excluding any transaction dated before it, i.e. every transaction that existed before the
+connection finished the first time. This is a structural bug, not staging-specific; it did not
+reproduce locally only because of timing.
+**Decision:**
+1. **A provider Item still `SYNCING` with nothing imported is never `"SUCCEEDED"`.** Reused the
+   existing (previously unused) `SyncRunStatus` value `"PENDING"` rather than adding a new enum member
+   — `!anySucceeded && providerStillUpdating -> "PENDING"`. A later webhook or manual refresh retries
+   normally; nothing about this label change affects persistence.
+2. **`lastSuccessfulSyncAt` only advances when `anySucceeded` is true** (at least one account was
+   actually processed without error) — replacing the previous `status !== "FAILED"` check, which let a
+   zero-account, zero-error attempt (provider not ready, or a connection with genuinely zero accounts)
+   silently stamp the watermark anyway.
+3. **Self-healing per payment source, not just forward-looking.** A connection whose watermark was
+   already poisoned before this fix (staging's real connection) cannot be fixed by (1)+(2) alone — the
+   bad timestamp is already persisted. `syncConnection` now checks
+   `repo.hasAnyTransactionForPaymentSource` (new, `packages/persistence`, an indexed `LIMIT 1`
+   existence check — never loads a row) before applying `since` to that specific payment source; a
+   source with zero persisted transactions always gets a full pull regardless of the connection's own
+   watermark. Once a source has at least one real transaction, it returns to normal incremental
+   behavior. This is what lets the existing, already-`CONNECTED` staging connection recover the missing
+   salary transaction on its very next sync — no manual backfill, no direct database write.
+4. **Idempotency unchanged, proven in tests.** `findTransactionByExternalId`/`findPaymentSourceByExternalId`
+   remain the only dedup keys; full sync -> incremental sync -> repeated sync never duplicates a row
+   (`sync.test.ts`, "transaction idempotency" describe block).
+5. **Manual "Sincronizar agora" is no longer limited to the local Live pilot mode**
+   (`apps/ritmo/src/routes/_protected/conectar-banco.tsx`) — any healthy connection can be manually
+   resynced by its owner. The server function (`requestManualSyncHandler`) and its ownership check,
+   per-profile rate limit, and UI-level `syncing` disabled-state already existed and needed no new
+   infrastructure — only the `isLivePilot` gate around rendering the button was removed.
+6. **Webhook handling (`webhook.ts`, `webhook.server.ts`) was not modified** — idempotency (claimed by
+   Pluggy's own `eventId`), the "never trust the payload, always re-fetch via `syncConnection`" rule,
+   and the shared-secret authenticity check were already correct. New tests added instead, including
+   the DEC-128-specific case: a `SYNCING` webhook delivery never poisons the watermark, and a later
+   `item/updated` delivery once `CONNECTED` recovers the data the first one missed.
+**Rationale:** The bug was a race between the provider's own async data assembly and this
+application's optimistic "one sync attempt is either fully successful or fully failed" assumption.
+Fixing the watermark logic (1+2) prevents any *new* connection from being poisoned; the per-source
+existence check (3) is what makes an *already*-poisoned real connection (staging's) self-heal through
+the real pipeline, honoring the constraint that no data may be inserted by hand.
+**Status:** Accepted.
+**Consequences:** New tests in `sync.test.ts` (provider-still-updating status/watermark behavior,
+self-healing backfill, return-to-incremental behavior, transaction idempotency across full/incremental
+syncs, provider-outage error handling and retry, no data loss on failure) and `webhook.test.ts`
+(SYNCING webhook doesn't poison the watermark; a later CONNECTED webhook recovers the data). `MockProvider`
+(`packages/open-finance`) gained an optional `status` constructor field so tests can simulate a
+still-updating provider Item without adding failure-injection knobs to `syncConnection` itself. No
+change to `buildFinancialSnapshot`, Pluggy transaction classification, or Home's own read logic
+(DEC-127) — this is entirely a sync-layer correctness fix.
