@@ -144,16 +144,57 @@ export async function findPaymentSourceByExternalId(
   return row ? mappers.rowToPaymentSource(row) : undefined;
 }
 
+/**
+ * DEC-131: conflict-safe upsert on the CANONICAL provider-account identity
+ * (financialProfileId, provider, externalAccountId) — not just the row's own
+ * `id` — so two concurrent/overlapping syncs of the same provider account
+ * can never both insert. Both racing INSERTs hit the database's own unique
+ * constraint (see `schema.ts`'s `paymentSources` table); whichever commits
+ * second falls through to `DO UPDATE` on the row the first one created,
+ * rather than creating a second row (the ON CONFLICT target's own columns,
+ * `id` included, are deliberately excluded from the `set` clause — the
+ * primary key of the row that already exists must never be overwritten).
+ *
+ * A manually-entered payment source (`provider`/`externalAccountId` both
+ * null) can never trigger this constraint at all — standard Postgres
+ * unique-constraint NULL semantics treat every null as distinct — so it
+ * falls back to the previous `id`-keyed upsert, unaffected.
+ *
+ * Returns the row actually persisted (which may have a DIFFERENT `id` than
+ * `paymentSource.id` when this call lost a race) — callers MUST use the
+ * returned value, never the input, for anything referencing this payment
+ * source afterward (e.g. attaching imported transactions) — see
+ * `syncConnection` in `@money-copilot/app-services`.
+ */
 export async function upsertPaymentSource(
   db: Database,
   paymentSource: PaymentSource,
   financialProfileId: string,
-): Promise<void> {
+): Promise<PaymentSource> {
   const row = mappers.paymentSourceToRow(paymentSource, financialProfileId);
-  await db.insert(schema.paymentSources).values(row).onConflictDoUpdate({
-    target: schema.paymentSources.id,
-    set: row,
-  });
+  const { id: _id, ...rowWithoutId } = row;
+  const isProviderIdentified = row.provider !== null && row.externalAccountId !== null;
+
+  const [saved] = isProviderIdentified
+    ? await db
+        .insert(schema.paymentSources)
+        .values(row)
+        .onConflictDoUpdate({
+          target: [
+            schema.paymentSources.financialProfileId,
+            schema.paymentSources.provider,
+            schema.paymentSources.externalAccountId,
+          ],
+          set: rowWithoutId,
+        })
+        .returning()
+    : await db
+        .insert(schema.paymentSources)
+        .values(row)
+        .onConflictDoUpdate({ target: schema.paymentSources.id, set: row })
+        .returning();
+
+  return mappers.rowToPaymentSource(saved!);
 }
 
 export async function listPaymentSourcesForProfile(

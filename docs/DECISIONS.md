@@ -4122,3 +4122,81 @@ one card, counted once," plus the already-paid-card-balance interaction; four re
 false-positive tests: R$790-vs-R$800, R$8,300-vs-R$8,500 PIX, exact-amount CARD_PAYMENT never
 satisfying a bill, and "one transaction resolves at most one planned item" with two identical R$800
 rents); `dec130-full-pipeline.test.ts` (new file, full real-payload regression).
+
+### DEC-131
+
+**Date:** 2026-09-15
+**Context:** After a real Pluggy re-sync, staging showed Safe-to-Spend = R$70,029.51 for
+`financial-profile_2_mu1rzk0f` — exactly `35,995.75 + 35,995.75 − 1,000.04 − 961.95`, i.e. the
+checking balance counted twice. Direct DB inspection confirmed the root cause: exactly ONE
+`ProviderConnection` (`status: CONNECTED`), but THREE `PaymentSource` rows — one `CREDIT_CARD`
+(legitimate) and TWO `DEBIT`/`CHECKING_ACCOUNT` rows (`payment-source_38_mu20nczj` and
+`payment-source_37_mu20ncy4`), both with the SAME `externalAccountId`, same connection, same real
+Pluggy account.
+**Root cause (code-confirmed, not speculative):** `syncConnection`
+(`packages/app-services/src/sync.ts`) used a find-then-insert pattern —
+`repo.findPaymentSourceByExternalId(...)` to look up an existing row by
+`(financialProfileId, provider, externalAccountId)`, then `repo.upsertPaymentSource` keyed only on the
+row's own freshly-generated `id` when none was found. `payment_sources` had **no database-level
+uniqueness** on that natural key (unlike `provider_connections`, which already had
+`unique(financialProfileId, provider, externalConnectionId)` since Sprint 3) — so two overlapping
+`syncConnection` calls for the same connection (Pluggy is documented to send bursts of
+`item/created`/`item/updated`/`transactions/created` webhooks for one Item in quick succession, each
+independently triggering a sync — see `webhook.ts` — and a manual/auto sync can just as easily land in
+the same window) could both run `findPaymentSourceByExternalId`, both observe no row, and both insert.
+This is a genuine application-level TOCTOU gap, not merely a hypothesis: a `Promise.all` of two
+concurrent `upsertPaymentSource` calls for the same identity reproduced two rows before this fix (see
+the new test in `provider-repositories.test.ts`).
+Separately confirmed: `financial_transactions` are keyed by `(financialProfileId, externalProviderId,
+externalTransactionId)` in `findTransactionByExternalId` — **not** by `paymentSourceId` — so the
+duplicate PaymentSource situation could not itself have produced duplicate transaction rows; at worst,
+individual transactions may have been inconsistently attributed to whichever duplicate row
+`findPaymentSourceByExternalId`'s unordered, `LIMIT`-less query happened to return on a given sync.
+**Decision:**
+1. **Canonical identity confirmed:** `(financialProfileId, provider, externalAccountId)` is the correct
+   uniqueness key for a provider-synced `PaymentSource`, for every current provider (`pluggy`, `mock` —
+   both key exclusively on `externalAccountId`). A manually-entered `PaymentSource` (`provider` and
+   `externalAccountId` both null) is never constrained by this — standard Postgres multi-column unique
+   constraint NULL semantics treat every null as distinct.
+2. **Database-level enforcement added.** `payment_sources` now has
+   `unique(financialProfileId, provider, externalAccountId)` (`packages/persistence/src/schema.ts`).
+3. **Conflict-safe upsert.** `repo.upsertPaymentSource` now issues
+   `INSERT ... ON CONFLICT (financial_profile_id, provider, external_account_id) DO UPDATE SET ...`
+   (falling back to the previous `id`-keyed upsert only for manually-entered sources) and **returns the
+   row actually persisted** — critical because the losing side of a race gets back a DIFFERENT `id`
+   than the one it generated. `syncConnection` was updated to use this returned value for every
+   downstream operation (transaction import, bill import, baseline check) — never its own draft object.
+4. **Migration is self-repairing, not merely additive** (`packages/persistence/migrations/
+   0011_freezing_madame_masque.sql`): before adding the constraint, it identifies duplicate groups
+   (partitioned by the same natural key), picks a canonical row per group (most complete — fewest null
+   balance fields — then freshest `lastSyncedAt`, then `id` for determinism), repoints every
+   `financial_transactions`/`installment_plans`/`bills` reference from the losers onto the canonical
+   row via a session-scoped temp table (all statements in one migration file run in one transaction),
+   deletes the losers, then adds the constraint — so `CREATE UNIQUE INDEX` itself is the final proof no
+   conflicting rows remain (if repair were ever incomplete, the constraint fails to create and the
+   whole migration rolls back, rather than silently leaving the invariant unprotected). A database with
+   no duplicates (any fresh environment, including production) sees a no-op repair and a clean
+   constraint add.
+5. **Never used balance-matching for identity or deduplication anywhere in this fix** — every decision
+   (which row is canonical, which rows are duplicates) is keyed on `(financialProfileId, provider,
+   externalAccountId)`, never on comparing balance amounts.
+6. **The Safe-to-Spend formula itself was not touched.** This was scoped, confirmed, and fixed as a
+   sync-identity/data-aggregation defect — `position.ts`'s liquidity math is unchanged.
+**Tests added:** `provider-repositories.test.ts` (DEC-131 block) — sequential syncs of the same
+account produce one row; a genuine `Promise.all` race between two concurrent upserts of the same
+identity resolves to exactly one row with both callers reporting the same canonical id; the same
+`externalAccountId` under two different profiles is allowed; two genuinely different
+`externalAccountId`s in one profile both persist; a raw duplicate INSERT bypassing the repository
+helper is rejected by the database itself; multiple manually-entered payment sources remain
+unconstrained. `migration.test.ts` (new DEC-131 describe block) — the self-repairing migration:
+repoints transactions/installment plans/bills from a seeded duplicate pair onto the more-complete,
+fresher canonical row; leaves an unrelated `CREDIT_CARD` payment source and the transaction count
+untouched; the canonical row's own `reservedBalance` survives; the constraint then rejects a further
+duplicate insert while still allowing manually-entered sources side by side; and
+`buildFinancialPositionFromAccounts` run against the post-repair data counts the checking liquidity
+exactly once. `sync.test.ts` (DEC-130 follow-up block, added the same day, before this root cause was
+confirmed) — 7 sync-level regression tests covering the same identity/idempotency surface end-to-end
+through `syncConnection`.
+**Staging repair:** see the delivery message for the exact SQL performed against
+`financial-profile_2_mu1rzk0f`'s two duplicate rows (`payment-source_38_mu20nczj`,
+`payment-source_37_mu20ncy4`) and the resulting snapshot breakdown.

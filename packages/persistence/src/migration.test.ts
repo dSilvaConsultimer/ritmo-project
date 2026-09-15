@@ -3,9 +3,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { migrate } from "drizzle-orm/pglite/migrator";
+import { buildFinancialPositionFromAccounts } from "@money-copilot/financial-engine";
+import type { Id } from "@money-copilot/shared";
 import { createDatabase } from "./db";
+import * as repo from "./repositories";
 import * as schema from "./schema";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -157,5 +160,219 @@ describe("migrations — Sprint 3 -> Sprint 4 forward migration", () => {
     );
     const [conversation] = await db.select().from(schema.conversations);
     expect(conversation?.financialProfileId).toBe("profile-1");
+  });
+});
+
+describe("migrations — DEC-131 duplicate PaymentSource repair + unique constraint", () => {
+  it("repoints references from a pre-existing duplicate PaymentSource onto the canonical (most complete, freshest) one, then enforces uniqueness going forward", async () => {
+    const db = await createDatabase();
+
+    // 1. Apply everything up to and including migration 0010 — "the
+    //    database as it existed right before DEC-131's constraint," i.e.
+    //    exactly the state a pre-DEC-131 sync race could have produced.
+    const preFolder = buildPartialMigrationsFolder(11);
+    await migrate(db, { migrationsFolder: preFolder });
+
+    await db
+      .insert(schema.financialProfiles)
+      .values({ id: "profile-dup-1", label: "Test", createdAt: "2026-09-05" });
+    await db.insert(schema.providerConnections).values({
+      id: "conn-dup-1",
+      financialProfileId: "profile-dup-1",
+      provider: "pluggy",
+      externalConnectionId: "item-dup-1",
+      status: "CONNECTED",
+      createdAt: "2026-09-05",
+      updatedAt: "2026-09-05",
+    });
+
+    // The STALE duplicate: created first, never touched again by any later
+    // sync (missing the reserved/available/invested balances a later sync
+    // populated) — the same real Pluggy account as the row below.
+    await db.insert(schema.paymentSources).values({
+      id: "ps-stale-dup",
+      financialProfileId: "profile-dup-1",
+      label: "Conta Corrente",
+      type: "DEBIT",
+      subtype: "CHECKING_ACCOUNT",
+      provider: "pluggy",
+      externalAccountId: "pluggy-account-dup-1",
+      connectionId: "conn-dup-1",
+      balanceCertainty: "ACTUAL",
+      balanceCents: 3_599_575,
+      lastSyncedAt: "2026-09-01T00:00:00.000Z",
+    });
+    // The CANONICAL duplicate: every subsequent sync's find-then-insert
+    // happened to keep finding and updating THIS row instead — more
+    // complete (has reserved/available balances) and more recently synced.
+    await db.insert(schema.paymentSources).values({
+      id: "ps-canonical-dup",
+      financialProfileId: "profile-dup-1",
+      label: "Conta Corrente",
+      type: "DEBIT",
+      subtype: "CHECKING_ACCOUNT",
+      provider: "pluggy",
+      externalAccountId: "pluggy-account-dup-1",
+      connectionId: "conn-dup-1",
+      balanceCertainty: "ACTUAL",
+      balanceCents: 3_599_575,
+      availableBalanceCents: 3_599_575,
+      reservedBalanceCents: 100_004,
+      lastSyncedAt: "2026-09-15T00:00:00.000Z",
+    });
+    // An unrelated, genuinely distinct CREDIT_CARD PaymentSource on the same
+    // connection — must be left completely untouched by the repair (it has
+    // its own distinct externalAccountId, so it was never part of any
+    // duplicate group).
+    await db.insert(schema.paymentSources).values({
+      id: "ps-card-untouched",
+      financialProfileId: "profile-dup-1",
+      label: "Cartão",
+      type: "CREDIT_CARD",
+      provider: "pluggy",
+      externalAccountId: "pluggy-card-account-1",
+      connectionId: "conn-dup-1",
+      balanceCertainty: "ACTUAL",
+      balanceCents: 96_195,
+      lastSyncedAt: "2026-09-15T00:00:00.000Z",
+    });
+
+    // A real transaction attached to the STALE row — proves repointing,
+    // never deletion, of dependent data.
+    await db.insert(schema.financialTransactions).values({
+      id: "tx-dup-1",
+      financialProfileId: "profile-dup-1",
+      paymentSourceId: "ps-stale-dup",
+      date: "2026-09-10",
+      amountCents: 5_590,
+      direction: "DEBIT",
+      rawDescription: "NETFLIX",
+      normalizedDescription: "NETFLIX",
+      status: "POSTED",
+      certainty: "ACTUAL",
+      financialEffect: "CONSUMPTION",
+      origin: "IMPORTED",
+      createdAt: "2026-09-10",
+      updatedAt: "2026-09-10",
+    });
+    // An installment plan already attached to the CANONICAL row, to prove a
+    // reference already pointing at the eventual survivor is left intact.
+    await db.insert(schema.installmentPlans).values({
+      id: "plan-dup-1",
+      financialProfileId: "profile-dup-1",
+      description: "Some purchase",
+      paymentSourceId: "ps-canonical-dup",
+      installmentAmountCents: 20_000,
+      certainty: "ACTUAL",
+      status: "ACTIVE",
+    });
+    // A bill attached to the STALE row.
+    await db.insert(schema.bills).values({
+      id: "bill-dup-1",
+      financialProfileId: "profile-dup-1",
+      paymentSourceId: "ps-stale-dup",
+      dueDate: "2026-09-20",
+      totalAmountCents: 96_195,
+      certainty: "ACTUAL",
+      createdAt: "2026-09-05",
+      updatedAt: "2026-09-05",
+    });
+
+    // 2. Apply the DEC-131 migration on top — repair, then constrain.
+    const fullFolder = buildPartialMigrationsFolder(12);
+    await expect(migrate(db, { migrationsFolder: fullFolder })).resolves.not.toThrow();
+
+    // 3. Exactly one PaymentSource remains for this provider account, and
+    //    it's the more complete, fresher one.
+    const remaining = await db
+      .select()
+      .from(schema.paymentSources)
+      .where(eq(schema.paymentSources.externalAccountId, "pluggy-account-dup-1"));
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]?.id).toBe("ps-canonical-dup");
+    // The survivor's own reservedBalance metadata is exactly what it was —
+    // canonicalization never touches the winning row's own data.
+    expect(remaining[0]?.reservedBalanceCents).toBe(100_004);
+
+    // The unrelated CREDIT_CARD PaymentSource is completely untouched.
+    const [card] = await db
+      .select()
+      .from(schema.paymentSources)
+      .where(eq(schema.paymentSources.id, "ps-card-untouched"));
+    expect(card?.balanceCents).toBe(96_195);
+
+    // No transaction was duplicated by the repair — still exactly one row
+    // for this profile, merely repointed.
+    const allTransactions = await db
+      .select()
+      .from(schema.financialTransactions)
+      .where(eq(schema.financialTransactions.financialProfileId, "profile-dup-1"));
+    expect(allTransactions).toHaveLength(1);
+
+    // 4. Every dependent reference now points at the canonical survivor.
+    const [tx] = await db
+      .select()
+      .from(schema.financialTransactions)
+      .where(eq(schema.financialTransactions.id, "tx-dup-1"));
+    expect(tx?.paymentSourceId).toBe("ps-canonical-dup");
+
+    const [plan] = await db
+      .select()
+      .from(schema.installmentPlans)
+      .where(eq(schema.installmentPlans.id, "plan-dup-1"));
+    expect(plan?.paymentSourceId).toBe("ps-canonical-dup");
+
+    const [bill] = await db.select().from(schema.bills).where(eq(schema.bills.id, "bill-dup-1"));
+    expect(bill?.paymentSourceId).toBe("ps-canonical-dup");
+
+    // 5. The invariant is now enforced by the DATABASE, not just
+    //    application code: a second row for the same identity fails to insert.
+    await expect(
+      db.insert(schema.paymentSources).values({
+        id: "ps-new-dup-attempt",
+        financialProfileId: "profile-dup-1",
+        label: "Conta Corrente",
+        type: "DEBIT",
+        provider: "pluggy",
+        externalAccountId: "pluggy-account-dup-1",
+      }),
+    ).rejects.toThrow();
+
+    // 6. Two manually-entered payment sources (provider/externalAccountId
+    //    both null) remain unaffected — Postgres unique-constraint NULL
+    //    semantics never restrict them.
+    await db.insert(schema.paymentSources).values({
+      id: "ps-manual-1",
+      financialProfileId: "profile-dup-1",
+      label: "Carteira",
+      type: "CASH",
+    });
+    await expect(
+      db.insert(schema.paymentSources).values({
+        id: "ps-manual-2",
+        financialProfileId: "profile-dup-1",
+        label: "Carteira 2",
+        type: "CASH",
+      }),
+    ).resolves.not.toThrow();
+
+    // 7. After cleanup, the checking account's liquidity is counted exactly
+    //    once by the position engine — the whole point of this repair.
+    const accounts = await repo.listPaymentSourcesForProfile(db, "profile-dup-1");
+    const position = buildFinancialPositionFromAccounts(
+      accounts,
+      "profile-dup-1" as Id<"financial-profile">,
+      "2026-09-15",
+      "pluggy",
+    );
+    // 35,995.75 (closing == balance here) - 1,000.04 reserved = 34,995.71 —
+    // never doubled to 69,991.46.
+    expect(position.cashBalance.amount?.cents).toBe(3_499_571);
+  });
+
+  it("is a no-op repair on a database with no duplicates — the constraint is simply added", async () => {
+    const db = await createDatabase();
+    await expect(migrate(db, { migrationsFolder: REAL_MIGRATIONS_DIR })).resolves.not.toThrow();
+    await expect(db.select().from(schema.paymentSources)).resolves.toEqual([]);
   });
 });

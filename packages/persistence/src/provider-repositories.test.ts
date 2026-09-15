@@ -181,6 +181,123 @@ describe("PaymentSource — reserved/available/invested balance round-trip (DEC-
   });
 });
 
+describe("PaymentSource — conflict-safe upsert identity (DEC-131)", () => {
+  function pluggyChecking(id: string): Parameters<typeof repo.upsertPaymentSource>[1] {
+    return {
+      id: id as Id<"payment-source">,
+      label: "Conta Corrente",
+      type: "DEBIT",
+      provider: "pluggy",
+      externalAccountId: "shared-external-account-1",
+      balance: { certainty: "ACTUAL", amount: fromCents(3_599_575) },
+    };
+  }
+
+  it("sequential syncs of the same provider account never create a second row", async () => {
+    const db = await freshDb();
+    const profileId = await seedProfile(db);
+
+    await repo.upsertPaymentSource(db, pluggyChecking(createId("payment-source")), profileId);
+    await repo.upsertPaymentSource(db, pluggyChecking(createId("payment-source")), profileId);
+    await repo.upsertPaymentSource(db, pluggyChecking(createId("payment-source")), profileId);
+
+    const sources = await repo.listPaymentSourcesForProfile(db, profileId);
+    expect(sources).toHaveLength(1);
+  });
+
+  it("two concurrent/racing upserts of the same provider account resolve to exactly one row — the database constraint, not just find-then-insert, prevents the duplicate", async () => {
+    const db = await freshDb();
+    const profileId = await seedProfile(db);
+
+    // Two "syncs" that each generated their OWN fresh id — simulating two
+    // overlapping `syncConnection` calls that both ran
+    // `findPaymentSourceByExternalId` before either had committed its
+    // insert (see docs/DECISIONS.md DEC-131). Neither is awaited before the
+    // other starts, so both INSERTs are genuinely in flight together.
+    const idA = createId("payment-source");
+    const idB = createId("payment-source");
+    const [resultA, resultB] = await Promise.all([
+      repo.upsertPaymentSource(db, pluggyChecking(idA), profileId),
+      repo.upsertPaymentSource(db, pluggyChecking(idB), profileId),
+    ]);
+
+    const sources = await repo.listPaymentSourcesForProfile(db, profileId);
+    expect(sources).toHaveLength(1);
+    // Both calls must report back the SAME canonical row — whichever one's
+    // insert actually committed first — never their own original draft id
+    // when they lost the race.
+    expect(resultA.id).toBe(resultB.id);
+    expect(sources[0]?.id).toBe(resultA.id);
+  });
+
+  it("the same externalAccountId under two different financial profiles is allowed — never treated as a conflict", async () => {
+    const db = await freshDb();
+    const profileA = await seedProfile(db);
+    const profileB = await seedProfile(db);
+
+    await repo.upsertPaymentSource(db, pluggyChecking(createId("payment-source")), profileA);
+    await repo.upsertPaymentSource(db, pluggyChecking(createId("payment-source")), profileB);
+
+    expect(await repo.listPaymentSourcesForProfile(db, profileA)).toHaveLength(1);
+    expect(await repo.listPaymentSourcesForProfile(db, profileB)).toHaveLength(1);
+  });
+
+  it("genuinely different externalAccountIds in the same profile both persist as separate rows", async () => {
+    const db = await freshDb();
+    const profileId = await seedProfile(db);
+
+    await repo.upsertPaymentSource(
+      db,
+      { ...pluggyChecking(createId("payment-source")), externalAccountId: "external-account-A" },
+      profileId,
+    );
+    await repo.upsertPaymentSource(
+      db,
+      { ...pluggyChecking(createId("payment-source")), externalAccountId: "external-account-B" },
+      profileId,
+    );
+
+    expect(await repo.listPaymentSourcesForProfile(db, profileId)).toHaveLength(2);
+  });
+
+  it("a raw duplicate INSERT bypassing the repository helper is rejected by the database itself", async () => {
+    const db = await freshDb();
+    const profileId = await seedProfile(db);
+    await repo.upsertPaymentSource(db, pluggyChecking(createId("payment-source")), profileId);
+
+    await expect(
+      db.insert(schema.paymentSources).values({
+        id: createId("payment-source"),
+        financialProfileId: profileId,
+        label: "Conta Corrente (duplicate attempt)",
+        type: "DEBIT",
+        provider: "pluggy",
+        externalAccountId: "shared-external-account-1",
+      }),
+    ).rejects.toThrow();
+  });
+
+  it("multiple manually-entered payment sources (no provider identity) are never constrained by this uniqueness rule", async () => {
+    const db = await freshDb();
+    const profileId = await seedProfile(db);
+
+    await repo.upsertPaymentSource(
+      db,
+      { id: createId("payment-source"), label: "Carteira", type: "CASH" },
+      profileId,
+    );
+    await expect(
+      repo.upsertPaymentSource(
+        db,
+        { id: createId("payment-source"), label: "Carteira 2", type: "CASH" },
+        profileId,
+      ),
+    ).resolves.toBeDefined();
+
+    expect(await repo.listPaymentSourcesForProfile(db, profileId)).toHaveLength(2);
+  });
+});
+
 describe("Income — provenance round-trip (DEC-130)", () => {
   it("persists and reads back source and expectedDayOfMonth", async () => {
     const db = await freshDb();

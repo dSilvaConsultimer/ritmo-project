@@ -333,8 +333,14 @@ export async function syncConnection(
           connection.provider,
           account.externalAccountId,
         );
-        const paymentSource = paymentSourceFromExternalAccount(account, connection.id, existingSource?.id);
-        await repo.upsertPaymentSource(db, paymentSource, financialProfileId);
+        const draftPaymentSource = paymentSourceFromExternalAccount(account, connection.id, existingSource?.id);
+        // DEC-131: the returned row is canonical — under a race between two
+        // overlapping syncs of the same provider account, this call's own
+        // draft id may have LOST to a concurrent insert that committed
+        // first; the database's own conflict-safe upsert (see
+        // `repo.upsertPaymentSource`) reports back whichever row actually
+        // exists. Everything below must use THIS value, never `draftPaymentSource`.
+        const paymentSource = await repo.upsertPaymentSource(db, draftPaymentSource, financialProfileId);
         metrics.accountsDiscovered += 1;
 
         // DEC-128: the connection-level `lastSuccessfulSyncAt` watermark is

@@ -95,34 +95,47 @@ export const providerConnections = pgTable(
   (table) => [unique().on(table.financialProfileId, table.provider, table.externalConnectionId)],
 );
 
-export const paymentSources = pgTable("payment_sources", {
-  id: text("id").primaryKey(),
-  financialProfileId: text("financial_profile_id")
-    .notNull()
-    .references(() => financialProfiles.id),
-  label: text("label").notNull(),
-  type: text("type").$type<PaymentSourceType>().notNull(),
-  subtype: text("subtype"),
-  provider: text("provider"),
-  externalAccountId: text("external_account_id"),
-  connectionId: text("connection_id").references(() => providerConnections.id),
-  currency: text("currency"),
-  balanceCertainty: text("balance_certainty").$type<Certainty>(),
-  balanceCents: integer("balance_cents"),
-  // DEC-130: reserved/available/invested balances — see PaymentSource's own
-  // doc comments in packages/financial-engine for exact semantics. All
-  // three share `balanceCertainty` (always known together, from the same
-  // sync moment) rather than each needing its own certainty column.
-  availableBalanceCents: integer("available_balance_cents"),
-  reservedBalanceCents: integer("reserved_balance_cents"),
-  automaticallyInvestedBalanceCents: integer("automatically_invested_balance_cents"),
-  creditLimitCents: integer("credit_limit_cents"),
-  availableCreditLimitCents: integer("available_credit_limit_cents"),
-  creditClosingDate: text("credit_closing_date"),
-  creditDueDate: text("credit_due_date"),
-  minimumPaymentCents: integer("minimum_payment_cents"),
-  lastSyncedAt: text("last_synced_at"),
-});
+/**
+ * DEC-131: the unique constraint on (financialProfileId, provider,
+ * externalAccountId) is the DB-level enforcement of the same canonical
+ * provider-account identity `findPaymentSourceByExternalId` already keys
+ * its lookups on — see docs/DECISIONS.md DEC-131. Standard Postgres
+ * multi-column unique-constraint NULL semantics (each NULL is distinct)
+ * mean this never restricts manually-entered payment sources, which always
+ * have `provider`/`externalAccountId` both null.
+ */
+export const paymentSources = pgTable(
+  "payment_sources",
+  {
+    id: text("id").primaryKey(),
+    financialProfileId: text("financial_profile_id")
+      .notNull()
+      .references(() => financialProfiles.id),
+    label: text("label").notNull(),
+    type: text("type").$type<PaymentSourceType>().notNull(),
+    subtype: text("subtype"),
+    provider: text("provider"),
+    externalAccountId: text("external_account_id"),
+    connectionId: text("connection_id").references(() => providerConnections.id),
+    currency: text("currency"),
+    balanceCertainty: text("balance_certainty").$type<Certainty>(),
+    balanceCents: integer("balance_cents"),
+    // DEC-130: reserved/available/invested balances — see PaymentSource's own
+    // doc comments in packages/financial-engine for exact semantics. All
+    // three share `balanceCertainty` (always known together, from the same
+    // sync moment) rather than each needing its own certainty column.
+    availableBalanceCents: integer("available_balance_cents"),
+    reservedBalanceCents: integer("reserved_balance_cents"),
+    automaticallyInvestedBalanceCents: integer("automatically_invested_balance_cents"),
+    creditLimitCents: integer("credit_limit_cents"),
+    availableCreditLimitCents: integer("available_credit_limit_cents"),
+    creditClosingDate: text("credit_closing_date"),
+    creditDueDate: text("credit_due_date"),
+    minimumPaymentCents: integer("minimum_payment_cents"),
+    lastSyncedAt: text("last_synced_at"),
+  },
+  (table) => [unique().on(table.financialProfileId, table.provider, table.externalAccountId)],
+);
 
 export const incomes = pgTable("incomes", {
   id: text("id").primaryKey(),

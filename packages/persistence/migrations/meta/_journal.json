@@ -78,6 +78,13 @@
       "when": 1789488741228,
       "tag": "0010_cheerful_leopardon",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1789500872571,
+      "tag": "0011_freezing_madame_masque",
+      "breakpoints": true
     }
   ]
 }
