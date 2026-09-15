@@ -6,6 +6,7 @@ import {
   matchInstallmentPlans,
   remainingInstallments,
   summarizeFutureInstallmentCommitments,
+  isInstallmentCoveredByCardBalance,
 } from "./installment";
 
 function plan(overrides: Partial<InstallmentPlan> = {}): InstallmentPlan {
@@ -146,5 +147,38 @@ describe("matchInstallmentPlans — old debt reconciliation (NEVER auto-replaces
     });
 
     expect(matchInstallmentPlans(manualEstimate, unrelatedPlan, "2026-09-05")).toBeNull();
+  });
+});
+
+describe("isInstallmentCoveredByCardBalance (DEC-130 correction)", () => {
+  const cardId = createId("payment-source");
+  const otherCardId = createId("payment-source");
+
+  it("(test A) is covered when the plan's payment source is a known card and that card's balance is known", () => {
+    const p = plan({ paymentSourceId: cardId });
+    expect(isInstallmentCoveredByCardBalance(p, new Set([cardId]), true)).toBe(true);
+  });
+
+  it("(test B) is NOT covered when the plan has no payment source at all", () => {
+    const p = plan({});
+    expect(isInstallmentCoveredByCardBalance(p, new Set([cardId]), true)).toBe(false);
+  });
+
+  it("(test B, variant) is NOT covered when the plan's payment source is not among the known card ids at all", () => {
+    const p = plan({ paymentSourceId: otherCardId });
+    expect(isInstallmentCoveredByCardBalance(p, new Set([cardId]), true)).toBe(false);
+  });
+
+  it("(test D) is NOT covered when the card's own balance is unknown, even if tied to a known card — stays an independent obligation", () => {
+    const p = plan({ paymentSourceId: cardId });
+    expect(isInstallmentCoveredByCardBalance(p, new Set([cardId]), false)).toBe(false);
+  });
+
+  it("is covered even when the card balance is exactly zero (bill fully paid) — never reappears as a separate obligation", () => {
+    const p = plan({ paymentSourceId: cardId });
+    // cardBalanceKnown=true regardless of the amount being zero or positive —
+    // the caller is responsible for passing `true` only when the balance's
+    // certainty is known, irrespective of its numeric value.
+    expect(isInstallmentCoveredByCardBalance(p, new Set([cardId]), true)).toBe(true);
   });
 });

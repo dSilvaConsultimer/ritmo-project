@@ -4,38 +4,55 @@ import { TAX_CATEGORY, type FixedExpense, type VariableBudget } from "../domain/
 import type { Income } from "../domain/income";
 import type { Certainty } from "../domain/certainty";
 import { worstCertainty } from "../domain/certainty";
-import type { FinancialTransaction } from "../domain/transaction";
+import type { FinancialTransaction, TransactionDirection } from "../domain/transaction";
 import { isConsumptionLike } from "../domain/financial-effect";
 import { breakdownEvent, type FinancialEvent } from "../domain/event";
 import type { FinancialGoal } from "../domain/goal";
 import type { ProtectedPreference } from "../domain/preference";
 import type { InstallmentPlan } from "../domain/installment";
-import { summarizeFutureInstallmentCommitments, type FutureCommitmentSummary } from "../domain/installment";
+import {
+  summarizeFutureInstallmentCommitments,
+  isInstallmentCoveredByCardBalance,
+  type FutureCommitmentSummary,
+} from "../domain/installment";
 import { excludedTransactionIds, type ReconciliationLink } from "../domain/reconciliation";
-import { amountsAreSimilar } from "../domain/recurring";
 import type { FinancialPosition } from "../domain/position";
 import { computeLiquidityAwareSafeToSpend, type LiquidityAwareSafeToSpend } from "../domain/position";
 import { daysRemainingInMonth, isSameMonth, dayOfMonth } from "./date-utils";
 
 /**
- * DEC-130 (corrected): removes the FIRST transaction in `pool` whose amount
- * is within tolerance of `expectedAmount` (reusing `amountsAreSimilar`'s
- * existing 10% band — never a bespoke threshold) and returns it, or
- * `undefined` if nothing matches. Mutates `pool` so the same real
- * transaction can never "realize" two different planned items. This is
- * deliberately amount-only (no description matching at all — never brittle
- * string comparison) and month-scoped by construction (`pool` is always
- * pre-filtered to `asOfDate`'s calendar month before this is called) — a
- * date proximity check beyond "same month" was considered and rejected:
- * the Founder's own early-salary example (expected day 20, received day
- * 15) must match despite a 5-day gap, and "same month" already bounds this
- * to a sane window without an arbitrary extra parameter.
+ * DEC-130 (corrected — multi-signal, conservative): removes and returns the
+ * FIRST transaction in `pool` that reconciles with a planned Income/
+ * FixedExpense, or `undefined` if nothing does. A match requires ALL of:
+ *   - EXACT amount equality (never a tolerance band) — a declared Income/
+ *     FixedExpense is a known, specific figure the user stated, not a
+ *     fuzzy pattern; "rent R$800" must never match an unrelated R$790
+ *     transaction, and "salary R$8,500" must never match an unrelated
+ *     R$8,300 PIX. Financial conservatism over false reconciliation:
+ *     ambiguous evidence must resolve to UNRESOLVED, never REALIZED.
+ *   - matching `direction` (defense in depth — the pool's own
+ *     `financialEffect` pre-filtering already guarantees this by
+ *     construction for every real provider, but this makes the
+ *     requirement explicit and provider-independent).
+ *   - `pool` is always pre-filtered by the caller to (a) the correct
+ *     `financialEffect` (INCOME for income, consumption-like for
+ *     expenses — so a CARD_PAYMENT/TRANSFER/REFUND can never satisfy a
+ *     salary or bill expectation just because the amount lines up) and
+ *     (b) `asOfDate`'s calendar month (date proximity) — the Founder's own
+ *     early-salary example (expected day 20, received day 15) still
+ *     matches despite the day gap, since it stays within the same month.
+ * Mutates `pool` so the same real transaction can never "realize" two
+ * different planned items (each realized transaction resolves at most one
+ * planned event).
  */
-function matchAndConsume(
+function reconcilePlannedAmount(
   expectedAmount: Money,
+  expectedDirection: TransactionDirection,
   pool: FinancialTransaction[],
 ): FinancialTransaction | undefined {
-  const index = pool.findIndex((t) => amountsAreSimilar([expectedAmount, t.amount]));
+  const index = pool.findIndex(
+    (t) => t.direction === expectedDirection && M.equals(t.amount, expectedAmount),
+  );
   if (index === -1) return undefined;
   return pool.splice(index, 1)[0];
 }
@@ -204,7 +221,7 @@ export function buildFinancialSnapshot(input: FinancialSnapshotInput): Financial
   const incomeTransactionPool = monthlyTransactions.filter((t) => t.financialEffect === "INCOME").slice();
   const futureIncomeItems: Income[] = [];
   for (const incomeItem of input.income) {
-    const realized = matchAndConsume(incomeItem.grossAmount, incomeTransactionPool);
+    const realized = reconcilePlannedAmount(incomeItem.grossAmount, "CREDIT", incomeTransactionPool);
     if (realized) continue; // already inside the current balance — never added again.
 
     const reliableSource = incomeItem.source !== "HISTORY_INFERRED";
@@ -250,7 +267,9 @@ export function buildFinancialSnapshot(input: FinancialSnapshotInput): Financial
   const consumptionTransactionPool = monthlyTransactions
     .filter((t) => isConsumptionLike(t.financialEffect))
     .slice();
-  const unrealizedFixed = nonTaxFixed.filter((e) => !matchAndConsume(e.amount, consumptionTransactionPool));
+  const unrealizedFixed = nonTaxFixed.filter(
+    (e) => !reconcilePlannedAmount(e.amount, "DEBIT", consumptionTransactionPool),
+  );
   const upcomingFixedCommitments = M.sum(unrealizedFixed.map((e) => e.amount));
 
   // --- Planned events: already-paid, future-confirmed, future-estimated, unknown ---
@@ -313,6 +332,26 @@ export function buildFinancialSnapshot(input: FinancialSnapshotInput): Financial
       );
     }
   }
+
+  // DEC-130 (correction): liquidity-aware-only — an ACTIVE installment plan
+  // already represented inside a deducted credit-card outstanding balance
+  // must not ALSO be independently subtracted (see
+  // `isInstallmentCoveredByCardBalance`'s own doc comment for the exact
+  // rule). `creditCardPaymentSourceIds` is derived from real transactions
+  // actually seen for this profile (never guessed); the plan-based
+  // `debtCommitments` above is entirely UNCHANGED — this only affects the
+  // separate figure passed into `computeLiquidityAwareSafeToSpend` below.
+  const creditCardPaymentSourceIds = new Set(
+    input.transactions.filter((t) => t.paymentSource.type === "CREDIT_CARD").map((t) => t.paymentSource.id),
+  );
+  const cardBalanceKnown =
+    input.position !== undefined && input.position.cardOutstandingBalance.certainty !== "UNKNOWN";
+  const uncoveredInstallmentPlans = input.installmentPlans.filter(
+    (p) =>
+      p.status === "ACTIVE" &&
+      !isInstallmentCoveredByCardBalance(p, creditCardPaymentSourceIds, cardBalanceKnown),
+  );
+  const uncoveredDebtCommitments = M.sum(uncoveredInstallmentPlans.map((p) => p.installmentAmount));
 
   // --- Protected savings goal ---
   const protectedSavings = input.goal.monthlySavingsTarget;
@@ -411,7 +450,7 @@ export function buildFinancialSnapshot(input: FinancialSnapshotInput): Financial
         upcomingFixedCommitments,
         variableBudgets: variableBudgetsTotal,
         upcomingEventReservations: upcomingEventReservationsThisMonth,
-        debtCommitments,
+        debtCommitments: uncoveredDebtCommitments,
         futureIncome,
         protectedSavings,
       })

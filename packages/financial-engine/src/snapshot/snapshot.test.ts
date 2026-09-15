@@ -17,6 +17,7 @@ import type { Income } from "../domain/income";
 import type { FixedExpense } from "../domain/expense";
 import type { FinancialEvent } from "../domain/event";
 import type { FinancialTransaction, PaymentSource } from "../domain/transaction";
+import type { InstallmentPlan } from "../domain/installment";
 
 describe("buildFinancialSnapshot (initial user fixture)", () => {
   const snapshot = buildFinancialSnapshot(initialUserSnapshotInput);
@@ -578,6 +579,205 @@ describe("buildFinancialSnapshot — liquidity-aware Safe-to-Spend (DEC-130)", (
     expect(snapshot.liquidity.liquidityAwareSafeToSpend?.cents).toBe(M.fromReais(1_000).cents);
   });
 
+  it("(reconciliation precision) a similarly-but-not-exactly-priced unrelated transaction never falsely reconciles a fixed expense — R$790 must not satisfy R$800 rent", () => {
+    const position: FinancialPosition = {
+      id: createId("financial-position"),
+      financialProfileId: FIXTURE_PROFILE_ID,
+      asOf: "2026-09-15",
+      cashBalance: actual(M.fromReais(10_000)),
+      cardOutstandingBalance: unknownAmount(),
+      otherLiabilities: unknownAmount(),
+      reservedBalance: unknownAmount(),
+      automaticallyInvestedBalance: unknownAmount(),
+      source: "pluggy",
+      coverage: "PARTIAL",
+    };
+    const unrelatedPayment: FinancialTransaction = {
+      id: createId("transaction"),
+      financialProfileId: FIXTURE_PROFILE_ID,
+      paymentSource: checkingAccount,
+      date: "2026-09-12",
+      amount: M.fromReais(790), // close to, but NOT, the R$800 rent
+      direction: "DEBIT",
+      rawDescription: "MERCADO LOCAL",
+      normalizedDescription: "MERCADO LOCAL",
+      status: "POSTED",
+      certainty: "ACTUAL",
+      financialEffect: "CONSUMPTION",
+      category: "Compras",
+      origin: "IMPORTED",
+      createdAt: "2026-09-12T00:00:00.000Z",
+      updatedAt: "2026-09-12T00:00:00.000Z",
+    };
+    const input = minimalInput({
+      asOfDate: "2026-09-15",
+      fixedExpenses: [
+        fixedExpense({ label: "Aluguel", amount: M.fromReais(800), certainty: "ACTUAL", dueDayOfMonth: 10 }),
+      ],
+      transactions: [unrelatedPayment],
+      position,
+    });
+    const snapshot = buildFinancialSnapshot(input);
+
+    // The rent must remain a full, unresolved obligation — R$790 is NOT
+    // proof R$800 rent was paid, even though it's "close" and would have
+    // passed the old 10%-tolerance rule.
+    const commitmentComponent = snapshot.liquidity.components.find(
+      (c) => c.type === "UPCOMING_FIXED_COMMITMENTS",
+    );
+    expect(commitmentComponent?.amount.cents).toBe(M.fromReais(-800).cents);
+    expect(snapshot.liquidity.liquidityAwareSafeToSpend?.cents).toBe(M.fromReais(9_200).cents); // 10000-800
+  });
+
+  it("(reconciliation precision) a similarly-but-not-exactly-priced unrelated PIX never falsely reconciles a salary — R$8,300 must not satisfy R$8,500 expected income", () => {
+    const position: FinancialPosition = {
+      id: createId("financial-position"),
+      financialProfileId: FIXTURE_PROFILE_ID,
+      asOf: "2026-09-15",
+      cashBalance: actual(M.fromReais(1_000)),
+      cardOutstandingBalance: unknownAmount(),
+      otherLiabilities: unknownAmount(),
+      reservedBalance: unknownAmount(),
+      automaticallyInvestedBalance: unknownAmount(),
+      source: "pluggy",
+      coverage: "PARTIAL",
+    };
+    const unrelatedPix: FinancialTransaction = {
+      id: createId("transaction"),
+      financialProfileId: FIXTURE_PROFILE_ID,
+      paymentSource: checkingAccount,
+      date: "2026-09-12",
+      amount: M.fromReais(8_300), // close to, but NOT, the R$8,500 expected salary
+      direction: "CREDIT",
+      rawDescription: "PIX RECEBIDO JOAO SILVA",
+      normalizedDescription: "PIX RECEBIDO JOAO SILVA",
+      status: "POSTED",
+      certainty: "ACTUAL",
+      financialEffect: "INCOME",
+      category: null,
+      origin: "IMPORTED",
+      createdAt: "2026-09-12T00:00:00.000Z",
+      updatedAt: "2026-09-12T00:00:00.000Z",
+    };
+    const input = minimalInput({
+      asOfDate: "2026-09-15", // day 15 — expected day 20 is still ahead
+      income: [
+        income({
+          grossAmount: M.fromReais(8_500),
+          certainty: "CONFIRMED",
+          source: "USER_DECLARED",
+          expectedDayOfMonth: 20,
+        }),
+      ],
+      transactions: [unrelatedPix],
+      position,
+    });
+    const snapshot = buildFinancialSnapshot(input);
+
+    // The salary must still be treated as a genuine future addition — the
+    // unrelated PIX never counts as having realized it.
+    const futureIncomeComponent = snapshot.liquidity.components.find(
+      (c) => c.type === "FUTURE_CONFIRMED_INCOME",
+    );
+    expect(futureIncomeComponent?.amount.cents).toBe(M.fromReais(8_500).cents);
+    expect(snapshot.liquidity.liquidityAwareSafeToSpend?.cents).toBe(M.fromReais(9_500).cents); // 1000+8500
+  });
+
+  it("(reconciliation precision) a CARD_PAYMENT of the exact same amount never satisfies a fixed-expense expectation, despite matching perfectly on amount", () => {
+    const position: FinancialPosition = {
+      id: createId("financial-position"),
+      financialProfileId: FIXTURE_PROFILE_ID,
+      asOf: "2026-09-15",
+      cashBalance: actual(M.fromReais(10_000)),
+      cardOutstandingBalance: unknownAmount(),
+      otherLiabilities: unknownAmount(),
+      reservedBalance: unknownAmount(),
+      automaticallyInvestedBalance: unknownAmount(),
+      source: "pluggy",
+      coverage: "PARTIAL",
+    };
+    const billPayment: FinancialTransaction = {
+      id: createId("transaction"),
+      financialProfileId: FIXTURE_PROFILE_ID,
+      paymentSource: checkingAccount,
+      date: "2026-09-12",
+      amount: M.fromReais(800), // EXACT same amount as the declared rent
+      direction: "DEBIT",
+      rawDescription: "PAGAMENTO FATURA CARTAO VISA",
+      normalizedDescription: "PAGAMENTO FATURA CARTAO VISA",
+      status: "POSTED",
+      certainty: "ACTUAL",
+      financialEffect: "CARD_PAYMENT", // not consumption-like — must never satisfy a bill expectation
+      category: null,
+      origin: "IMPORTED",
+      createdAt: "2026-09-12T00:00:00.000Z",
+      updatedAt: "2026-09-12T00:00:00.000Z",
+    };
+    const input = minimalInput({
+      asOfDate: "2026-09-15",
+      fixedExpenses: [
+        fixedExpense({ label: "Aluguel", amount: M.fromReais(800), certainty: "ACTUAL", dueDayOfMonth: 10 }),
+      ],
+      transactions: [billPayment],
+      position,
+    });
+    const snapshot = buildFinancialSnapshot(input);
+
+    const commitmentComponent = snapshot.liquidity.components.find(
+      (c) => c.type === "UPCOMING_FIXED_COMMITMENTS",
+    );
+    expect(commitmentComponent?.amount.cents).toBe(M.fromReais(-800).cents);
+  });
+
+  it("(reconciliation precision) one realized transaction reconciles AT MOST one planned item — two identically-priced rents each need their own transaction", () => {
+    const position: FinancialPosition = {
+      id: createId("financial-position"),
+      financialProfileId: FIXTURE_PROFILE_ID,
+      asOf: "2026-09-15",
+      cashBalance: actual(M.fromReais(10_000)),
+      cardOutstandingBalance: unknownAmount(),
+      otherLiabilities: unknownAmount(),
+      reservedBalance: unknownAmount(),
+      automaticallyInvestedBalance: unknownAmount(),
+      source: "pluggy",
+      coverage: "PARTIAL",
+    };
+    const onePayment: FinancialTransaction = {
+      id: createId("transaction"),
+      financialProfileId: FIXTURE_PROFILE_ID,
+      paymentSource: checkingAccount,
+      date: "2026-09-12",
+      amount: M.fromReais(800),
+      direction: "DEBIT",
+      rawDescription: "ALUGUEL",
+      normalizedDescription: "ALUGUEL",
+      status: "POSTED",
+      certainty: "ACTUAL",
+      financialEffect: "CONSUMPTION",
+      category: "Moradia",
+      origin: "IMPORTED",
+      createdAt: "2026-09-12T00:00:00.000Z",
+      updatedAt: "2026-09-12T00:00:00.000Z",
+    };
+    const input = minimalInput({
+      asOfDate: "2026-09-15",
+      fixedExpenses: [
+        fixedExpense({ label: "Aluguel imóvel A", amount: M.fromReais(800), certainty: "ACTUAL", dueDayOfMonth: 10 }),
+        fixedExpense({ label: "Aluguel imóvel B", amount: M.fromReais(800), certainty: "ACTUAL", dueDayOfMonth: 10 }),
+      ],
+      transactions: [onePayment], // only ONE real transaction exists
+      position,
+    });
+    const snapshot = buildFinancialSnapshot(input);
+
+    // Only one of the two R$800 rents can have been paid by a single
+    // R$800 transaction — the other must remain a full obligation.
+    const commitmentComponent = snapshot.liquidity.components.find(
+      (c) => c.type === "UPCOMING_FIXED_COMMITMENTS",
+    );
+    expect(commitmentComponent?.amount.cents).toBe(M.fromReais(-800).cents);
+  });
+
   it("(test 4) a sufficiently reliable future salary increases the forward liquidity-aware total", () => {
     const position: FinancialPosition = {
       id: createId("financial-position"),
@@ -846,6 +1046,192 @@ describe("buildFinancialSnapshot — liquidity-aware Safe-to-Spend (DEC-130)", (
     // "Já comprometido" is exactly the card's outstanding balance — no
     // declared fixed expenses/events exist for this profile.
     expect(snapshot.recommendedCommittedTotal.cents).toBe(M.fromReais(961.95).cents);
+  });
+});
+
+describe("buildFinancialSnapshot — card balance vs. installment double counting (DEC-130 correction)", () => {
+  function minimalInput(overrides: Partial<FinancialSnapshotInput> = {}): FinancialSnapshotInput {
+    return {
+      asOfDate: "2026-09-15",
+      income: [],
+      fixedExpenses: [],
+      variableBudgets: [],
+      transactions: [],
+      reconciliationLinks: [],
+      events: [],
+      installmentPlans: [],
+      goal: { id: createId("financial-goal"), label: "No goal set yet", monthlySavingsTarget: M.ZERO },
+      protectedPreferences: [],
+      ...overrides,
+    };
+  }
+
+  function cardTransaction(overrides: Partial<FinancialTransaction> = {}): FinancialTransaction {
+    return {
+      id: createId("transaction"),
+      financialProfileId: FIXTURE_PROFILE_ID,
+      paymentSource: nubankCreditCard,
+      date: "2026-08-04", // outside the current month on purpose — only used to register the card's id
+      amount: M.fromReais(50),
+      direction: "DEBIT",
+      rawDescription: "LOJA TESTE CARTAO",
+      normalizedDescription: "LOJA TESTE CARTAO",
+      status: "POSTED",
+      certainty: "ACTUAL",
+      financialEffect: "CONSUMPTION",
+      category: "Compras",
+      origin: "IMPORTED",
+      createdAt: "2026-08-04T00:00:00.000Z",
+      updatedAt: "2026-08-04T00:00:00.000Z",
+      ...overrides,
+    };
+  }
+
+  function installmentPlan(overrides: Partial<InstallmentPlan> = {}): InstallmentPlan {
+    return {
+      id: createId("installment-plan"),
+      financialProfileId: FIXTURE_PROFILE_ID,
+      description: "Test installment",
+      totalOriginalAmount: null,
+      installmentAmount: M.fromReais(100),
+      installmentNumber: null,
+      totalInstallments: null,
+      firstDueDate: null,
+      certainty: "ACTUAL",
+      status: "ACTIVE",
+      ...overrides,
+    };
+  }
+
+  it("(test A) an installment tied to the card whose balance is already deducted is NOT counted again — committed stays exactly the card balance", () => {
+    const position: FinancialPosition = {
+      id: createId("financial-position"),
+      financialProfileId: FIXTURE_PROFILE_ID,
+      asOf: "2026-09-15",
+      cashBalance: actual(M.fromReais(5_000)),
+      cardOutstandingBalance: actual(M.fromReais(1_000)),
+      otherLiabilities: unknownAmount(),
+      reservedBalance: unknownAmount(),
+      automaticallyInvestedBalance: unknownAmount(),
+      source: "pluggy",
+      coverage: "PARTIAL",
+    };
+    const input = minimalInput({
+      transactions: [cardTransaction()], // registers nubankCreditCard as a known card
+      installmentPlans: [installmentPlan({ paymentSourceId: nubankCreditCard.id, installmentAmount: M.fromReais(100) })],
+      position,
+    });
+    const snapshot = buildFinancialSnapshot(input);
+
+    expect(snapshot.recommendedCommittedTotal.cents).toBe(M.fromReais(1_000).cents);
+    expect(snapshot.liquidity.components.some((c) => c.type === "DEBT_COMMITMENTS")).toBe(false);
+    // The plan-based commitments figure is UNCHANGED — still counts the
+    // installment on top, since that formula never touches card balances.
+    expect(snapshot.commitments.debtCommitments.cents).toBe(M.fromReais(100).cents);
+  });
+
+  it("(test B) a debt genuinely external to any card balance IS counted independently — committed is card + debt", () => {
+    const position: FinancialPosition = {
+      id: createId("financial-position"),
+      financialProfileId: FIXTURE_PROFILE_ID,
+      asOf: "2026-09-15",
+      cashBalance: actual(M.fromReais(5_000)),
+      cardOutstandingBalance: actual(M.fromReais(1_000)),
+      otherLiabilities: unknownAmount(),
+      reservedBalance: unknownAmount(),
+      automaticallyInvestedBalance: unknownAmount(),
+      source: "pluggy",
+      coverage: "PARTIAL",
+    };
+    const input = minimalInput({
+      transactions: [cardTransaction()],
+      // No paymentSourceId at all — a manually-entered debt with no linked
+      // account, e.g. a personal loan paid by boleto.
+      installmentPlans: [installmentPlan({ installmentAmount: M.fromReais(100) })],
+      position,
+    });
+    const snapshot = buildFinancialSnapshot(input);
+
+    expect(snapshot.recommendedCommittedTotal.cents).toBe(M.fromReais(1_100).cents);
+    const debtComponent = snapshot.liquidity.components.find((c) => c.type === "DEBT_COMMITMENTS");
+    expect(debtComponent?.amount.cents).toBe(M.fromReais(-100).cents);
+  });
+
+  it("(test C) multiple installments on the SAME already-deducted card are all excluded — the card obligation is still counted exactly once", () => {
+    const position: FinancialPosition = {
+      id: createId("financial-position"),
+      financialProfileId: FIXTURE_PROFILE_ID,
+      asOf: "2026-09-15",
+      cashBalance: actual(M.fromReais(5_000)),
+      cardOutstandingBalance: actual(M.fromReais(1_000)),
+      otherLiabilities: unknownAmount(),
+      reservedBalance: unknownAmount(),
+      automaticallyInvestedBalance: unknownAmount(),
+      source: "pluggy",
+      coverage: "PARTIAL",
+    };
+    const input = minimalInput({
+      transactions: [cardTransaction()],
+      installmentPlans: [
+        installmentPlan({ paymentSourceId: nubankCreditCard.id, installmentAmount: M.fromReais(100) }),
+        installmentPlan({ paymentSourceId: nubankCreditCard.id, installmentAmount: M.fromReais(50) }),
+      ],
+      position,
+    });
+    const snapshot = buildFinancialSnapshot(input);
+
+    expect(snapshot.recommendedCommittedTotal.cents).toBe(M.fromReais(1_000).cents);
+    expect(snapshot.liquidity.components.some((c) => c.type === "DEBT_COMMITMENTS")).toBe(false);
+  });
+
+  it("(test D) with no known card balance at all, a known installment on that (unknown-balance) card must still be reserved", () => {
+    const position: FinancialPosition = {
+      id: createId("financial-position"),
+      financialProfileId: FIXTURE_PROFILE_ID,
+      asOf: "2026-09-15",
+      cashBalance: actual(M.fromReais(5_000)),
+      cardOutstandingBalance: unknownAmount(), // card balance genuinely unknown
+      otherLiabilities: unknownAmount(),
+      reservedBalance: unknownAmount(),
+      automaticallyInvestedBalance: unknownAmount(),
+      source: "pluggy",
+      coverage: "PARTIAL",
+    };
+    const input = minimalInput({
+      transactions: [cardTransaction()],
+      installmentPlans: [installmentPlan({ paymentSourceId: nubankCreditCard.id, installmentAmount: M.fromReais(100) })],
+      position,
+    });
+    const snapshot = buildFinancialSnapshot(input);
+
+    const debtComponent = snapshot.liquidity.components.find((c) => c.type === "DEBT_COMMITMENTS");
+    expect(debtComponent?.amount.cents).toBe(M.fromReais(-100).cents);
+    expect(snapshot.recommendedCommittedTotal.cents).toBe(M.fromReais(100).cents);
+  });
+
+  it("once the card is fully paid off (balance drops to a known zero), its linked installment does not reappear as a separate obligation", () => {
+    const position: FinancialPosition = {
+      id: createId("financial-position"),
+      financialProfileId: FIXTURE_PROFILE_ID,
+      asOf: "2026-09-15",
+      cashBalance: actual(M.fromReais(5_000)),
+      cardOutstandingBalance: actual(M.ZERO), // known, and zero — bill fully paid
+      otherLiabilities: unknownAmount(),
+      reservedBalance: unknownAmount(),
+      automaticallyInvestedBalance: unknownAmount(),
+      source: "pluggy",
+      coverage: "PARTIAL",
+    };
+    const input = minimalInput({
+      transactions: [cardTransaction()],
+      installmentPlans: [installmentPlan({ paymentSourceId: nubankCreditCard.id, installmentAmount: M.fromReais(100) })],
+      position,
+    });
+    const snapshot = buildFinancialSnapshot(input);
+
+    expect(snapshot.recommendedCommittedTotal.cents).toBe(0);
+    expect(snapshot.liquidity.components.some((c) => c.type === "CARD_OBLIGATIONS")).toBe(false);
+    expect(snapshot.liquidity.components.some((c) => c.type === "DEBT_COMMITMENTS")).toBe(false);
   });
 });
 

@@ -191,3 +191,41 @@ export function matchInstallmentPlans(
     createdAt: asOf,
   };
 }
+
+/**
+ * DEC-130 (correction): the canonical rule for whether an installment
+ * plan's current-period amount is already represented inside a credit
+ * card's own outstanding balance (a single real-time figure that already
+ * nets in every purchase/installment posted to that card) — if so,
+ * deducting the installment ON TOP of that card balance would double-count
+ * the exact same money.
+ *
+ * Covered only when BOTH:
+ *   - the plan is tied to a payment source (`paymentSourceId`) that IS a
+ *     known credit-card account (`cardPaymentSourceIds` — derived by the
+ *     caller from real transactions/accounts, never guessed); and
+ *   - that card's outstanding balance is itself KNOWN (`cardBalanceKnown`)
+ *     — whether currently zero (bill fully paid — the installment's
+ *     current-period portion is discharged too, so it must not reappear
+ *     as a separate obligation) or positive. An UNKNOWN card balance never
+ *     counts as coverage — the installment stays an independent,
+ *     conservatively-counted obligation until the card's own status is
+ *     actually known (see docs/DECISIONS.md DEC-130).
+ *
+ * A plan with no `paymentSourceId` at all (e.g. a manually-entered
+ * estimate with no linked account) is never considered covered — there is
+ * no evidence it lives inside any tracked balance, so it stays independent
+ * (test D: a known installment with no card data at all must still be
+ * reserved).
+ */
+export function isInstallmentCoveredByCardBalance(
+  plan: InstallmentPlan,
+  cardPaymentSourceIds: ReadonlySet<Id<"payment-source">>,
+  cardBalanceKnown: boolean,
+): boolean {
+  return (
+    plan.paymentSourceId !== undefined &&
+    cardPaymentSourceIds.has(plan.paymentSourceId) &&
+    cardBalanceKnown
+  );
+}

@@ -4063,3 +4063,62 @@ reservedBalance+availableBalance; reservedBalance correct across multiple accoun
 rerun, never touches an unrelated description); `mutations.test.ts`/`tools.test.ts` (all three
 provenance states settable; `fromRecurringPattern` maps to `USER_CONFIRMED_HISTORY`, never
 `HISTORY_INFERRED`).
+
+**Update (2026-09-15) — two remaining correctness risks fixed before push approval:**
+
+1. **Card balance vs. installment/debt double counting.** Confirmed against the real profile's own
+   data: the R$55.90 Netflix installment plan's `paymentSourceId` IS the same credit card whose
+   R$961.95 outstanding balance was already being deducted — that balance, being Pluggy's real-time
+   total, already nets in every posted purchase/installment on that card, so subtracting the
+   installment on top was a genuine double count (committed was R$1,017.85; should have been
+   R$961.95). New canonical domain rule, `isInstallmentCoveredByCardBalance`
+   (`packages/financial-engine/src/domain/installment.ts`): an ACTIVE installment plan is "covered" —
+   and excluded from the liquidity-aware debt total — only when its `paymentSourceId` is a KNOWN
+   credit-card account (derived from real transactions actually seen, never guessed) whose
+   outstanding balance is itself KNOWN (whether zero — bill fully paid, so the installment's portion
+   is discharged too — or positive). A plan with no linked payment source, or linked to a non-card
+   account, or whose card's balance is UNKNOWN, is never considered covered and stays a fully
+   independent obligation (the conservative direction). `snapshot.ts` derives
+   `creditCardPaymentSourceIds` from `input.transactions`' own `paymentSource.type` and passes only
+   the UNCOVERED installments' sum into `computeLiquidityAwareSafeToSpend` — the plan-based
+   `commitments.debtCommitments` is completely unchanged (still sums every ACTIVE plan regardless of
+   card coverage, exactly as before).
+2. **Reconciliation could false-positive on amount alone.** The 10% tolerance (borrowed from
+   `recurring.ts`'s pattern-DETECTION logic, a different problem) would have matched an unrelated
+   R$790 payment against an R$800 declared rent, or an unrelated R$8,300 PIX against an R$8,500
+   expected salary — both within 10%. Replaced with a conservative, multi-signal rule
+   (`reconcilePlannedAmount`, `snapshot.ts`): EXACT amount equality (a declared Income/FixedExpense is
+   a specific, known figure — never a fuzzy pattern) AND matching `direction`, against a pool already
+   filtered to the correct `financialEffect` (INCOME for income; consumption-like for expenses — so a
+   CARD_PAYMENT/TRANSFER/REFUND can never satisfy a salary or bill expectation regardless of amount)
+   and to the current calendar month (date proximity — still wide enough for the early-salary case,
+   day 20 expected/day 15 received). A matched transaction is removed from its pool so it can never
+   realize two different planned items. No description/merchant matching was added (deliberately, per
+   the instruction not to revert to that) — exact amount plus effect/direction/month scoping already
+   resolves the concrete false-positive examples without it. "Compatible payment source" and
+   "counterparty/merchant identity" signals were considered but are not applicable today: neither
+   `Income` nor `FixedExpense` carries a `paymentSourceId` or merchant field to compare against.
+3. **Reserved-balance regression re-validated against the FULL real payload.** The previously-reported
+   R$34,977.90 for `financial-profile_9_mu1xbipy` used data synced BEFORE the reservedBalance mapper
+   fix existed, so it never actually exercised the new deduction. New end-to-end test
+   (`packages/open-finance/src/pluggy/dec130-full-pipeline.test.ts`) runs the FULL real payload
+   (balance/closingBalance R$35,995.75, reservedBalance R$1,000.04, automaticallyInvestedBalance
+   R$3,599.575, card R$961.95) through the actual mapper -> `paymentSourceFromExternalAccount` ->
+   `buildFinancialPositionFromAccounts` -> `buildFinancialSnapshot` pipeline, with every expected
+   figure derived independently from the raw constants (never copied from the implementation), and an
+   explicit "identical result with automaticallyInvestedBalance entirely absent" comparison proving it
+   never alters spendable cash.
+**Corrected result for `financial-profile_9_mu1xbipy`** (real local data, re-run after the installment
+fix — see the delivery message for the full breakdown): `Já comprometido` dropped from R$1,017.85 to
+**R$961.95** (card only — the Netflix installment is genuinely covered), and `recommendedTotal` rose
+from R$34,977.90 to **R$35,033.80** accordingly. Reserved/invested balances remain unpopulated in this
+specific profile's stored data (unchanged fact — still predates a fresh sync); the full-payload
+synthetic regression is what validates that mechanism now, independent of this one profile's sync
+timing.
+**Tests added:** `installment.test.ts` (`isInstallmentCoveredByCardBalance` — covered/not-covered/
+unknown-balance/zero-balance cases, tests A/B/D plus the zero-balance variant); `snapshot.test.ts`
+(tests A-D integrated through `buildFinancialSnapshot`, including test C's "multiple installments on
+one card, counted once," plus the already-paid-card-balance interaction; four reconciliation
+false-positive tests: R$790-vs-R$800, R$8,300-vs-R$8,500 PIX, exact-amount CARD_PAYMENT never
+satisfying a bill, and "one transaction resolves at most one planned item" with two identical R$800
+rents); `dec130-full-pipeline.test.ts` (new file, full real-payload regression).
