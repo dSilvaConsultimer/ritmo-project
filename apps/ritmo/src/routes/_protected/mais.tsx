@@ -85,7 +85,11 @@ function Mais() {
               return (
                 <button
                   key={label}
-                  onClick={() => navigate({ to })}
+                  onClick={() =>
+                    to === "/conectar-banco"
+                      ? navigate({ to, search: { origin: "mais" } })
+                      : navigate({ to })
+                  }
                   className="flex w-full items-center gap-3 px-4 py-3.5 text-left"
                 >
                   <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent text-accent-foreground">

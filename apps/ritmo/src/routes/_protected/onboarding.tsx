@@ -57,7 +57,7 @@ function OnboardingWelcome() {
       <Button
         size="lg"
         className="mt-6 w-full rounded-full"
-        onClick={() => navigate({ to: "/conectar-banco" })}
+        onClick={() => navigate({ to: "/conectar-banco", search: { origin: "onboarding" } })}
       >
         Conectar meu banco
       </Button>

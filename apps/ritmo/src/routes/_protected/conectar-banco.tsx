@@ -1,5 +1,6 @@
-import { createFileRoute, Link, useNavigate, useRouter } from "@tanstack/react-router";
+import { createFileRoute, useNavigate, useRouter } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { z } from "zod";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -26,6 +27,7 @@ import {
   isConfirmedSuccessfulConnectionPhase,
   type ConnectionFlowPhase,
 } from "@/lib/connection-flow";
+import { resolveConnectBankBackTo } from "@/lib/connect-bank-navigation";
 
 /**
  * The dedicated Bank Connection screen (Sprint 9 Phase 4, brief §4/§20) —
@@ -44,8 +46,23 @@ import {
  * server-side; this component never sends or receives a
  * `financialProfileId`.
  */
+/**
+ * Explicit origin, set by the two real entry points
+ * (`/onboarding` → `?origin=onboarding`, `/mais` → `?origin=mais`) so the
+ * Back link can be contextual without relying on browser history — a
+ * direct link/refresh simply omits it, which `resolveConnectBankBackTo`
+ * treats as "derive from real server-side connection state" rather than as
+ * an error. `.catch(undefined)` means a malformed/foreign value (someone
+ * hand-editing the URL) degrades to that same safe fallback instead of a
+ * broken page.
+ */
+const connectBankSearchSchema = z.object({
+  origin: z.enum(["onboarding", "mais"]).optional().catch(undefined),
+});
+
 export const Route = createFileRoute("/_protected/conectar-banco")({
   head: () => ({ meta: [{ title: "Conectar banco — Ritmo" }] }),
+  validateSearch: connectBankSearchSchema,
   loader: () => getConnectionScreenData(),
   component: ConectarBanco,
 });
@@ -57,10 +74,12 @@ const CONNECT_LABEL = "Conectar meu banco";
 
 function ConectarBanco() {
   const initialData = Route.useLoaderData();
+  const { origin } = Route.useSearch();
   const navigate = useNavigate();
   const router = useRouter();
 
   const [screenData, setScreenData] = useState<ConnectionScreenData>(initialData);
+  const backTo = resolveConnectBankBackTo(origin, screenData.hasAnyConnection);
   const [phase, setPhase] = useState<Phase>("idle");
   const [connectToken, setConnectToken] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -245,6 +264,7 @@ function ConectarBanco() {
     return (
       <AuthShell
         title="Não foi possível conectar"
+        backTo={backTo}
         {...(errorMessage ? { subtitle: errorMessage } : {})}
       >
         <div className="flex flex-col items-center gap-4">
@@ -256,9 +276,6 @@ function ConectarBanco() {
           >
             Tentar novamente
           </Button>
-          <Link to="/mais" className="text-[13px] font-semibold text-primary">
-            Voltar para Mais
-          </Link>
         </div>
       </AuthShell>
     );
@@ -270,6 +287,7 @@ function ConectarBanco() {
       <AuthShell
         title="Estamos organizando seus dados"
         subtitle="Isso costuma levar só um instante."
+        backTo={backTo}
       >
         <div className="flex flex-col items-center gap-4 py-6">
           <Loader2 className="h-10 w-10 animate-spin text-primary" />
@@ -295,7 +313,9 @@ function ConectarBanco() {
             The automatic transition above already navigates on entering this
             phase; this button stays only as a manual fallback (e.g. if the
             automatic navigation is still in flight) — it never needs to be
-            clicked in the normal flow.
+            clicked in the normal flow. No Back link here deliberately: the
+            connection just succeeded, so "back" to onboarding/Mais would be
+            a step backwards from the real next destination (Home).
           */}
           <Button size="lg" className="w-full rounded-full" onClick={goHome}>
             Ir para o Início
@@ -312,6 +332,7 @@ function ConectarBanco() {
     <AuthShell
       title="Conectar banco"
       subtitle="Sua conexão é somente leitura — o Ritmo nunca move seu dinheiro."
+      backTo={backTo}
     >
       <div className="flex flex-col gap-4">
         {/*
