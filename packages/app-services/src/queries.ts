@@ -185,6 +185,26 @@ export async function getTransactions(
   return monthlyTransactionList(input.transactions, asOfDate);
 }
 
+/**
+ * DEC-129: the Extrato screen's full, all-time ledger for a profile —
+ * unlike `getTransactions` (current month only, via `monthlyTransactionList`),
+ * this is never date-windowed. A pure read model over `financial_transactions`
+ * (never mutates it); every status included, matching
+ * `monthlyTransactionList`'s own "nothing is hidden" contract — just ordered
+ * newest first instead of oldest first, since a ledger is read backwards
+ * from "now."
+ */
+export async function getTransactionHistory(
+  db: Database,
+  financialProfileId: string,
+  asOfDate: string,
+): Promise<readonly FinancialTransaction[]> {
+  const input = await repo.loadFinancialSnapshotInput(db, financialProfileId, asOfDate);
+  return [...input.transactions].sort(
+    (a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt),
+  );
+}
+
 export async function getCategoryTotals(
   db: Database,
   financialProfileId: string,

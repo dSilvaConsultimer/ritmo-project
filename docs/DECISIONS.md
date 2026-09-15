@@ -3773,3 +3773,81 @@ syncs, provider-outage error handling and retry, no data loss on failure) and `w
 still-updating provider Item without adding failure-injection knobs to `syncConnection` itself. No
 change to `buildFinancialSnapshot`, Pluggy transaction classification, or Home's own read logic
 (DEC-127) — this is entirely a sync-layer correctness fix.
+
+---
+
+### DEC-129
+
+**Date:** 2026-09-15
+**Context:** Two product additions requested on top of DEC-128's sync fix, plus a report that the
+un-gated "Sincronizar agora" button (DEC-128, decision 5) still wasn't visible in staging.
+**Investigation (button not appearing):** Confirmed via `gh api .../commits/{sha}/status` and
+`.../deployments` that the DEC-128 commit (`c013226`) deployed successfully to Railway staging
+(`state: "success"`, single deployment record — the earlier two-environment bug from DEC-127's saga
+does not recur, confirming the branch-separation fix holds). The button's rendering condition itself
+(`healthy.map(...)` in `conectar-banco.tsx`) is unconditional for any connection whose collapsed
+`health` is not `"NEEDS_ATTENTION"` — verified by direct inspection, not gated by `isLivePilot` or
+anything else in the deployed commit. Most likely explanation: the report was made against a page load
+that predated this specific deploy finishing (the deploy and the report were extremely close in time).
+Secondary, not-yet-ruled-out possibility: if the real staging connection's Pluggy status is currently
+one of `LOGIN_ERROR`/`USER_ACTION_REQUIRED`/`ERROR` (`RECONNECT_STATUSES`,
+`apps/ritmo/src/functions/connections.server.ts`), it renders only in the single "needs attention" row
+(only a "Reconectar" action, by design — a connection needing re-auth should not offer a stale-data
+resync). No code change was made for this second possibility since it would depend on the connection's
+actual current provider status, which requires re-checking in the browser against a confirmed-fresh
+deploy.
+**Decision — Extrato (Alteração 1):**
+1. New read-only screen at `/extrato` (not a sixth bottom-nav tab), reached via a discreet "Extrato →"
+   link added inside Home's existing "Disponível para gastar" card — same `ScreenHeader`/`PhoneShell`
+   back-navigation pattern as every Mais subpage (`backTo="/"`).
+2. New `getTransactionHistory` (`packages/app-services/src/queries.ts`) — unlike `getTransactions`
+   (current month only, via `monthlyTransactionList`), this is the full, never-date-windowed ledger,
+   newest first. A pure read model over `repo.loadFinancialSnapshotInput`; never mutates
+   `financial_transactions`, never a new persistence table or column.
+3. Presentation reuses, rather than duplicates, existing formatting: `categoryLabel`/`categoryPathLabel`
+   (the exact "Sem categoria" neutral-state logic already established for Transações, now shared via
+   `format.ts` instead of being duplicated) and two new small formatters (`formatShortDayMonth` "05
+   set", `formatMonthYearLabel` "Setembro de 2026") built the same deterministic, timezone-free,
+   string-slicing way as every other date formatter in `format.ts` — no new date-formatting approach
+   introduced. Grouped by calendar month, since the transaction list is already sorted newest-first by
+   the query layer.
+**Decision — Auto-sync on app open (Alteração 2):**
+1. New `syncAllConnectionsOnOpenHandler` (`connections.server.ts`) — lists the profile's non-
+   `DISCONNECTED` connections and calls the existing `syncConnection` for each, exactly as the manual
+   "Sincronizar agora" and webhook paths already do (no second sync pipeline). One connection's
+   `FAILED` `SyncRun` (checked via its returned `status`, not merely whether the call threw —
+   `syncConnection` never throws for a provider-side failure, see DEC-128) never stops the others and
+   never deletes previously-synced data (an inherent `syncConnection` guarantee, unchanged here).
+   Gated by the same `openFinanceAction` rate-limit bucket every other provider-calling action already
+   uses — one check per app-open, not per connection.
+2. Triggered from `_protected.tsx`'s own component (renamed from an inline arrow function to
+   `ProtectedLayout`) in a `useEffect` guarded by a `useRef` flag — this is the correct "once per app
+   open" boundary: `_protected` is a shared pathless layout, so navigating between its child routes
+   (Home ↔ Planejamento ↔ ...) never remounts it or re-runs this effect; only each destination route's
+   own `loader` re-runs. Deliberately NOT placed in any route's `loader`/`beforeLoad`, both of which DO
+   re-run on every navigation — this was the one point the whole implementation hinged on getting
+   right, per Founder's explicit "not on every route navigation" requirement.
+3. Fire-and-forget: the app renders immediately from already-persisted data; sync runs in the
+   background, and only on reporting at least one real success does it call `router.invalidate()` so
+   already-mounted loaders re-fetch. Any failure (network, rate-limited, thrown) is swallowed at this
+   call site on purpose — `syncAllConnectionsOnOpenHandler` already logs server-side, and
+   `syncConnection` never deletes previously-synced data on failure — so the worst case is silently
+   keeping the last-known-good data on screen, never a blank page.
+**Rationale:** Both features are additive read/orchestration layers over already-existing, already-
+approved primitives (`getTransactionHistory` over `loadFinancialSnapshotInput`; auto-sync over
+`syncConnection`) — no Safe-to-Spend rule, Pluggy classification rule, or persisted schema changed, per
+the Founder's explicit constraints for this task.
+**Status:** Accepted.
+**Consequences:** New tests: `queries.test.ts` (`getTransactionHistory` — newest-first ordering,
+entrada/saída, category+subcategory, category without subcategory); `two-profile-isolation.test.ts`
+((Q) — never leaks another profile's transactions); `extrato.test.ts` (month grouping, friendly
+label/amount/date formatting, "Sem categoria" fallback including the `UNCATEGORIZED` sentinel, empty
+state); `connections.server.test.ts` (`syncAllConnectionsOnOpenHandler` — multiple connections synced,
+one failing connection isolated from the others with no data loss, empty-profile summary, repeated
+calls never duplicate a transaction). Not covered by an automated test, and explicitly noted as a gap
+rather than silently skipped: the client-side "exactly once per app open, not per navigation" guarantee
+itself, since this repository has no component/DOM-rendering test tool (no React Testing Library or
+equivalent) — verified instead by direct inspection of `_protected.tsx`'s position as a shared pathless
+layout in the route tree, plus the `useRef` guard protecting against React 18 Strict Mode's dev-only
+double-invoke. All work is on the `staging` branch only, per the Founder's explicit instruction — `main`
+was not touched.

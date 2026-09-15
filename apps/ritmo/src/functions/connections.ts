@@ -10,6 +10,7 @@ import {
   requestManualSyncHandler,
   requestManualSyncInput,
   startBankConnectionHandler,
+  syncAllConnectionsOnOpenHandler,
 } from "./connections.server";
 
 /**
@@ -44,3 +45,8 @@ export const removeBankConnection = createServerFn({ method: "POST" })
 export const requestManualSync = createServerFn({ method: "POST" })
   .validator(requestManualSyncInput)
   .handler(({ data }) => requestManualSyncHandler(data));
+
+export const syncAllConnectionsOnOpen = createServerFn({ method: "POST" }).handler(
+  syncAllConnectionsOnOpenHandler,
+);
+export type { AutoSyncSummary } from "./connections.server";

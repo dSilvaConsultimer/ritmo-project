@@ -19,6 +19,7 @@ import {
   getRecurringIncomeCandidates,
   getRecurringFixedExpenseCandidates,
   getRealizedIncomeForProfile,
+  getTransactionHistory,
   getUncategorizedTransactions,
   getFixedExpensesForProfile,
   getCategoryRuleCount,
@@ -378,5 +379,124 @@ describe("getRecurringFixedExpenseCandidates (DEC-127)", () => {
     await getRecurringFixedExpenseCandidates(db, fixtureProfile.id, ASOF);
     const after = (await getFixedExpensesForProfile(db, fixtureProfile.id, ASOF)).length;
     expect(after).toBe(before);
+  });
+});
+
+describe("getTransactionHistory (DEC-129 — Extrato)", () => {
+  it("lists transactions newest-first, unlike getTransactions which is current-month only", async () => {
+    const db = await freshSeededDb();
+    const paymentSource = await fixturePaymentSource(db);
+    await repo.upsertTransaction(
+      db,
+      buildTransaction(paymentSource, {
+        date: "2026-01-10",
+        amount: fromReais(50),
+        financialEffect: "CONSUMPTION",
+        rawDescription: "COMPRA ANTIGA JANEIRO",
+      }),
+    );
+    await repo.upsertTransaction(
+      db,
+      buildTransaction(paymentSource, {
+        date: "2026-09-05",
+        amount: fromReais(8500),
+        financialEffect: "INCOME",
+        rawDescription: "SALARIO EMPRESA XYZ LTDA",
+      }),
+    );
+
+    const history = await getTransactionHistory(db, fixtureProfile.id, ASOF);
+    const januaryIndex = history.findIndex((t) => t.rawDescription === "COMPRA ANTIGA JANEIRO");
+    const septemberIndex = history.findIndex((t) => t.rawDescription === "SALARIO EMPRESA XYZ LTDA");
+    expect(septemberIndex).toBeGreaterThanOrEqual(0);
+    expect(januaryIndex).toBeGreaterThan(septemberIndex);
+  });
+
+  it("reports direction and amount correctly for both an entrada (CREDIT) and a saída (DEBIT)", async () => {
+    const db = await freshSeededDb();
+    const paymentSource = await fixturePaymentSource(db);
+    await repo.upsertTransaction(
+      db,
+      buildTransaction(paymentSource, {
+        date: "2026-09-05",
+        amount: fromReais(8500),
+        financialEffect: "INCOME",
+        rawDescription: "SALARIO EMPRESA XYZ LTDA",
+      }),
+    );
+    await repo.upsertTransaction(
+      db,
+      buildTransaction(paymentSource, {
+        date: "2026-09-05",
+        amount: fromReais(800),
+        financialEffect: "CONSUMPTION",
+        rawDescription: "CONDOMINIO EDIFICIO SOLAR",
+      }),
+    );
+
+    const history = await getTransactionHistory(db, fixtureProfile.id, ASOF);
+    const salary = history.find((t) => t.rawDescription === "SALARIO EMPRESA XYZ LTDA");
+    const condo = history.find((t) => t.rawDescription === "CONDOMINIO EDIFICIO SOLAR");
+    expect(salary?.direction).toBe("CREDIT");
+    expect(salary?.amount.cents).toBe(850_000);
+    expect(condo?.direction).toBe("DEBIT");
+    expect(condo?.amount.cents).toBe(80_000);
+  });
+
+  it("includes category and subcategory when the transaction has both", async () => {
+    const db = await freshSeededDb();
+    const paymentSource = await fixturePaymentSource(db);
+    await repo.upsertTransaction(
+      db,
+      buildTransaction(paymentSource, {
+        date: "2026-09-05",
+        amount: fromReais(800),
+        financialEffect: "CONSUMPTION",
+        rawDescription: "CONDOMINIO EDIFICIO SOLAR",
+        category: "Moradia",
+        subcategory: "Condomínio",
+      }),
+    );
+
+    const history = await getTransactionHistory(db, fixtureProfile.id, ASOF);
+    const condo = history.find((t) => t.rawDescription === "CONDOMINIO EDIFICIO SOLAR");
+    expect(condo?.category).toBe("Moradia");
+    expect(condo?.subcategory).toBe("Condomínio");
+  });
+
+  it("works correctly when a transaction has a category but no subcategory", async () => {
+    const db = await freshSeededDb();
+    const paymentSource = await fixturePaymentSource(db);
+    await repo.upsertTransaction(
+      db,
+      buildTransaction(paymentSource, {
+        date: "2026-09-05",
+        amount: fromReais(120),
+        financialEffect: "CONSUMPTION",
+        rawDescription: "FARMACIA MOCK",
+        category: "Saúde",
+      }),
+    );
+
+    const history = await getTransactionHistory(db, fixtureProfile.id, ASOF);
+    const pharmacy = history.find((t) => t.rawDescription === "FARMACIA MOCK");
+    expect(pharmacy?.category).toBe("Saúde");
+    expect(pharmacy?.subcategory).toBeUndefined();
+  });
+
+  it("never reads or is affected by another profile's transactions (see two-profile-isolation.test.ts (Q) for the full cross-profile assertion)", async () => {
+    const db = await freshSeededDb();
+    const paymentSource = await fixturePaymentSource(db);
+    await repo.upsertTransaction(
+      db,
+      buildTransaction(paymentSource, {
+        date: "2026-09-05",
+        amount: fromReais(100),
+        financialEffect: "CONSUMPTION",
+        rawDescription: "TESTE ISOLAMENTO",
+      }),
+    );
+    const history = await getTransactionHistory(db, fixtureProfile.id, ASOF);
+    expect(history.every((t) => t.financialProfileId === fixtureProfile.id)).toBe(true);
   });
 });

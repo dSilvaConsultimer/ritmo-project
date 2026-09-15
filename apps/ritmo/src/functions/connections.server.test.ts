@@ -28,7 +28,11 @@ import {
   resetProviderRegistry,
 } from "@money-copilot/app-services";
 import { MockProvider } from "@money-copilot/open-finance";
+import type { OpenFinanceProvider, ExternalConnectionStatus } from "@money-copilot/open-finance";
+import { ProviderError, type ExternalAccountInput } from "@money-copilot/financial-engine";
+import { findTransactionByExternalId } from "@money-copilot/persistence";
 import { getAuth } from "./auth.server";
+import { getCurrentProfileContext } from "./profile.server";
 import {
   getConnectionScreenDataHandler,
   startBankConnectionHandler,
@@ -36,6 +40,7 @@ import {
   removeBankConnectionHandler,
   requestManualSyncHandler,
   checkSyncProgressHandler,
+  syncAllConnectionsOnOpenHandler,
 } from "./connections.server";
 
 let tmpDir: string;
@@ -303,5 +308,188 @@ describe("Post-connection automatic Home transition (regression) — server-side
     // user never inherits the first user's routing state.
     const otherData = await getConnectionScreenDataHandler();
     expect(otherData.hasAnyConnection).toBe(false);
+  });
+});
+
+/**
+ * Simulates a provider that succeeds for every connection except one
+ * specific `externalConnectionId` — used only to prove that
+ * `syncAllConnectionsOnOpenHandler` isolates one connection's failure from
+ * the others (DEC-129). `listAccounts` receives the real
+ * `externalConnectionId` being synced, unlike `MockProvider` (which ignores
+ * it and returns the same fixed set for every connection), so this is the
+ * minimum needed to make the two connections behave differently.
+ */
+class PartiallyFailingProvider implements OpenFinanceProvider {
+  readonly name = "pluggy";
+  constructor(
+    private readonly failingExternalConnectionId: string,
+    private readonly account: ExternalAccountInput,
+  ) {}
+  async createConnectionToken(): Promise<never> {
+    throw new Error("not used in this test");
+  }
+  async getConnection(externalConnectionId: string): Promise<ExternalConnectionStatus> {
+    return { externalConnectionId, status: "CONNECTED" };
+  }
+  async listAccounts(externalConnectionId: string) {
+    if (externalConnectionId === this.failingExternalConnectionId) {
+      throw new ProviderError("PROVIDER_UNAVAILABLE", "pluggy", "Simulated outage", {
+        retryable: true,
+      });
+    }
+    return [this.account];
+  }
+  async listTransactions() {
+    return [];
+  }
+  async listBills() {
+    return [];
+  }
+  async syncConnection(): Promise<void> {}
+  async deleteConnection(): Promise<void> {}
+}
+
+describe("syncAllConnectionsOnOpenHandler — DEC-129 (auto-sync on app open)", () => {
+  it("syncs every active connection for the current profile, not just one", async () => {
+    currentHeaders = await signUpAndGetSessionHeaders(
+      "auto-sync-multi@isolation-test.invalid",
+      "supersecret123",
+      "Auto Sync Multi",
+    );
+    await finishBankConnectionHandler({ externalConnectionId: "auto-sync-item-1" });
+    await finishBankConnectionHandler({ externalConnectionId: "auto-sync-item-2" });
+
+    const summary = await syncAllConnectionsOnOpenHandler();
+    expect(summary.ok).toBe(true);
+    expect(summary.attempted).toBe(2);
+    expect(summary.succeeded).toBe(2);
+    expect(summary.failed).toBe(0);
+  });
+
+  it("one connection failing does not stop the others, and never deletes previously-synced data", async () => {
+    currentHeaders = await signUpAndGetSessionHeaders(
+      "auto-sync-partial-fail@isolation-test.invalid",
+      "supersecret123",
+      "Auto Sync Partial Fail",
+    );
+    // Both connections succeed on creation (default beforeAll provider has
+    // zero accounts, so `completeConnection` itself never errors).
+    const healthy = await finishBankConnectionHandler({
+      externalConnectionId: "auto-sync-healthy-item",
+    });
+    const failing = await finishBankConnectionHandler({
+      externalConnectionId: "auto-sync-failing-item",
+    });
+    expect(healthy.ok).toBe(true);
+    expect(failing.ok).toBe(true);
+
+    const account: ExternalAccountInput = {
+      provider: "pluggy",
+      externalAccountId: "auto-sync-healthy-account",
+      connectionExternalId: "auto-sync-healthy-item",
+      kind: "BANK",
+      displayName: "Conta saudável",
+      currency: "BRL",
+      balanceCents: 10_000,
+      balanceCertainty: "ACTUAL",
+      lastSyncedAt: "2026-09-05T00:00:00.000Z",
+    };
+    registerProvider("pluggy", new PartiallyFailingProvider("auto-sync-failing-item", account));
+
+    const before = await getConnectionScreenDataHandler();
+    const summary = await syncAllConnectionsOnOpenHandler();
+
+    expect(summary.ok).toBe(true);
+    expect(summary.attempted).toBe(2);
+    expect(summary.succeeded).toBe(1);
+    expect(summary.failed).toBe(1);
+
+    // The app stays fully usable: existing connections are still there,
+    // none were removed or corrupted by the failing one.
+    const after = await getConnectionScreenDataHandler();
+    expect(after.connections).toHaveLength(before.connections.length);
+    expect(after.hasAnyConnection).toBe(true);
+
+    // Restore the shared provider so later tests in this file are unaffected.
+    registerProvider(
+      "pluggy",
+      new MockProvider({ accounts: [], transactionsByAccount: new Map() }),
+    );
+  });
+
+  it("returns a controlled, empty summary for a profile with no connections at all (never throws)", async () => {
+    currentHeaders = await signUpAndGetSessionHeaders(
+      "auto-sync-no-connections@isolation-test.invalid",
+      "supersecret123",
+      "Auto Sync No Connections",
+    );
+    const summary = await syncAllConnectionsOnOpenHandler();
+    expect(summary).toEqual({ ok: true, attempted: 0, succeeded: 0, failed: 0 });
+  });
+
+  it("calling it twice in a row never duplicates transactions — defense in depth behind the client's own once-per-open guard", async () => {
+    currentHeaders = await signUpAndGetSessionHeaders(
+      "auto-sync-repeat@isolation-test.invalid",
+      "supersecret123",
+      "Auto Sync Repeat",
+    );
+    const account: ExternalAccountInput = {
+      provider: "pluggy",
+      externalAccountId: "auto-sync-repeat-account",
+      connectionExternalId: "auto-sync-repeat-item",
+      kind: "BANK",
+      displayName: "Conta repetida",
+      currency: "BRL",
+      balanceCents: 500_000,
+      balanceCertainty: "ACTUAL",
+      lastSyncedAt: "2026-09-05T00:00:00.000Z",
+    };
+    registerProvider(
+      "pluggy",
+      new MockProvider({
+        accounts: [account],
+        transactionsByAccount: new Map([
+          [
+            account.externalAccountId,
+            [
+              {
+                provider: "pluggy",
+                externalTransactionId: "auto-sync-repeat-tx-1",
+                paymentSourceExternalRef: account.externalAccountId,
+                amountCents: 850_000,
+                direction: "CREDIT",
+                financialEffect: "INCOME",
+                certainty: "ACTUAL",
+                date: "2026-09-05",
+                rawDescription: "SALARIO EMPRESA XYZ LTDA",
+                rawMerchant: "SALARIO EMPRESA XYZ LTDA",
+                status: "POSTED",
+              },
+            ],
+          ],
+        ]),
+      }),
+    );
+    await finishBankConnectionHandler({ externalConnectionId: "auto-sync-repeat-item" });
+
+    await syncAllConnectionsOnOpenHandler();
+    await syncAllConnectionsOnOpenHandler();
+
+    const db = await getDb();
+    const { financialProfileId } = await getCurrentProfileContext();
+    const found = await findTransactionByExternalId(
+      db,
+      financialProfileId,
+      "pluggy",
+      "auto-sync-repeat-tx-1",
+    );
+    expect(found).toBeDefined();
+
+    // Restore the shared provider so later tests in this file are unaffected.
+    registerProvider(
+      "pluggy",
+      new MockProvider({ accounts: [], transactionsByAccount: new Map() }),
+    );
   });
 });

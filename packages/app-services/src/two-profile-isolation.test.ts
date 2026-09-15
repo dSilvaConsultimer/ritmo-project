@@ -8,7 +8,7 @@ import { freshSeededDb, installMockProvider, seedSecondProfile } from "./test-he
 import { resetProviderRegistry } from "./provider-registry";
 import { registerDiscoveryProvider, resetDiscoveryProviderRegistry } from "./discovery-provider-registry";
 import { syncConnection, disconnectConnection } from "./sync";
-import { getLatestSyncRunForConnection, getRecommendationDetails } from "./queries";
+import { getLatestSyncRunForConnection, getRecommendationDetails, getTransactionHistory } from "./queries";
 import { acceptRecommendation, rejectRecommendation, evaluateRecommendations } from "./recommendation-service";
 import { evaluateAlerts, listAlertsForProfile, getAlertById, dismissAlert, markAlertSeen } from "./alerts";
 import { recordManualTransaction } from "./mutations";
@@ -324,5 +324,27 @@ describe("Two-profile isolation — reconciliation never crosses profiles (N)", 
       (await repo.loadFinancialSnapshotInput(db, profileB, ASOF)).transactions.map((t) => t.id),
     );
     expect(linksA.some((l) => bTransactionIds.has(l.primaryTransactionId))).toBe(false);
+  });
+});
+
+describe("Two-profile isolation — Extrato's full transaction history (DEC-129, Q)", () => {
+  it("(Q) getTransactionHistory for User A never includes User B's transactions", async () => {
+    const db = await freshSeededDb();
+    const profileB = await seedSecondProfile(db);
+
+    installMockProvider({
+      accounts: [bAccount],
+      transactionsByAccount: new Map([[bAccount.externalAccountId, [netflixCharge(ASOF, "b-hist-1")]]]),
+    });
+    const connectionB = await setUpProfileBConnection(db, profileB);
+    await syncConnection(db, profileB, connectionB.id);
+
+    const historyA = await getTransactionHistory(db, fixtureProfile.id, ASOF);
+    expect(historyA.some((t) => t.externalTransactionId === "b-hist-1")).toBe(false);
+    expect(historyA.every((t) => t.financialProfileId === fixtureProfile.id)).toBe(true);
+
+    const historyB = await getTransactionHistory(db, profileB, ASOF);
+    expect(historyB.some((t) => t.externalTransactionId === "b-hist-1")).toBe(true);
+    expect(historyB.every((t) => t.financialProfileId === profileB)).toBe(true);
   });
 });

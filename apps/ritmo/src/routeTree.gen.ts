@@ -19,6 +19,7 @@ import { Route as ProtectedAjudaRouteImport } from './routes/_protected/ajuda'
 import { Route as ProtectedAssistenteRouteImport } from './routes/_protected/assistente'
 import { Route as ProtectedCategoriasRouteImport } from './routes/_protected/categorias'
 import { Route as ProtectedConectarBancoRouteImport } from './routes/_protected/conectar-banco'
+import { Route as ProtectedExtratoRouteImport } from './routes/_protected/extrato'
 import { Route as ProtectedInsightsRouteImport } from './routes/_protected/insights'
 import { Route as ProtectedMaisRouteImport } from './routes/_protected/mais'
 import { Route as ProtectedNotificacoesRouteImport } from './routes/_protected/notificacoes'
@@ -83,6 +84,11 @@ const ProtectedCategoriasRoute = ProtectedCategoriasRouteImport.update({
 const ProtectedConectarBancoRoute = ProtectedConectarBancoRouteImport.update({
   id: '/conectar-banco',
   path: '/conectar-banco',
+  getParentRoute: () => ProtectedRoute,
+} as any)
+const ProtectedExtratoRoute = ProtectedExtratoRouteImport.update({
+  id: '/extrato',
+  path: '/extrato',
   getParentRoute: () => ProtectedRoute,
 } as any)
 const ProtectedInsightsRoute = ProtectedInsightsRouteImport.update({
@@ -177,6 +183,7 @@ export interface FileRoutesByFullPath {
   '/assistente': typeof ProtectedAssistenteRoute
   '/categorias': typeof ProtectedCategoriasRoute
   '/conectar-banco': typeof ProtectedConectarBancoRoute
+  '/extrato': typeof ProtectedExtratoRoute
   '/insights': typeof ProtectedInsightsRoute
   '/mais': typeof ProtectedMaisRoute
   '/notificacoes': typeof ProtectedNotificacoesRoute
@@ -203,6 +210,7 @@ export interface FileRoutesByTo {
   '/assistente': typeof ProtectedAssistenteRoute
   '/categorias': typeof ProtectedCategoriasRoute
   '/conectar-banco': typeof ProtectedConectarBancoRoute
+  '/extrato': typeof ProtectedExtratoRoute
   '/insights': typeof ProtectedInsightsRoute
   '/mais': typeof ProtectedMaisRoute
   '/notificacoes': typeof ProtectedNotificacoesRoute
@@ -232,6 +240,7 @@ export interface FileRoutesById {
   '/_protected/assistente': typeof ProtectedAssistenteRoute
   '/_protected/categorias': typeof ProtectedCategoriasRoute
   '/_protected/conectar-banco': typeof ProtectedConectarBancoRoute
+  '/_protected/extrato': typeof ProtectedExtratoRoute
   '/_protected/insights': typeof ProtectedInsightsRoute
   '/_protected/mais': typeof ProtectedMaisRoute
   '/_protected/notificacoes': typeof ProtectedNotificacoesRoute
@@ -262,6 +271,7 @@ export interface FileRouteTypes {
     | '/assistente'
     | '/categorias'
     | '/conectar-banco'
+    | '/extrato'
     | '/insights'
     | '/mais'
     | '/notificacoes'
@@ -288,6 +298,7 @@ export interface FileRouteTypes {
     | '/assistente'
     | '/categorias'
     | '/conectar-banco'
+    | '/extrato'
     | '/insights'
     | '/mais'
     | '/notificacoes'
@@ -316,6 +327,7 @@ export interface FileRouteTypes {
     | '/_protected/assistente'
     | '/_protected/categorias'
     | '/_protected/conectar-banco'
+    | '/_protected/extrato'
     | '/_protected/insights'
     | '/_protected/mais'
     | '/_protected/notificacoes'
@@ -419,6 +431,13 @@ declare module '@tanstack/react-router' {
       path: '/conectar-banco'
       fullPath: '/conectar-banco'
       preLoaderRoute: typeof ProtectedConectarBancoRouteImport
+      parentRoute: typeof ProtectedRoute
+    }
+    '/_protected/extrato': {
+      id: '/_protected/extrato'
+      path: '/extrato'
+      fullPath: '/extrato'
+      preLoaderRoute: typeof ProtectedExtratoRouteImport
       parentRoute: typeof ProtectedRoute
     }
     '/_protected/insights': {
@@ -541,6 +560,7 @@ interface ProtectedRouteChildren {
   ProtectedAssistenteRoute: typeof ProtectedAssistenteRoute
   ProtectedCategoriasRoute: typeof ProtectedCategoriasRoute
   ProtectedConectarBancoRoute: typeof ProtectedConectarBancoRoute
+  ProtectedExtratoRoute: typeof ProtectedExtratoRoute
   ProtectedInsightsRoute: typeof ProtectedInsightsRoute
   ProtectedMaisRoute: typeof ProtectedMaisRoute
   ProtectedNotificacoesRoute: typeof ProtectedNotificacoesRoute
@@ -559,6 +579,7 @@ const ProtectedRouteChildren: ProtectedRouteChildren = {
   ProtectedAssistenteRoute: ProtectedAssistenteRoute,
   ProtectedCategoriasRoute: ProtectedCategoriasRoute,
   ProtectedConectarBancoRoute: ProtectedConectarBancoRoute,
+  ProtectedExtratoRoute: ProtectedExtratoRoute,
   ProtectedInsightsRoute: ProtectedInsightsRoute,
   ProtectedMaisRoute: ProtectedMaisRoute,
   ProtectedNotificacoesRoute: ProtectedNotificacoesRoute,

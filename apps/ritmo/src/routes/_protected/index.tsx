@@ -97,6 +97,18 @@ function Home() {
             <span>{vm.todayLabel}</span>
             <span>{vm.endOfMonthLabel}</span>
           </div>
+
+          {/*
+            DEC-129: a discreet link to the full transaction ledger, inside
+            this same card — not a new bottom-nav tab, not a competing
+            visual element next to the Safe-to-Spend figure itself.
+          */}
+          <Link
+            to="/extrato"
+            className="mt-4 inline-flex items-center gap-1 text-[12px] font-semibold text-white/80"
+          >
+            Extrato <ArrowUpRight className="h-3.5 w-3.5" />
+          </Link>
         </div>
       </section>
 

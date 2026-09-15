@@ -64,6 +64,73 @@ export function formatShortDate(isoDate: string): string {
   return `${day}/${month}`;
 }
 
+const SHORT_MONTH_NAMES = [
+  "jan",
+  "fev",
+  "mar",
+  "abr",
+  "mai",
+  "jun",
+  "jul",
+  "ago",
+  "set",
+  "out",
+  "nov",
+  "dez",
+] as const;
+
+const LONG_MONTH_NAMES = [
+  "Janeiro",
+  "Fevereiro",
+  "Março",
+  "Abril",
+  "Maio",
+  "Junho",
+  "Julho",
+  "Agosto",
+  "Setembro",
+  "Outubro",
+  "Novembro",
+  "Dezembro",
+] as const;
+
+/** "05 set" — Extrato's compact per-row date label, display only. */
+export function formatShortDayMonth(isoDate: string): string {
+  const [, month, day] = isoDate.split("-");
+  return `${day} ${SHORT_MONTH_NAMES[Number(month) - 1]}`;
+}
+
+/** "Setembro de 2026" — Extrato's month-group header, display only. */
+export function formatMonthYearLabel(isoDate: string): string {
+  const [year, month] = isoDate.split("-");
+  return `${LONG_MONTH_NAMES[Number(month) - 1]} de ${year}`;
+}
+
+/**
+ * `@money-copilot/financial-engine`'s categorizer returns the literal string
+ * `"UNCATEGORIZED"` (never `null`) when no rule matches — this localizes
+ * that one known sentinel to the same "Sem categoria" label used for an
+ * actually-null category, never inventing a category that wasn't
+ * determined. Shared by every adapter that shows a transaction's category.
+ */
+export function categoryLabel(category: string | null): string {
+  return category === null || category === "UNCATEGORIZED" ? "Sem categoria" : category;
+}
+
+/**
+ * "Categoria › Subcategoria", or just "Categoria" when no subcategory was
+ * determined, or the neutral `categoryLabel` fallback when neither exists —
+ * never fabricates a subcategory that wasn't actually classified.
+ */
+export function categoryPathLabel(
+  category: string | null,
+  subcategory: string | undefined,
+): string {
+  const base = categoryLabel(category);
+  if (base === "Sem categoria" || !subcategory) return base;
+  return `${base} › ${subcategory}`;
+}
+
 /** "05" for a known due day, or a neutral placeholder — never a guessed day. See docs/RITMO.md, "Data-model gaps." */
 export function dueDayBadge(dueDayOfMonth: number | null): string {
   return dueDayOfMonth !== null ? String(dueDayOfMonth).padStart(2, "0") : "–";

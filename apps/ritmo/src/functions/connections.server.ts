@@ -341,3 +341,73 @@ export async function requestManualSyncHandler(
     return { ok: false, error: normalizeProviderError(error) };
   }
 }
+
+export interface AutoSyncSummary {
+  readonly ok: boolean;
+  readonly attempted: number;
+  readonly succeeded: number;
+  readonly failed: number;
+}
+
+/**
+ * DEC-129: runs once per authenticated app session — triggered from the
+ * `_protected` layout's own component (mounted once per app open, never
+ * per-route-navigation), not from any route's `loader`/`beforeLoad` (which
+ * would re-run on every internal navigation). Reuses `syncConnection`
+ * exactly as the webhook and manual "Sincronizar agora" paths do — no
+ * second sync pipeline. Every connection is attempted independently: one
+ * failing never stops the others, and `syncConnection` itself never
+ * deletes previously-synced data on failure (see DEC-128) — so a partial
+ * failure here still leaves the app fully usable with whatever data is
+ * already persisted. Shares the same `openFinanceAction` rate-limit bucket
+ * as every other provider-calling action (brief §6) rather than inventing
+ * a separate policy for this trigger.
+ */
+export async function syncAllConnectionsOnOpenHandler(): Promise<AutoSyncSummary> {
+  const { financialProfileId } = await getCurrentProfileContext();
+  if (!checkOpenFinanceActionLimit(financialProfileId)) {
+    return { ok: false, attempted: 0, succeeded: 0, failed: 0 };
+  }
+  const db = await getDb();
+  const connections = await getConnections(db, financialProfileId);
+  const active = connections.filter((c) => c.status !== "DISCONNECTED");
+
+  let succeeded = 0;
+  let failed = 0;
+  for (const connection of active) {
+    try {
+      // `syncConnection` never throws for a provider-side failure — it
+      // reports a FAILED `SyncRun` instead (see docs/DECISIONS.md DEC-128).
+      // The try/catch here is a second, defense-in-depth layer for a truly
+      // unexpected error (e.g. a database-level failure), not the primary
+      // signal of whether this connection's sync succeeded.
+      const syncRun = await syncConnection(db, financialProfileId, connection.id);
+      if (syncRun.status === "FAILED") {
+        failed += 1;
+        logger.error("auto_sync_on_open_connection_failed", {
+          financialProfileId,
+          connectionId: connection.id,
+          errors: syncRun.errors,
+        });
+      } else {
+        succeeded += 1;
+      }
+    } catch (error) {
+      failed += 1;
+      const message = error instanceof Error ? error.message : "Unknown auto-sync error";
+      logger.error("auto_sync_on_open_connection_failed", {
+        financialProfileId,
+        connectionId: connection.id,
+        message,
+      });
+    }
+  }
+
+  logger.audit("auto_sync_on_open", {
+    financialProfileId,
+    attempted: active.length,
+    succeeded,
+    failed,
+  });
+  return { ok: true, attempted: active.length, succeeded, failed };
+}

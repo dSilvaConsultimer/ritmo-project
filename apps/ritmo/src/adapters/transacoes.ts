@@ -1,5 +1,12 @@
 import type { TransacoesData } from "@/functions/transacoes";
-import { brl, dueDayBadge, formatShortDate, shiftIsoDate, sortByDueDay } from "./format";
+import {
+  brl,
+  categoryLabel,
+  dueDayBadge,
+  formatShortDate,
+  shiftIsoDate,
+  sortByDueDay,
+} from "./format";
 
 export interface TransacoesCompromisso {
   readonly id: string;
@@ -33,17 +40,6 @@ function detail(category: string, dueDayOfMonth: number | null): string {
 }
 
 /**
- * `@money-copilot/financial-engine`'s categorizer returns the literal
- * string `"UNCATEGORIZED"` (never `null`) when no rule matches — this
- * localizes that one known sentinel to the same "Sem categoria" label used
- * for an actually-null category, never inventing a category that wasn't
- * determined.
- */
-function tagLabel(category: string | null): string {
-  return category === null || category === "UNCATEGORIZED" ? "Sem categoria" : category;
-}
-
-/**
  * Pure reshaping only. Groups transactions by Hoje/Ontem/Esta semana
  * relative to `asOfDate` — the domain model only knows a transaction's
  * calendar date, never a time of day, so `dateLabel` shows the real date
@@ -70,7 +66,7 @@ export function toTransacoesViewModel(data: TransacoesData): TransacoesViewModel
     return {
       id: t.id,
       label: t.label,
-      tag: tagLabel(t.category),
+      tag: categoryLabel(t.category),
       dateLabel: formatShortDate(t.date),
       amountLabel: `${isCredit ? "+ " : "- "}${brl(t.amountCents)}`,
       isCredit,
