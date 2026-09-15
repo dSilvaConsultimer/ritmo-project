@@ -7,7 +7,7 @@ import {
   runCopilotTurn,
 } from "@money-copilot/app-services";
 import { getCurrentProfileContext } from "./profile.server";
-import { ASOF_DATE } from "./config";
+import { resolveAsOfDate } from "./config";
 import { checkRateLimit, RATE_LIMIT_POLICIES } from "./rate-limit.server";
 import { logger } from "./logger.server";
 
@@ -114,7 +114,7 @@ export async function sendAssistenteMessageHandler(data: SendMessageInput) {
     const response = await runCopilotTurn({
       db,
       financialProfileId,
-      asOfDate: ASOF_DATE,
+      asOfDate: resolveAsOfDate(),
       ...(data.conversationId ? { conversationId: data.conversationId } : {}),
       userMessageText: data.message,
       aiProvider,

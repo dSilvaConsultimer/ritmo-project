@@ -27,7 +27,12 @@ import {
 } from "@money-copilot/app-services";
 import { getAuth } from "./auth.server";
 import { createManualPlanningItemHandler } from "./planejamento-criar.server";
-import { ASOF_DATE } from "./config";
+import { resolveAsOfDate } from "./config";
+
+// Injected fixed date (DEC-127: resolveAsOfDate accepts an explicit `now`
+// override precisely for this) — deterministic regardless of the real
+// wall clock, and matches the fixture dates used throughout this file.
+const ASOF_DATE = resolveAsOfDate(new Date("2026-09-05T12:00:00Z"));
 
 let tmpDir: string;
 

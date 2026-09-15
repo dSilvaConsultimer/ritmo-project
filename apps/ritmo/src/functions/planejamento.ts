@@ -6,7 +6,7 @@ import {
   getUpcomingFinancialEventsForProfile,
 } from "@money-copilot/app-services";
 import { getCurrentProfileContext } from "./profile.server";
-import { ASOF_DATE } from "./config";
+import { resolveAsOfDate } from "./config";
 
 /**
  * Raw data for the Planejamento screen. See `src/adapters/planejamento.ts`
@@ -14,19 +14,26 @@ import { ASOF_DATE } from "./config";
  * timeline only ever gets entries with a real, known date (real upcoming
  * `FinancialEvent`s); it never fabricates a salary or bill-due date the
  * engine doesn't actually know (see docs/RITMO.md, "Data-model gaps").
+ *
+ * "Entradas previstas" here is deliberately the DECLARED/expected income
+ * (`snapshot.income.gross`, the `incomes` table) — a forward-looking
+ * planning figure, unlike Home's "Entradas do mês" (realized transactions —
+ * see `home.ts` and docs/DECISIONS.md DEC-127). Both are correct for their
+ * own screen; they answer different questions on purpose.
  */
 export const getPlanejamentoData = createServerFn({ method: "GET" }).handler(async () => {
   const { financialProfileId } = await getCurrentProfileContext();
   const db = await getDb();
+  const asOfDate = resolveAsOfDate();
 
   const [snapshot, fixedExpenses, upcomingEvents] = await Promise.all([
-    getFinancialSnapshot(db, financialProfileId, ASOF_DATE),
-    getFixedExpensesForProfile(db, financialProfileId, ASOF_DATE),
-    getUpcomingFinancialEventsForProfile(db, financialProfileId, ASOF_DATE),
+    getFinancialSnapshot(db, financialProfileId, asOfDate),
+    getFixedExpensesForProfile(db, financialProfileId, asOfDate),
+    getUpcomingFinancialEventsForProfile(db, financialProfileId, asOfDate),
   ]);
 
   return {
-    asOfDate: ASOF_DATE,
+    asOfDate,
     safeToSpendCents: snapshot.safeToSpend.total.cents,
     incomeGrossCents: snapshot.income.gross.cents,
     fixedCommitmentsCents: snapshot.commitments.fixed.cents,

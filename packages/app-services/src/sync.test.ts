@@ -78,6 +78,59 @@ describe("syncConnection — basic import", () => {
     expect(transactions.some((t) => t.externalTransactionId === "mock-tx-1")).toBe(true);
   });
 
+  it("never creates a declared Income or FixedExpense, even from an INCOME-effect or recurring-looking transaction (Sprint 9, DEC-127)", async () => {
+    const db = await freshSeededDb();
+    const salary: ExternalTransactionInput = {
+      provider: "mock",
+      externalTransactionId: "mock-salary-1",
+      paymentSourceExternalRef: mockNubankAccount.externalAccountId,
+      amountCents: 850_000,
+      direction: "CREDIT",
+      financialEffect: "INCOME",
+      certainty: "ACTUAL",
+      date: "2026-09-05",
+      rawDescription: "SALARIO EMPRESA XYZ LTDA",
+      rawMerchant: "SALARIO EMPRESA XYZ LTDA",
+      status: "POSTED",
+    };
+    const condo: ExternalTransactionInput = {
+      provider: "mock",
+      externalTransactionId: "mock-condo-1",
+      paymentSourceExternalRef: mockNubankAccount.externalAccountId,
+      amountCents: 80_000,
+      direction: "DEBIT",
+      financialEffect: "CONSUMPTION",
+      certainty: "ACTUAL",
+      date: "2026-09-05",
+      rawDescription: "CONDOMINIO EDIFICIO SOLAR",
+      rawMerchant: "CONDOMINIO EDIFICIO SOLAR",
+      status: "POSTED",
+    };
+    installMockProvider({
+      accounts: [mockNubankAccount],
+      transactionsByAccount: new Map([[mockNubankAccount.externalAccountId, [salary, condo]]]),
+    });
+
+    const before = await repo.loadFinancialSnapshotInput(db, fixtureProfile.id, ASOF);
+
+    const connection = await setUpConnection(db);
+    const run = await syncConnection(db, fixtureProfile.id, connection.id);
+    expect(run.status).toBe("SUCCEEDED");
+
+    // The real transactions DID import (the actual bug's confirmed-working half).
+    const transactions = await getTransactions(db, fixtureProfile.id, ASOF);
+    expect(transactions.some((t) => t.externalTransactionId === "mock-salary-1")).toBe(true);
+    expect(transactions.some((t) => t.externalTransactionId === "mock-condo-1")).toBe(true);
+
+    // Neither declared table changed — a real bank connection/sync is
+    // never, by itself, a declaration of expected income or a confirmed
+    // fixed commitment. Only an explicit user confirmation
+    // (mutations.createIncome/createFixedExpense) may create either.
+    const after = await repo.loadFinancialSnapshotInput(db, fixtureProfile.id, ASOF);
+    expect(after.income.length).toBe(before.income.length);
+    expect(after.fixedExpenses.length).toBe(before.fixedExpenses.length);
+  });
+
   it("prevents a duplicate connection via completeConnection (idempotent)", async () => {
     const db = await freshSeededDb();
     installMockProvider({ accounts: [], transactionsByAccount: new Map() });

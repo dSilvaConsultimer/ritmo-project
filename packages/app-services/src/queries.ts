@@ -11,6 +11,7 @@ import {
   getSpendingEnvelope,
   getDailyGuidance,
   isConsumptionLike,
+  isSameMonth,
   monthlyCategoryTotals,
   monthlyTransactionList,
   reconciliationCandidates,
@@ -87,6 +88,75 @@ export async function getFinancialSnapshot(
   const input = await repo.loadFinancialSnapshotInput(db, financialProfileId, asOfDate);
   const position = input.position ?? (await resolvePosition(db, financialProfileId, asOfDate));
   return buildFinancialSnapshot({ ...input, position });
+}
+
+/**
+ * Sprint 9 (DEC-127): REALIZED income this month — real posted transactions
+ * with `financialEffect === "INCOME"`, dated in the same calendar month as
+ * `asOfDate`. Deliberately NOT `snapshot.income.gross` (the declared/
+ * expected `incomes` table, a forward-looking planning input) — see
+ * `apps/ritmo/src/functions/home.ts`'s "Entradas do mês", the concrete
+ * product bug this was added to fix: a real, imported salary transaction
+ * never showed up there because "Entradas do mês" was reading the wrong,
+ * unrelated table. Reversed transactions are excluded, same as every other
+ * real-money total in this file. Reconciliation links are deliberately NOT
+ * consulted here (unlike `buildFinancialSnapshot`'s `actualSpending`) —
+ * reconciliation exists to avoid double-counting a manual entry against its
+ * later-imported equivalent, a consumption-side concern; nothing in this
+ * codebase creates a manual "income" entry that an imported one could
+ * duplicate.
+ */
+export async function getRealizedIncomeForProfile(
+  db: Database,
+  financialProfileId: string,
+  asOfDate: string,
+): Promise<Money> {
+  const input = await repo.loadFinancialSnapshotInput(db, financialProfileId, asOfDate);
+  const realized = input.transactions.filter(
+    (t) => t.financialEffect === "INCOME" && t.status !== "REVERSED" && isSameMonth(t.date, asOfDate),
+  );
+  return sum(realized.map((t) => t.amount));
+}
+
+/**
+ * Sprint 9 (DEC-127): candidate patterns of repeated REAL income deposits
+ * (e.g. a recurring salary) — evidence only, never a declared `Income`.
+ * Filters to `financialEffect === "INCOME"` before reusing
+ * `detectRecurringCandidates` unchanged, mirroring exactly how
+ * `generateRecommendationCandidates` filters by financial effect before
+ * calling the same detector for the (unrelated) recurring-COST case — see
+ * that function's own comment. A human must explicitly confirm before this
+ * ever becomes a real `Income` row (`mutations.createIncome`) — see
+ * docs/AI-COPILOT.md, "Explicit mutation policy."
+ */
+export async function getRecurringIncomeCandidates(
+  db: Database,
+  financialProfileId: string,
+  asOfDate: string,
+): Promise<readonly RecurringExpenseCandidate[]> {
+  const input = await repo.loadFinancialSnapshotInput(db, financialProfileId, asOfDate);
+  const incomeTransactions = input.transactions.filter((t) => t.financialEffect === "INCOME");
+  return detectRecurringCandidates(incomeTransactions);
+}
+
+/**
+ * Sprint 9 (DEC-127): candidate patterns of repeated REAL debits (e.g. rent,
+ * a condo fee) that might be a `FixedExpense` — evidence only, never a
+ * declared commitment. Filters to `financialEffect === "CONSUMPTION"`
+ * specifically (not the broader `isConsumptionLike` set — a fixed
+ * commitment is a genuine purchase/obligation, not a debt payment or bank
+ * fee) before reusing `detectRecurringCandidates` unchanged. A human must
+ * explicitly confirm before this ever becomes a real `FixedExpense` row
+ * (`mutations.createFixedExpense`).
+ */
+export async function getRecurringFixedExpenseCandidates(
+  db: Database,
+  financialProfileId: string,
+  asOfDate: string,
+): Promise<readonly RecurringExpenseCandidate[]> {
+  const input = await repo.loadFinancialSnapshotInput(db, financialProfileId, asOfDate);
+  const consumptionTransactions = input.transactions.filter((t) => t.financialEffect === "CONSUMPTION");
+  return detectRecurringCandidates(consumptionTransactions);
 }
 
 export async function getSafeToSpendBreakdown(

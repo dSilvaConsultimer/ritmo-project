@@ -7,7 +7,7 @@ import {
   rankAlerts,
 } from "@money-copilot/app-services";
 import { getCurrentProfileContext } from "./profile.server";
-import { ASOF_DATE } from "./config";
+import { resolveAsOfDate } from "./config";
 
 /**
  * Raw data for the Insights screen. See `src/adapters/insights.ts` for the
@@ -27,7 +27,7 @@ export const getInsightsData = createServerFn({ method: "GET" }).handler(async (
   const ranked = rankAlerts(activeAlerts(allAlerts), new Date().toISOString());
 
   return {
-    asOfDate: ASOF_DATE,
+    asOfDate: resolveAsOfDate(),
     alerts: ranked.map(({ alert }) => ({
       id: alert.id,
       type: alert.type,

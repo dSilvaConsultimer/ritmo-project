@@ -11,7 +11,7 @@ import {
 import { ProviderError, type ProviderConnection } from "@money-copilot/financial-engine";
 import { getCurrentProfileContext } from "./profile.server";
 import { getDb } from "@money-copilot/app-services";
-import { ASOF_DATE } from "./config";
+import { resolveAsOfDate } from "./config";
 import { checkRateLimit, RATE_LIMIT_POLICIES } from "./rate-limit.server";
 import { logger } from "./logger.server";
 import { resolveWebhookUrl } from "./webhook-url.server";
@@ -91,7 +91,7 @@ export async function getConnectionScreenDataHandler(): Promise<ConnectionScreen
 
   const [connections, position] = await Promise.all([
     getConnections(db, financialProfileId),
-    getFinancialPosition(db, financialProfileId, ASOF_DATE),
+    getFinancialPosition(db, financialProfileId, resolveAsOfDate()),
   ]);
 
   const summaries = connections.map(toConnectionSummary);
@@ -244,7 +244,7 @@ export async function checkSyncProgressHandler(data: CheckSyncProgressInput): Pr
     const [latestRun, connections, position] = await Promise.all([
       getLatestSyncRunForConnection(db, financialProfileId, data.connectionId),
       getConnections(db, financialProfileId),
-      getFinancialPosition(db, financialProfileId, ASOF_DATE),
+      getFinancialPosition(db, financialProfileId, resolveAsOfDate()),
     ]);
     const connection = connections.find((c) => c.id === data.connectionId);
     if (!connection) {
