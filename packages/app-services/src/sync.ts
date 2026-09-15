@@ -25,6 +25,7 @@ import {
   type ExternalTransactionInput,
 } from "@money-copilot/financial-engine";
 import type { ConnectionTokenResult, OpenFinanceProvider } from "@money-copilot/open-finance";
+import { isCardBillPaymentDescription } from "@money-copilot/open-finance";
 import * as repo from "@money-copilot/persistence";
 import type { Database } from "@money-copilot/persistence";
 import { getProvider, type ProviderName } from "./provider-registry";
@@ -651,5 +652,59 @@ export async function disconnectConnection(
     deletedInstallmentPlanCount,
     deletedReconciliationLinkCount,
     deletedSyncRunCount,
+  };
+}
+
+export interface ReclassifyCardPaymentsResult {
+  readonly scanned: number;
+  readonly reclassified: number;
+  readonly reclassifiedTransactionIds: readonly string[];
+}
+
+/**
+ * DEC-130: one-time, safe, idempotent backfill for the confirmed BANK-side
+ * CARD_PAYMENT classification bug (fixed going forward in
+ * `packages/open-finance/src/pluggy/mappers.ts`'s `classifyFinancialEffect`
+ * — this repairs data imported BEFORE that fix). Reuses the exact same
+ * canonical keyword rule (`isCardBillPaymentDescription`) the live mapper
+ * uses — never a bespoke or literal-string match — so a transaction is only
+ * ever touched here if the current importer would classify it identically
+ * today.
+ *
+ * Cannot re-run the original Pluggy classifier directly: the raw provider
+ * payload is never persisted (see docs/OPEN-FINANCE.md, "raw payload
+ * retention policy"), so this works from the domain fields a persisted
+ * `FinancialTransaction` actually has — `rawDescription`, `direction`, and
+ * the owning `paymentSource.type` (BANK-equivalent = anything that isn't
+ * `CREDIT_CARD`) — which is exactly what `classifyFinancialEffect`'s own
+ * BANK branch keys off of.
+ *
+ * Idempotent by construction: only rows still classified `CONSUMPTION`
+ * match the filter, so a second run against the same data reclassifies
+ * nothing (`reclassified: 0`). Never touches any transaction whose
+ * description doesn't match the canonical pattern — no guessing, no
+ * confidence threshold, no partial match.
+ */
+export async function reclassifyMisclassifiedCardPayments(
+  db: Database,
+  financialProfileId: string,
+): Promise<ReclassifyCardPaymentsResult> {
+  const input = await repo.loadFinancialSnapshotInput(db, financialProfileId, nowIso().slice(0, 10));
+  const candidates = input.transactions.filter(
+    (t) =>
+      t.financialEffect === "CONSUMPTION" &&
+      t.direction === "DEBIT" &&
+      t.paymentSource.type !== "CREDIT_CARD" &&
+      isCardBillPaymentDescription(t.rawDescription),
+  );
+
+  for (const transaction of candidates) {
+    await repo.upsertTransaction(db, { ...transaction, financialEffect: "CARD_PAYMENT" });
+  }
+
+  return {
+    scanned: input.transactions.length,
+    reclassified: candidates.length,
+    reclassifiedTransactionIds: candidates.map((t) => t.id),
   };
 }

@@ -7,18 +7,34 @@ import type { Certainty } from "./certainty";
  * silently blended, so a learned pattern can never overwrite an explicit
  * user statement without the user's own confirmation (DEC-130).
  *
- * - USER_DECLARED: the user stated this directly (a copilot conversation,
- *   a form) — the strongest source, with no supporting transaction history
- *   required.
- * - HISTORY_INFERRED: derived from a `RecurringExpenseCandidate` over real
- *   INCOME-effect transactions (see `detectRecurringCandidates`) that the
- *   user explicitly confirmed — never auto-created; `createIncome` is
- *   always an explicit-confirmation MUTATION regardless of source.
- * - USER_CONFIRMED_HISTORY: the strongest state — the user both stated the
- *   fact AND confirmed it matches (or now matches) the observed recurring
- *   pattern. Product-level guidance on exactly when a conversation
- *   transitions HISTORY_INFERRED -> USER_CONFIRMED_HISTORY is intentionally
- *   left to the copilot/product layer, not hardcoded here.
+ * Strict meanings (corrected DEC-130 update — do not conflate these):
+ *
+ * - USER_DECLARED: the user directly told Ritmo this recurring income
+ *   exists (e.g. "recebo R$8.500 todo dia 5"), with no candidate/pattern
+ *   involved at all.
+ * - HISTORY_INFERRED: Ritmo detected a recurring pattern from real
+ *   transaction history (`detectRecurringCandidates` over INCOME-effect
+ *   transactions) but the user has NOT confirmed it. This is the
+ *   `RecurringExpenseCandidate`'s own state most of the time — an `Income`
+ *   row with this source should be rare (see below) and, wherever it does
+ *   exist, must never be treated as more reliable than a genuinely
+ *   unconfirmed candidate for forward-looking Safe-to-Spend purposes
+ *   (`buildFinancialSnapshot` deliberately excludes `HISTORY_INFERRED`
+ *   income from the liquidity-aware forward total for exactly this
+ *   reason — see snapshot.ts).
+ * - USER_CONFIRMED_HISTORY: the strongest state — Ritmo inferred a pattern
+ *   from history AND the user explicitly confirmed Ritmo may use it as
+ *   planned knowledge (e.g. confirming a `getRecurringIncomeCandidates`
+ *   suggestion). `createIncomeTool`'s `fromRecurringPattern: true` maps
+ *   here, never to `HISTORY_INFERRED` — by the time `createIncome` is
+ *   ever called at all, the user has already explicitly confirmed
+ *   something (the tool's own contract, unchanged since DEC-127); if what
+ *   they confirmed was a shown pattern, the provenance IS the confirmed
+ *   state, not the bare inference.
+ *
+ * One isolated transaction never becomes a candidate at all
+ * (`detectRecurringCandidates`'s `MIN_OCCURRENCES = 2`), so it can never
+ * reach any of these three states in the first place.
  */
 export type IncomeSource = "USER_DECLARED" | "HISTORY_INFERRED" | "USER_CONFIRMED_HISTORY";
 

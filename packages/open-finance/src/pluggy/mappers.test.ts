@@ -49,10 +49,10 @@ describe("mapPluggyAccountToExternalAccountInput — credit card", () => {
 });
 
 describe("mapPluggyAccountToExternalAccountInput — reserved / available / invested balances (DEC-130)", () => {
-  it("surfaces bankData.closingBalance as availableBalanceCents, distinct from the raw balance", () => {
+  it("surfaces bankData.closingBalance as availableBalanceCents — even when, as in the real observed payload, it equals the raw balance (DEC-130: never assumed to already exclude reservations just because the field is present)", () => {
     const result = mapPluggyAccountToExternalAccountInput(fixtureBankAccountWithReservedBalance);
     expect(result.balanceCents).toBe(3_599_575);
-    expect(result.availableBalanceCents).toBe(3_499_571);
+    expect(result.availableBalanceCents).toBe(3_599_575);
   });
 
   it("sums reservedBalances across every band into reservedBalanceCents", () => {

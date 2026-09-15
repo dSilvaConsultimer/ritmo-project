@@ -202,7 +202,7 @@ describe("tool execution against seeded data", () => {
     expect(result.source).toBe("USER_DECLARED");
   });
 
-  it("createIncome (DEC-130) sets provenance to HISTORY_INFERRED when confirming a recurring pattern, and persists expectedDayOfMonth", async () => {
+  it("createIncome (DEC-130 corrected) sets provenance to USER_CONFIRMED_HISTORY when confirming a recurring pattern, never the bare HISTORY_INFERRED state, and persists expectedDayOfMonth", async () => {
     const db = await freshSeededDb();
     const createTool = findTool("createIncome")!;
     const args = createTool.schema.parse({
@@ -215,7 +215,7 @@ describe("tool execution against seeded data", () => {
       { db, financialProfileId: fixtureProfile.id, asOfDate: ASOF },
       args,
     )) as { source: string; expectedDayOfMonth?: number };
-    expect(result.source).toBe("HISTORY_INFERRED");
+    expect(result.source).toBe("USER_CONFIRMED_HISTORY");
     expect(result.expectedDayOfMonth).toBe(5);
   });
 

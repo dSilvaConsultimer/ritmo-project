@@ -13,6 +13,7 @@ import {
   syncConnection,
   refetchTransactionsByExternalId,
   getInstallmentPlanMatchCandidates,
+  reclassifyMisclassifiedCardPayments,
 } from "./sync";
 import { getFinancialSnapshot, getCategoryTotals, getTransactions } from "./queries";
 import { resetProviderRegistry, registerProvider } from "./provider-registry";
@@ -665,5 +666,160 @@ describe("syncConnection — error handling and retry (DEC-128, decision 5)", ()
       "mock-tx-after-recovery-1",
     );
     expect(recovered).toBeDefined();
+  });
+});
+
+describe("reclassifyMisclassifiedCardPayments (DEC-130, test 11: stale CARD_PAYMENT classification)", () => {
+  const mockChecking: ExternalAccountInput = {
+    provider: "mock",
+    externalAccountId: "mock-checking-reclassify-1",
+    connectionExternalId: "mock-conn-reclassify-1",
+    kind: "BANK",
+    displayName: "Mock Checking",
+    currency: "BRL",
+    balanceCents: 3_000_000,
+    balanceCertainty: "ACTUAL",
+    lastSyncedAt: "2026-09-05T00:00:00.000Z",
+  };
+
+  it("reclassifies a stale, misclassified checking-account card-bill-payment transaction, and never touches a genuine consumption transaction", async () => {
+    const db = await freshSeededDb();
+    // Simulates data imported BEFORE the mapper fix: a real card bill
+    // payment that was, at the time, wrongly stored as CONSUMPTION.
+    const staleCardPayment: ExternalTransactionInput = {
+      provider: "mock",
+      externalTransactionId: "mock-tx-stale-card-payment-1",
+      paymentSourceExternalRef: mockChecking.externalAccountId,
+      amountCents: 29_115,
+      direction: "DEBIT",
+      financialEffect: "CONSUMPTION", // the bug — should have been CARD_PAYMENT
+      certainty: "ACTUAL",
+      date: "2026-08-31",
+      rawDescription: "PAGAMENTO FATURA CARTAO VISA",
+      rawMerchant: "PAGAMENTO FATURA CARTAO VISA",
+      status: "POSTED",
+    };
+    const genuineConsumption: ExternalTransactionInput = {
+      provider: "mock",
+      externalTransactionId: "mock-tx-genuine-consumption-1",
+      paymentSourceExternalRef: mockChecking.externalAccountId,
+      amountCents: 12_000,
+      direction: "DEBIT",
+      financialEffect: "CONSUMPTION",
+      certainty: "ACTUAL",
+      date: "2026-08-20",
+      rawDescription: "VIVO SERVICOS E COMERCIO",
+      rawMerchant: "VIVO SERVICOS E COMERCIO",
+      status: "POSTED",
+    };
+    installMockProvider({
+      accounts: [mockChecking],
+      transactionsByAccount: new Map([
+        [mockChecking.externalAccountId, [staleCardPayment, genuineConsumption]],
+      ]),
+    });
+    const connection = {
+      id: createId("provider-connection"),
+      financialProfileId: fixtureProfile.id,
+      provider: "mock" as const,
+      externalConnectionId: mockChecking.connectionExternalId,
+      status: "PENDING" as const,
+      createdAt: "2026-08-31",
+      updatedAt: "2026-08-31",
+    };
+    await repo.upsertProviderConnection(db, connection);
+    await syncConnection(db, fixtureProfile.id, connection.id);
+
+    const result = await reclassifyMisclassifiedCardPayments(db, fixtureProfile.id);
+    expect(result.reclassified).toBe(1);
+    expect(result.reclassifiedTransactionIds).toHaveLength(1);
+
+    const reclassified = await repo.findTransactionByExternalId(
+      db,
+      fixtureProfile.id,
+      "mock",
+      "mock-tx-stale-card-payment-1",
+    );
+    expect(reclassified?.financialEffect).toBe("CARD_PAYMENT");
+
+    const untouched = await repo.findTransactionByExternalId(
+      db,
+      fixtureProfile.id,
+      "mock",
+      "mock-tx-genuine-consumption-1",
+    );
+    expect(untouched?.financialEffect).toBe("CONSUMPTION");
+  });
+
+  it("is idempotent — running it twice reclassifies nothing the second time", async () => {
+    const db = await freshSeededDb();
+    const staleCardPayment: ExternalTransactionInput = {
+      provider: "mock",
+      externalTransactionId: "mock-tx-stale-card-payment-2",
+      paymentSourceExternalRef: mockChecking.externalAccountId,
+      amountCents: 16_770,
+      direction: "DEBIT",
+      financialEffect: "CONSUMPTION",
+      certainty: "ACTUAL",
+      date: "2026-07-31",
+      rawDescription: "PAGAMENTO DE FATURA CARTAO",
+      rawMerchant: "PAGAMENTO DE FATURA CARTAO",
+      status: "POSTED",
+    };
+    installMockProvider({
+      accounts: [mockChecking],
+      transactionsByAccount: new Map([[mockChecking.externalAccountId, [staleCardPayment]]]),
+    });
+    const connection = {
+      id: createId("provider-connection"),
+      financialProfileId: fixtureProfile.id,
+      provider: "mock" as const,
+      externalConnectionId: mockChecking.connectionExternalId,
+      status: "PENDING" as const,
+      createdAt: "2026-07-31",
+      updatedAt: "2026-07-31",
+    };
+    await repo.upsertProviderConnection(db, connection);
+    await syncConnection(db, fixtureProfile.id, connection.id);
+
+    const first = await reclassifyMisclassifiedCardPayments(db, fixtureProfile.id);
+    expect(first.reclassified).toBe(1);
+    const second = await reclassifyMisclassifiedCardPayments(db, fixtureProfile.id);
+    expect(second.reclassified).toBe(0);
+  });
+
+  it("never touches a transaction whose description doesn't match the canonical card-payment pattern, even with a similar amount", async () => {
+    const db = await freshSeededDb();
+    const unrelatedDebit: ExternalTransactionInput = {
+      provider: "mock",
+      externalTransactionId: "mock-tx-unrelated-1",
+      paymentSourceExternalRef: mockChecking.externalAccountId,
+      amountCents: 29_115,
+      direction: "DEBIT",
+      financialEffect: "CONSUMPTION",
+      certainty: "ACTUAL",
+      date: "2026-08-31",
+      rawDescription: "SUPERMERCADO EXTRA",
+      rawMerchant: "SUPERMERCADO EXTRA",
+      status: "POSTED",
+    };
+    installMockProvider({
+      accounts: [mockChecking],
+      transactionsByAccount: new Map([[mockChecking.externalAccountId, [unrelatedDebit]]]),
+    });
+    const connection = {
+      id: createId("provider-connection"),
+      financialProfileId: fixtureProfile.id,
+      provider: "mock" as const,
+      externalConnectionId: mockChecking.connectionExternalId,
+      status: "PENDING" as const,
+      createdAt: "2026-08-31",
+      updatedAt: "2026-08-31",
+    };
+    await repo.upsertProviderConnection(db, connection);
+    await syncConnection(db, fixtureProfile.id, connection.id);
+
+    const result = await reclassifyMisclassifiedCardPayments(db, fixtureProfile.id);
+    expect(result.reclassified).toBe(0);
   });
 });

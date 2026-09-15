@@ -12,9 +12,33 @@ import type { ProtectedPreference } from "../domain/preference";
 import type { InstallmentPlan } from "../domain/installment";
 import { summarizeFutureInstallmentCommitments, type FutureCommitmentSummary } from "../domain/installment";
 import { excludedTransactionIds, type ReconciliationLink } from "../domain/reconciliation";
+import { amountsAreSimilar } from "../domain/recurring";
 import type { FinancialPosition } from "../domain/position";
 import { computeLiquidityAwareSafeToSpend, type LiquidityAwareSafeToSpend } from "../domain/position";
 import { daysRemainingInMonth, isSameMonth, dayOfMonth } from "./date-utils";
+
+/**
+ * DEC-130 (corrected): removes the FIRST transaction in `pool` whose amount
+ * is within tolerance of `expectedAmount` (reusing `amountsAreSimilar`'s
+ * existing 10% band — never a bespoke threshold) and returns it, or
+ * `undefined` if nothing matches. Mutates `pool` so the same real
+ * transaction can never "realize" two different planned items. This is
+ * deliberately amount-only (no description matching at all — never brittle
+ * string comparison) and month-scoped by construction (`pool` is always
+ * pre-filtered to `asOfDate`'s calendar month before this is called) — a
+ * date proximity check beyond "same month" was considered and rejected:
+ * the Founder's own early-salary example (expected day 20, received day
+ * 15) must match despite a 5-day gap, and "same month" already bounds this
+ * to a sane window without an arbitrary extra parameter.
+ */
+function matchAndConsume(
+  expectedAmount: Money,
+  pool: FinancialTransaction[],
+): FinancialTransaction | undefined {
+  const index = pool.findIndex((t) => amountsAreSimilar([expectedAmount, t.amount]));
+  if (index === -1) return undefined;
+  return pool.splice(index, 1)[0];
+}
 
 export interface FinancialSnapshotInput {
   readonly asOfDate: string;
@@ -104,6 +128,14 @@ export interface FinancialSnapshot {
   readonly futureInstallmentCommitments: FutureCommitmentSummary;
   /** Plan Safe-to-Spend narrowed by real liquidity, when available — see `docs/FINANCIAL-ENGINE.md`. */
   readonly liquidity: LiquidityAwareSafeToSpend;
+  /**
+   * DEC-130: the canonical "Já comprometido" figure — `liquidity.
+   * committedForwardTotal` when real liquidity is authoritative, otherwise
+   * the unchanged plan-based `commitments.fixed`. Home (or any other
+   * single-figure consumer) should read this directly rather than deciding
+   * between the two itself.
+   */
+  readonly recommendedCommittedTotal: Money;
   readonly confidence: FinancialConfidence;
   readonly warnings: readonly string[];
 }
@@ -120,6 +152,25 @@ export function buildFinancialSnapshot(input: FinancialSnapshotInput): Financial
   let hasUnknown = false;
   const currentDayOfMonth = dayOfMonth(input.asOfDate);
 
+  // --- Reconciled transactions this month: consumption-like effects only, refunds net against them ---
+  // Computed early — the DEC-130 reconciliation pass below (Income/
+  // FixedExpense vs. real transactions) needs this same month-scoped,
+  // already-excluded-links transaction list.
+  const excludedIds = excludedTransactionIds(input.reconciliationLinks);
+  const monthlyTransactions = input.transactions.filter(
+    (t) =>
+      !excludedIds.has(t.id) &&
+      t.status !== "REVERSED" &&
+      isSameMonth(t.date, input.asOfDate),
+  );
+  const consumptionSum = M.sum(
+    monthlyTransactions.filter((t) => isConsumptionLike(t.financialEffect)).map((t) => t.amount),
+  );
+  const refundSum = M.sum(
+    monthlyTransactions.filter((t) => t.financialEffect === "REFUND").map((t) => t.amount),
+  );
+  const transactionsActualSpending = M.subtract(consumptionSum, refundSum);
+
   // --- Income ---
   const gross = M.sum(input.income.map((i) => i.grossAmount));
   const taxExpenses = input.fixedExpenses.filter((e) => e.category === TAX_CATEGORY);
@@ -132,24 +183,43 @@ export function buildFinancialSnapshot(input: FinancialSnapshotInput): Financial
     if (incomeItem.certainty === "UNKNOWN") hasUnknown = true;
   }
 
-  // DEC-130: future planned income for the liquidity-aware forward total —
-  // only a declared Income whose `expectedDayOfMonth` is STILL AHEAD of
-  // today (this month's occurrence has not happened yet, so it cannot
-  // already be reflected in the current balance) and whose certainty is
-  // reliable (CONFIRMED/ACTUAL — never ESTIMATED/UNKNOWN) counts. An
-  // Income with no `expectedDayOfMonth` at all (timing genuinely unknown)
-  // never contributes here — it still counts in the plan-based total via
-  // `usable` above, unchanged.
-  const futureIncome = M.sum(
-    input.income
-      .filter(
-        (i) =>
-          i.expectedDayOfMonth !== undefined &&
-          i.expectedDayOfMonth > currentDayOfMonth &&
-          (i.certainty === "CONFIRMED" || i.certainty === "ACTUAL"),
-      )
-      .map((i) => i.grossAmount),
-  );
+  // DEC-130 (corrected): a planned date is never proof that money actually
+  // moved. Reconcile each declared Income against real INCOME-effect
+  // transactions this month BEFORE deciding whether it's still "future":
+  //   - REALIZED (a real transaction of a similar amount already exists
+  //     this month, regardless of whether that happened before or after
+  //     `expectedDayOfMonth` — e.g. a salary expected the 20th but paid
+  //     early on the 15th) -> already inside the current balance -> NEVER
+  //     added to the forward total, full stop.
+  //   - EXPECTED (`expectedDayOfMonth` still ahead of today, unrealized,
+  //     reliable certainty, and NOT the bare unconfirmed HISTORY_INFERRED
+  //     provenance) -> added to the forward total.
+  //   - OVERDUE/UNRESOLVED (`expectedDayOfMonth` already passed, still
+  //     unrealized) -> conservatively NOT added (never assume it'll still
+  //     arrive this period) — flagged with a warning instead of silently
+  //     dropped.
+  // Only USER_DECLARED/USER_CONFIRMED_HISTORY may ever reach the forward
+  // total — an Income record left in the unconfirmed HISTORY_INFERRED
+  // state must never become authoritative planned money on its own.
+  const incomeTransactionPool = monthlyTransactions.filter((t) => t.financialEffect === "INCOME").slice();
+  const futureIncomeItems: Income[] = [];
+  for (const incomeItem of input.income) {
+    const realized = matchAndConsume(incomeItem.grossAmount, incomeTransactionPool);
+    if (realized) continue; // already inside the current balance — never added again.
+
+    const reliableSource = incomeItem.source !== "HISTORY_INFERRED";
+    const reliableCertainty = incomeItem.certainty === "CONFIRMED" || incomeItem.certainty === "ACTUAL";
+    if (incomeItem.expectedDayOfMonth === undefined) continue; // timing unknown — plan-based total only.
+
+    if (incomeItem.expectedDayOfMonth > currentDayOfMonth && reliableSource && reliableCertainty) {
+      futureIncomeItems.push(incomeItem);
+    } else if (incomeItem.expectedDayOfMonth <= currentDayOfMonth) {
+      warnings.push(
+        `Expected income "${incomeItem.label}" has not been confirmed as received yet — not added to Safe-to-Spend.`,
+      );
+    }
+  }
+  const futureIncome = M.sum(futureIncomeItems.map((i) => i.grossAmount));
 
   // --- Fixed commitments (excluding tax, which is already netted out of income) ---
   const nonTaxFixed = input.fixedExpenses.filter((e) => e.category !== TAX_CATEGORY);
@@ -168,34 +238,20 @@ export function buildFinancialSnapshot(input: FinancialSnapshotInput): Financial
     if (budget.certainty === "UNKNOWN") hasUnknown = true;
   }
 
-  // --- DEC-130: liquidity-aware forward adjustments ---
-  // A fixed expense with a KNOWN due day that has already passed this month
-  // is presumed already reflected in the current account balance — counting
-  // it again would double-subtract money the balance already paid out.
-  // Unknown timing is treated conservatively as still-upcoming (never
-  // silently dropped). Variable budgets have no due-day concept at all, so
-  // they are always treated as still-upcoming, matching the plan-based
-  // formula's own treatment of them as a forward target.
-  const upcomingFixed = nonTaxFixed.filter(
-    (e) => e.dueDayOfMonth === undefined || e.dueDayOfMonth >= currentDayOfMonth,
-  );
-  const upcomingCommitments = M.add(M.sum(upcomingFixed.map((e) => e.amount)), variableBudgetsTotal);
-
-  // --- Reconciled transactions this month: consumption-like effects only, refunds net against them ---
-  const excludedIds = excludedTransactionIds(input.reconciliationLinks);
-  const monthlyTransactions = input.transactions.filter(
-    (t) =>
-      !excludedIds.has(t.id) &&
-      t.status !== "REVERSED" &&
-      isSameMonth(t.date, input.asOfDate),
-  );
-  const consumptionSum = M.sum(
-    monthlyTransactions.filter((t) => isConsumptionLike(t.financialEffect)).map((t) => t.amount),
-  );
-  const refundSum = M.sum(
-    monthlyTransactions.filter((t) => t.financialEffect === "REFUND").map((t) => t.amount),
-  );
-  const transactionsActualSpending = M.subtract(consumptionSum, refundSum);
+  // DEC-130 (corrected): the SAME reconciliation principle applied to
+  // FixedExpense — a due day already passed is NOT proof of payment (an
+  // overdue, unmatched bill must stay counted as an obligation, never
+  // silently assumed paid), and a due day still ahead is NOT proof of
+  // non-payment (a bill paid early must reconcile and drop out, or it
+  // would be double-subtracted against a balance that already paid it).
+  // The only signal that actually matters is whether a real consumption-
+  // like transaction of a similar amount exists THIS month — `dueDayOfMonth`
+  // itself no longer gates this decision at all (see its own doc comment).
+  const consumptionTransactionPool = monthlyTransactions
+    .filter((t) => isConsumptionLike(t.financialEffect))
+    .slice();
+  const unrealizedFixed = nonTaxFixed.filter((e) => !matchAndConsume(e.amount, consumptionTransactionPool));
+  const upcomingFixedCommitments = M.sum(unrealizedFixed.map((e) => e.amount));
 
   // --- Planned events: already-paid, future-confirmed, future-estimated, unknown ---
   let eventAlreadyPaid = M.ZERO;
@@ -352,7 +408,8 @@ export function buildFinancialSnapshot(input: FinancialSnapshotInput): Financial
   const position = input.position;
   const liquidity: LiquidityAwareSafeToSpend = position
     ? computeLiquidityAwareSafeToSpend(safeTotal, position, {
-        upcomingCommitments,
+        upcomingFixedCommitments,
+        variableBudgets: variableBudgetsTotal,
         upcomingEventReservations: upcomingEventReservationsThisMonth,
         debtCommitments,
         futureIncome,
@@ -364,12 +421,21 @@ export function buildFinancialSnapshot(input: FinancialSnapshotInput): Financial
         liquidityAwareSafeToSpend: null,
         components: [],
         recommendedTotal: safeTotal,
+        committedForwardTotal: null,
         confidence: "UNKNOWN",
         warnings: [
           "Real-time liquidity is unknown — Safe-to-Spend reflects the monthly plan only, not actual cash on hand.",
         ],
       };
   warnings.push(...liquidity.warnings);
+
+  // DEC-130: "Já comprometido" — the ONE canonical figure any single-figure
+  // consumer (Home) should read, computed here (never re-derived in
+  // apps/ritmo): the liquidity-aware committed total when real liquidity is
+  // authoritative, otherwise the unchanged plan-based `fixed` commitments
+  // figure (already what Home showed before this DEC when no real balance
+  // existed).
+  const recommendedCommittedTotal = liquidity.committedForwardTotal ?? fixed;
 
   return {
     asOfDate: input.asOfDate,
@@ -395,6 +461,7 @@ export function buildFinancialSnapshot(input: FinancialSnapshotInput): Financial
     safeToSpendBreakdown,
     futureInstallmentCommitments,
     liquidity,
+    recommendedCommittedTotal,
     confidence,
     warnings,
   };

@@ -36,11 +36,15 @@ export const fixtureBankAccount: Account = {
 };
 
 /**
- * DEC-130: a checking account where the provider's own "available balance"
- * (`closingBalance`) is LOWER than the raw `balance` because of an active
- * reserved balance ("Caixinha Para Férias") — proves the mapper prefers
- * `closingBalance` for liquidity purposes and separately surfaces the
- * reserved amount for explainability, never double-subtracting it.
+ * DEC-130 (corrected — evidence-based): the REAL Pluggy payload observed for
+ * the Founder's own connected account shows `closingBalance` IDENTICAL to
+ * the raw `balance` despite a genuinely active reserved balance
+ * ("Caixinha Para Férias") — `closingBalance` cannot be assumed to already
+ * exclude a reservation just because the field exists. This fixture
+ * deliberately matches that real observation (not an idealized "available
+ * balance is always lower" scenario) so the mapper/position tests exercise
+ * the actual ambiguity, not a case that happens to make the code look
+ * correct. See docs/DECISIONS.md DEC-130's update.
  */
 export const fixtureBankAccountWithReservedBalance: Account = {
   ...fixtureBankAccount,
@@ -48,7 +52,7 @@ export const fixtureBankAccountWithReservedBalance: Account = {
   balance: 35_995.75,
   bankData: {
     transferNumber: "0001-1",
-    closingBalance: 34_995.71,
+    closingBalance: 35_995.75,
     automaticallyInvestedBalance: null,
     overdraftContractedLimit: null,
     overdraftUsedLimit: null,

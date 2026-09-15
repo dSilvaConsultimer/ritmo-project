@@ -126,6 +126,18 @@ const CARD_PAYMENT_KEYWORDS = /PAGAMENTO.*FATURA|PAGAMENTO DE FATURA|BILL PAYMEN
 const OWN_ACCOUNT_TRANSFER_KEYWORDS = /TRANSFER[ÊE]NCIA ENTRE CONTAS|TED PR[OÓ]PRIA|DOC PR[OÓ]PRIA/i;
 
 /**
+ * DEC-130: the SAME pattern `classifyFinancialEffect` uses to detect a card
+ * bill payment, exported so a one-time reclassification pass over
+ * already-persisted transactions (which no longer have the original raw
+ * Pluggy payload to re-run the full classifier against — see
+ * docs/OPEN-FINANCE.md, "raw payload retention policy") can reuse the exact
+ * canonical rule instead of duplicating or approximating it.
+ */
+export function isCardBillPaymentDescription(description: string): boolean {
+  return CARD_PAYMENT_KEYWORDS.test(description.toUpperCase());
+}
+
+/**
  * Classifies a Pluggy transaction's `FinancialEffect`. This is a
  * deterministic, keyword-based heuristic over the description plus account
  * kind + Pluggy's `type`/`creditCardMetadata` — NOT an ML/LLM

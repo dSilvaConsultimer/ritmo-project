@@ -66,7 +66,15 @@ export const getHomeData = createServerFn({ method: "GET" }).handler(async () =>
     // a forward-looking planning input for Safe-to-Spend, not a report of
     // what already happened. See docs/DECISIONS.md DEC-127.
     incomeCents: realizedIncomeCents,
-    committedCents: snapshot.commitments.fixed.cents,
+    // DEC-130: "Já comprometido" — the canonical engine figure
+    // (`snapshot.recommendedCommittedTotal`), never `commitments.fixed`
+    // directly. When real liquidity is authoritative this is the
+    // liquidity-aware committed total (card obligations + unpaid fixed
+    // expenses + this-month event reservations + debt/installments,
+    // reconciled against real transactions — never variable budgets,
+    // protected savings, or future income); otherwise it falls back to the
+    // unchanged plan-based `commitments.fixed`.
+    committedCents: snapshot.recommendedCommittedTotal.cents,
     fixedExpenses: fixedExpenses.map((e) => ({
       id: e.id,
       label: e.label,

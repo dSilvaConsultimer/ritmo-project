@@ -317,6 +317,41 @@ describe("createIncome (Sprint 9, DEC-127)", () => {
     expect(persisted?.source).toBe("USER_CONFIRMED_HISTORY");
     expect(persisted?.expectedDayOfMonth).toBe(5);
   });
+
+  it("(DEC-130) supports all three provenance states — USER_DECLARED, HISTORY_INFERRED, USER_CONFIRMED_HISTORY", async () => {
+    const db = await freshSeededDb();
+
+    const declared = await createIncome(db, fixtureProfile.id, {
+      label: "Salário CLT",
+      grossAmount: fromCents(850_000),
+      source: "USER_DECLARED",
+    });
+    expect(declared.source).toBe("USER_DECLARED");
+
+    // HISTORY_INFERRED is reachable at the domain/mutation layer (e.g. a
+    // future architecture that persists a low-confidence inference) even
+    // though the copilot tool never produces it today — see
+    // createIncomeTool, which always maps a confirmed pattern to
+    // USER_CONFIRMED_HISTORY instead.
+    const inferred = await createIncome(db, fixtureProfile.id, {
+      label: "Possível freela recorrente",
+      grossAmount: fromCents(200_000),
+      source: "HISTORY_INFERRED",
+    });
+    expect(inferred.source).toBe("HISTORY_INFERRED");
+
+    const confirmed = await createIncome(db, fixtureProfile.id, {
+      label: "Salário confirmado via padrão",
+      grossAmount: fromCents(850_000),
+      source: "USER_CONFIRMED_HISTORY",
+    });
+    expect(confirmed.source).toBe("USER_CONFIRMED_HISTORY");
+
+    const input = await repo.loadFinancialSnapshotInput(db, fixtureProfile.id, ASOF);
+    expect(input.income.find((i) => i.id === declared.id)?.source).toBe("USER_DECLARED");
+    expect(input.income.find((i) => i.id === inferred.id)?.source).toBe("HISTORY_INFERRED");
+    expect(input.income.find((i) => i.id === confirmed.id)?.source).toBe("USER_CONFIRMED_HISTORY");
+  });
 });
 
 describe("updateIncome (Sprint 9, DEC-127)", () => {

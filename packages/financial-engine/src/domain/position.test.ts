@@ -95,7 +95,8 @@ describe("FinancialPosition — known cash", () => {
 
   it("explainability: every component sums exactly to the reported total", () => {
     const result = computeLiquidityAwareSafeToSpend(planSafeToSpend, knownPosition, {
-      upcomingCommitments: M.fromReais(100),
+      upcomingFixedCommitments: M.fromReais(100),
+      variableBudgets: M.fromReais(40),
       upcomingEventReservations: M.fromReais(50),
       debtCommitments: M.fromReais(25),
       futureIncome: M.fromReais(3_000),
@@ -106,12 +107,27 @@ describe("FinancialPosition — known cash", () => {
     expect(result.components.map((c) => c.type)).toEqual([
       "CURRENT_AVAILABLE_CASH",
       "CARD_OBLIGATIONS",
-      "UPCOMING_COMMITMENTS",
+      "UPCOMING_FIXED_COMMITMENTS",
+      "VARIABLE_BUDGETS",
       "UPCOMING_EVENT_RESERVATIONS",
       "DEBT_COMMITMENTS",
       "FUTURE_CONFIRMED_INCOME",
       "PROTECTED_SAVINGS",
     ]);
+  });
+
+  it("(DEC-130 corrected) 'Já comprometido' excludes variable budgets, protected savings, and future income", () => {
+    const result = computeLiquidityAwareSafeToSpend(planSafeToSpend, knownPosition, {
+      upcomingFixedCommitments: M.fromReais(100),
+      variableBudgets: M.fromReais(40),
+      upcomingEventReservations: M.fromReais(50),
+      debtCommitments: M.fromReais(25),
+      futureIncome: M.fromReais(3_000),
+      protectedSavings: M.fromReais(200),
+    });
+    // card (200) + fixed (100) + events (50) + debt (25) = 375, never the
+    // variable budget, protected savings, or future income figures.
+    expect(result.committedForwardTotal?.cents).toBe(M.fromReais(375).cents);
   });
 });
 
@@ -173,21 +189,40 @@ describe("buildFinancialPositionFromAccounts", () => {
   });
 });
 
-describe("buildFinancialPositionFromAccounts — reserved / available balance (DEC-130)", () => {
-  it("prefers availableBalance over balance when the provider reports both, and never subtracts reservedBalance again in that case", () => {
+describe("buildFinancialPositionFromAccounts — reserved / available balance (DEC-130, corrected)", () => {
+  it("(evidence-based, DEC-130 update) subtracts reservedBalance exactly once EVEN WHEN availableBalance equals the raw balance — the real observed Pluggy payload for this profile shows availableBalance/closingBalance identical to balance despite a genuine active reservation, so availableBalance cannot be assumed to already exclude it", () => {
     const accounts: PaymentSource[] = [
       account({
         type: "DEBIT",
         balance: actual(M.fromReais(35_995.75)),
-        // Pluggy's own "available balance" already excludes the reserved amount.
+        // Matches the REAL fixtureBankAccountWithReservedBalance payload:
+        // availableBalance (Pluggy's closingBalance) is identical to
+        // balance, not lower — it does NOT exclude the reservation here.
+        availableBalance: actual(M.fromReais(35_995.75)),
+        reservedBalance: actual(M.fromReais(1_000.04)),
+      }),
+    ];
+    const position = buildFinancialPositionFromAccounts(accounts, profileId, "2026-09-05", "pluggy");
+    // 35,995.75 - 1,000.04 = 34,995.71 — subtracted once, regardless of
+    // which balance field was preferred for the base figure.
+    expect(position.cashBalance.amount?.cents).toBe(M.fromReais(34_995.71).cents);
+    expect(position.reservedBalance.amount?.cents).toBe(M.fromReais(1_000.04).cents);
+  });
+
+  it("still only subtracts reservedBalance ONCE even when availableBalance is genuinely lower than balance (never double-subtracted regardless of the gap's cause)", () => {
+    const accounts: PaymentSource[] = [
+      account({
+        type: "DEBIT",
+        balance: actual(M.fromReais(35_995.75)),
         availableBalance: actual(M.fromReais(34_995.71)),
         reservedBalance: actual(M.fromReais(1_000.04)),
       }),
     ];
     const position = buildFinancialPositionFromAccounts(accounts, profileId, "2026-09-05", "pluggy");
-    // Uses availableBalance as-is — NOT availableBalance minus reservedBalance again.
-    expect(position.cashBalance.amount?.cents).toBe(M.fromReais(34_995.71).cents);
-    expect(position.reservedBalance.amount?.cents).toBe(M.fromReais(1_000.04).cents);
+    // Even though availableBalance here already looks like it might exclude
+    // the reservation, the safe/conservative rule always subtracts it once
+    // more from whichever cash figure is used — 34,995.71 - 1,000.04.
+    expect(position.cashBalance.amount?.cents).toBe(M.fromReais(33_995.67).cents);
   });
 
   it("falls back to balance minus reservedBalance exactly once when no availableBalance is reported", () => {
@@ -202,7 +237,7 @@ describe("buildFinancialPositionFromAccounts — reserved / available balance (D
     expect(position.cashBalance.amount?.cents).toBe(M.fromReais(34_995.71).cents);
   });
 
-  it("captures automaticallyInvestedBalance for explainability without ever subtracting it from cashBalance", () => {
+  it("(test 13) captures automaticallyInvestedBalance for explainability without ever subtracting it from cashBalance", () => {
     const accounts: PaymentSource[] = [
       account({
         type: "DEBIT",
@@ -213,6 +248,45 @@ describe("buildFinancialPositionFromAccounts — reserved / available balance (D
     const position = buildFinancialPositionFromAccounts(accounts, profileId, "2026-09-05", "pluggy");
     expect(position.cashBalance.amount?.cents).toBe(M.fromReais(35_995.75).cents);
     expect(position.automaticallyInvestedBalance.amount?.cents).toBe(M.fromReais(3_599.57).cents);
+  });
+
+  it("(test 13) automaticallyInvestedBalance is never double-counted even alongside a lower availableBalance and a reservedBalance on the same account", () => {
+    const accounts: PaymentSource[] = [
+      account({
+        type: "DEBIT",
+        balance: actual(M.fromReais(35_995.75)),
+        availableBalance: actual(M.fromReais(35_995.75)),
+        reservedBalance: actual(M.fromReais(1_000.04)),
+        automaticallyInvestedBalance: actual(M.fromReais(3_599.57)),
+      }),
+    ];
+    const position = buildFinancialPositionFromAccounts(accounts, profileId, "2026-09-05", "pluggy");
+    // Only the reservation is ever subtracted; the invested amount neither
+    // adds on top nor gets subtracted a second time.
+    expect(position.cashBalance.amount?.cents).toBe(M.fromReais(34_995.71).cents);
+    expect(position.automaticallyInvestedBalance.amount?.cents).toBe(M.fromReais(3_599.57).cents);
+  });
+
+  it("(test 12) reservedBalance is subtracted exactly once even across multiple bank accounts, never accumulated per-field pass", () => {
+    const accounts: PaymentSource[] = [
+      account({
+        id: createId("payment-source"),
+        type: "DEBIT",
+        balance: actual(M.fromReais(10_000)),
+        reservedBalance: actual(M.fromReais(1_000)),
+      }),
+      account({
+        id: createId("payment-source"),
+        type: "DEBIT",
+        balance: actual(M.fromReais(5_000)),
+        reservedBalance: actual(M.fromReais(500)),
+      }),
+    ];
+    const position = buildFinancialPositionFromAccounts(accounts, profileId, "2026-09-05", "pluggy");
+    // (10,000 - 1,000) + (5,000 - 500) = 13,500 — each account's own
+    // reservation subtracted exactly once from that account's own cash.
+    expect(position.cashBalance.amount?.cents).toBe(M.fromReais(13_500).cents);
+    expect(position.reservedBalance.amount?.cents).toBe(M.fromReais(1_500).cents);
   });
 
   it("reports reservedBalance/automaticallyInvestedBalance as UNKNOWN (not zero) when no account reports them", () => {

@@ -393,12 +393,15 @@ describe("buildFinancialSnapshot — liquidity-aware Safe-to-Spend (DEC-130)", (
     expect(snapshot.liquidity.recommendedTotal.cents).toBe(M.fromReais(35_033.8).cents);
   });
 
-  it("(test 2) salary already received this month is NOT added again on top of the current balance", () => {
+  it("(test 1: early income) salary received BEFORE its expectedDayOfMonth reconciles by amount and is NOT added again, despite the day not having arrived yet", () => {
+    // The Founder's own failure case: expected day 20, real transaction day
+    // 15. A due-day-only rule would have added it again (day 20 > day 15);
+    // reconciliation-by-amount catches the real transaction regardless.
     const position: FinancialPosition = {
       id: createId("financial-position"),
       financialProfileId: FIXTURE_PROFILE_ID,
       asOf: "2026-09-15",
-      cashBalance: actual(M.fromReais(10_000)), // already includes the received salary
+      cashBalance: actual(M.fromReais(10_000)), // already includes the early salary
       cardOutstandingBalance: unknownAmount(),
       otherLiabilities: unknownAmount(),
       reservedBalance: unknownAmount(),
@@ -406,11 +409,29 @@ describe("buildFinancialSnapshot — liquidity-aware Safe-to-Spend (DEC-130)", (
       source: "pluggy",
       coverage: "PARTIAL",
     };
+    const salaryTransaction: FinancialTransaction = {
+      id: createId("transaction"),
+      financialProfileId: FIXTURE_PROFILE_ID,
+      paymentSource: checkingAccount,
+      date: "2026-09-15",
+      amount: M.fromReais(8_500),
+      direction: "CREDIT",
+      rawDescription: "SALARIO EMPRESA XYZ LTDA",
+      normalizedDescription: "SALARIO EMPRESA XYZ LTDA",
+      status: "POSTED",
+      certainty: "ACTUAL",
+      financialEffect: "INCOME",
+      category: null,
+      origin: "IMPORTED",
+      createdAt: "2026-09-15T00:00:00.000Z",
+      updatedAt: "2026-09-15T00:00:00.000Z",
+    };
     const input = minimalInput({
-      asOfDate: "2026-09-15", // day 15 — the 5th has already passed
+      asOfDate: "2026-09-15", // today; expected day (20) is still ahead
       income: [
-        income({ grossAmount: M.fromReais(8_500), certainty: "CONFIRMED", source: "USER_DECLARED", expectedDayOfMonth: 5 }),
+        income({ grossAmount: M.fromReais(8_500), certainty: "CONFIRMED", source: "USER_DECLARED", expectedDayOfMonth: 20 }),
       ],
+      transactions: [salaryTransaction],
       position,
     });
     const snapshot = buildFinancialSnapshot(input);
@@ -419,12 +440,120 @@ describe("buildFinancialSnapshot — liquidity-aware Safe-to-Spend (DEC-130)", (
     expect(snapshot.liquidity.liquidityAwareSafeToSpend?.cents).toBe(M.fromReais(10_000).cents);
   });
 
-  it("(test 3) an expense already paid this month (due day already passed) is NOT subtracted again from the current balance", () => {
+  it("(test 2: overdue income) salary NOT received after its expectedDayOfMonth is conservatively excluded, never assumed received", () => {
     const position: FinancialPosition = {
       id: createId("financial-position"),
       financialProfileId: FIXTURE_PROFILE_ID,
       asOf: "2026-09-15",
-      cashBalance: actual(M.fromReais(10_000)), // already reflects the paid condo fee
+      cashBalance: actual(M.fromReais(10_000)), // does NOT actually contain the salary
+      cardOutstandingBalance: unknownAmount(),
+      otherLiabilities: unknownAmount(),
+      reservedBalance: unknownAmount(),
+      automaticallyInvestedBalance: unknownAmount(),
+      source: "pluggy",
+      coverage: "PARTIAL",
+    };
+    const input = minimalInput({
+      asOfDate: "2026-09-15", // day 15 — expected day 5 has already passed
+      income: [
+        income({ grossAmount: M.fromReais(8_500), certainty: "CONFIRMED", source: "USER_DECLARED", expectedDayOfMonth: 5 }),
+      ],
+      transactions: [], // no matching transaction anywhere this month
+      position,
+    });
+    const snapshot = buildFinancialSnapshot(input);
+
+    // Never silently assumed received just because the day passed — it is
+    // simply not added (the conservative direction: never overstate).
+    expect(snapshot.liquidity.components.some((c) => c.type === "FUTURE_CONFIRMED_INCOME")).toBe(false);
+    expect(snapshot.liquidity.liquidityAwareSafeToSpend?.cents).toBe(M.fromReais(10_000).cents);
+    expect(snapshot.warnings.some((w) => w.toLowerCase().includes("not been confirmed as received"))).toBe(true);
+  });
+
+  it("(test 3: bill paid before due day) reconciles by amount and is NOT subtracted again, even though its due day hasn't arrived yet", () => {
+    const position: FinancialPosition = {
+      id: createId("financial-position"),
+      financialProfileId: FIXTURE_PROFILE_ID,
+      asOf: "2026-09-15",
+      cashBalance: actual(M.fromReais(10_000)), // already reflects the early payment
+      cardOutstandingBalance: unknownAmount(),
+      otherLiabilities: unknownAmount(),
+      reservedBalance: unknownAmount(),
+      automaticallyInvestedBalance: unknownAmount(),
+      source: "pluggy",
+      coverage: "PARTIAL",
+    };
+    const rentPayment: FinancialTransaction = {
+      id: createId("transaction"),
+      financialProfileId: FIXTURE_PROFILE_ID,
+      paymentSource: checkingAccount,
+      date: "2026-09-15",
+      amount: M.fromReais(2_000),
+      direction: "DEBIT",
+      rawDescription: "ALUGUEL APARTAMENTO",
+      normalizedDescription: "ALUGUEL APARTAMENTO",
+      status: "POSTED",
+      certainty: "ACTUAL",
+      financialEffect: "CONSUMPTION",
+      category: "Moradia",
+      origin: "IMPORTED",
+      createdAt: "2026-09-15T00:00:00.000Z",
+      updatedAt: "2026-09-15T00:00:00.000Z",
+    };
+    const input = minimalInput({
+      asOfDate: "2026-09-15", // due day (20) is still ahead — paid early anyway
+      fixedExpenses: [
+        fixedExpense({ label: "Aluguel", amount: M.fromReais(2_000), certainty: "ACTUAL", dueDayOfMonth: 20 }),
+      ],
+      transactions: [rentPayment],
+      position,
+    });
+    const snapshot = buildFinancialSnapshot(input);
+
+    expect(snapshot.liquidity.components.some((c) => c.type === "UPCOMING_FIXED_COMMITMENTS")).toBe(false);
+    expect(snapshot.liquidity.liquidityAwareSafeToSpend?.cents).toBe(M.fromReais(10_000).cents);
+  });
+
+  it("(test 4: overdue bill still unpaid) a due day already passed with NO matching transaction stays a full obligation, never silently assumed paid", () => {
+    const position: FinancialPosition = {
+      id: createId("financial-position"),
+      financialProfileId: FIXTURE_PROFILE_ID,
+      asOf: "2026-09-15",
+      cashBalance: actual(M.fromReais(10_000)), // rent has NOT actually left this balance
+      cardOutstandingBalance: unknownAmount(),
+      otherLiabilities: unknownAmount(),
+      reservedBalance: unknownAmount(),
+      automaticallyInvestedBalance: unknownAmount(),
+      source: "pluggy",
+      coverage: "PARTIAL",
+    };
+    const input = minimalInput({
+      asOfDate: "2026-09-15", // due day 10 has already passed
+      fixedExpenses: [
+        fixedExpense({ label: "Aluguel", amount: M.fromReais(2_000), certainty: "ACTUAL", dueDayOfMonth: 10 }),
+      ],
+      transactions: [], // no matching payment anywhere this month
+      position,
+    });
+    const snapshot = buildFinancialSnapshot(input);
+
+    const commitmentComponent = snapshot.liquidity.components.find(
+      (c) => c.type === "UPCOMING_FIXED_COMMITMENTS",
+    );
+    expect(commitmentComponent?.amount.cents).toBe(M.fromReais(-2_000).cents);
+    expect(snapshot.liquidity.liquidityAwareSafeToSpend?.cents).toBe(M.fromReais(8_000).cents);
+    // The plan-based total is UNCHANGED — it still treats every fixed
+    // expense as committed regardless of due day (existing, documented
+    // behavior — see FixedExpense.dueDayOfMonth's own doc comment).
+    expect(snapshot.commitments.fixed.cents).toBe(M.fromReais(2_000).cents);
+  });
+
+  it("HISTORY_INFERRED income never becomes authoritative planned money on its own, even with reliable certainty and a future day", () => {
+    const position: FinancialPosition = {
+      id: createId("financial-position"),
+      financialProfileId: FIXTURE_PROFILE_ID,
+      asOf: "2026-09-15",
+      cashBalance: actual(M.fromReais(1_000)),
       cardOutstandingBalance: unknownAmount(),
       otherLiabilities: unknownAmount(),
       reservedBalance: unknownAmount(),
@@ -434,19 +563,19 @@ describe("buildFinancialSnapshot — liquidity-aware Safe-to-Spend (DEC-130)", (
     };
     const input = minimalInput({
       asOfDate: "2026-09-15",
-      fixedExpenses: [
-        fixedExpense({ label: "Condomínio", amount: M.fromReais(800), certainty: "ACTUAL", dueDayOfMonth: 5 }),
+      income: [
+        income({
+          grossAmount: M.fromReais(3_000),
+          certainty: "CONFIRMED", // reliable amount...
+          source: "HISTORY_INFERRED", // ...but never user-confirmed.
+          expectedDayOfMonth: 20,
+        }),
       ],
       position,
     });
     const snapshot = buildFinancialSnapshot(input);
-
-    expect(snapshot.liquidity.components.some((c) => c.type === "UPCOMING_COMMITMENTS")).toBe(false);
-    expect(snapshot.liquidity.liquidityAwareSafeToSpend?.cents).toBe(M.fromReais(10_000).cents);
-    // The plan-based total is UNCHANGED — it still treats every fixed
-    // expense as committed regardless of due day (existing, documented
-    // behavior — see FixedExpense.dueDayOfMonth's own doc comment).
-    expect(snapshot.commitments.fixed.cents).toBe(M.fromReais(800).cents);
+    expect(snapshot.liquidity.components.some((c) => c.type === "FUTURE_CONFIRMED_INCOME")).toBe(false);
+    expect(snapshot.liquidity.liquidityAwareSafeToSpend?.cents).toBe(M.fromReais(1_000).cents);
   });
 
   it("(test 4) a sufficiently reliable future salary increases the forward liquidity-aware total", () => {
@@ -574,6 +703,43 @@ describe("buildFinancialSnapshot — liquidity-aware Safe-to-Spend (DEC-130)", (
     expect(snapshot.liquidity.liquidityAwareSafeToSpend?.cents).toBe(M.fromReais(4_500).cents);
   });
 
+  it("(test 5: planned + realized event reconciles once) an ALREADY_PAID event line item is excluded from the liquidity-aware forward total too, never reserved on top of the money already spent", () => {
+    const position: FinancialPosition = {
+      id: createId("financial-position"),
+      financialProfileId: FIXTURE_PROFILE_ID,
+      asOf: "2026-09-15",
+      cashBalance: actual(M.fromReais(5_000)), // already reflects the paid ticket
+      cardOutstandingBalance: unknownAmount(),
+      otherLiabilities: unknownAmount(),
+      reservedBalance: unknownAmount(),
+      automaticallyInvestedBalance: unknownAmount(),
+      source: "pluggy",
+      coverage: "PARTIAL",
+    };
+    const tripEvent: FinancialEvent = {
+      id: createId("financial-event"),
+      label: "Rodeo weekend",
+      startDate: "2026-09-10",
+      endDate: "2026-09-12",
+      lineItems: [
+        // Already happened — must count once, as realized, never reserved again.
+        { id: createId("event-line-item"), label: "Ticket", amount: M.fromReais(400), certainty: "ACTUAL", status: "ALREADY_PAID" },
+        // Still ahead — genuinely a forward reservation.
+        { id: createId("event-line-item"), label: "Transport", amount: M.fromReais(100), certainty: "CONFIRMED", status: "PLANNED" },
+      ],
+    };
+    const input = minimalInput({ asOfDate: "2026-09-15", events: [tripEvent], position });
+    const snapshot = buildFinancialSnapshot(input);
+
+    const eventComponent = snapshot.liquidity.components.find(
+      (c) => c.type === "UPCOMING_EVENT_RESERVATIONS",
+    );
+    // Only the still-forward R$100 transport line reduces liquidity — the
+    // already-paid R$400 ticket is not reserved a second time.
+    expect(eventComponent?.amount.cents).toBe(M.fromReais(-100).cents);
+    expect(snapshot.liquidity.liquidityAwareSafeToSpend?.cents).toBe(M.fromReais(4_900).cents);
+  });
+
   it("(test 9) a card purchase plus its own bill payment on checking never double the actual-spending total, once the CARD_PAYMENT effect is applied", () => {
     const purchase: FinancialTransaction = {
       id: createId("transaction"),
@@ -677,5 +843,110 @@ describe("buildFinancialSnapshot — liquidity-aware Safe-to-Spend (DEC-130)", (
     expect(snapshot.liquidity.basis).toBe("LIQUIDITY_AWARE");
     expect(snapshot.liquidity.recommendedTotal.cents).toBe(M.fromReais(35_033.8).cents);
     expect(M.isPositive(snapshot.liquidity.recommendedTotal)).toBe(true);
+    // "Já comprometido" is exactly the card's outstanding balance — no
+    // declared fixed expenses/events exist for this profile.
+    expect(snapshot.recommendedCommittedTotal.cents).toBe(M.fromReais(961.95).cents);
+  });
+});
+
+describe("buildFinancialSnapshot — 'Já comprometido' canonical figure (DEC-130)", () => {
+  function minimalInput(overrides: Partial<FinancialSnapshotInput> = {}): FinancialSnapshotInput {
+    return {
+      asOfDate: "2026-09-15",
+      income: [],
+      fixedExpenses: [],
+      variableBudgets: [],
+      transactions: [],
+      reconciliationLinks: [],
+      events: [],
+      installmentPlans: [],
+      goal: { id: createId("financial-goal"), label: "No goal set yet", monthlySavingsTarget: M.ZERO },
+      protectedPreferences: [],
+      ...overrides,
+    };
+  }
+
+  it("(test 9) an outstanding credit-card balance alone makes 'Já comprometido' non-zero", () => {
+    const position: FinancialPosition = {
+      id: createId("financial-position"),
+      financialProfileId: FIXTURE_PROFILE_ID,
+      asOf: "2026-09-15",
+      cashBalance: actual(M.fromReais(35_995.75)),
+      cardOutstandingBalance: actual(M.fromReais(961.95)),
+      otherLiabilities: unknownAmount(),
+      reservedBalance: unknownAmount(),
+      automaticallyInvestedBalance: unknownAmount(),
+      source: "pluggy",
+      coverage: "PARTIAL",
+    };
+    const snapshot = buildFinancialSnapshot(minimalInput({ position }));
+    expect(snapshot.recommendedCommittedTotal.cents).toBe(M.fromReais(961.95).cents);
+  });
+
+  it("(test 10) once a card bill is fully paid (provider-reported balance drops to zero), it no longer contributes to 'Já comprometido'", () => {
+    const stillOwing: FinancialPosition = {
+      id: createId("financial-position"),
+      financialProfileId: FIXTURE_PROFILE_ID,
+      asOf: "2026-09-15",
+      cashBalance: actual(M.fromReais(10_000)),
+      cardOutstandingBalance: actual(M.fromReais(961.95)),
+      otherLiabilities: unknownAmount(),
+      reservedBalance: unknownAmount(),
+      automaticallyInvestedBalance: unknownAmount(),
+      source: "pluggy",
+      coverage: "PARTIAL",
+    };
+    const before = buildFinancialSnapshot(minimalInput({ position: stillOwing }));
+    expect(before.recommendedCommittedTotal.cents).toBe(M.fromReais(961.95).cents);
+
+    // The bill gets paid — the PROVIDER's own real-time balance simply
+    // drops to zero (never a separately-tracked "card bill" commitment to
+    // manually clear).
+    const paidOff: FinancialPosition = { ...stillOwing, cardOutstandingBalance: actual(M.ZERO) };
+    const after = buildFinancialSnapshot(minimalInput({ position: paidOff }));
+    expect(after.recommendedCommittedTotal.cents).toBe(0);
+  });
+
+  it("excludes variable budgets, protected savings target, and future income from 'Já comprometido', while still reducing overall Safe-to-Spend", () => {
+    const position: FinancialPosition = {
+      id: createId("financial-position"),
+      financialProfileId: FIXTURE_PROFILE_ID,
+      asOf: "2026-09-15",
+      cashBalance: actual(M.fromReais(10_000)),
+      cardOutstandingBalance: actual(M.fromReais(500)),
+      otherLiabilities: unknownAmount(),
+      reservedBalance: unknownAmount(),
+      automaticallyInvestedBalance: unknownAmount(),
+      source: "pluggy",
+      coverage: "PARTIAL",
+    };
+    const snapshot = buildFinancialSnapshot(
+      minimalInput({
+        variableBudgets: [
+          {
+            id: createId("variable-budget"),
+            label: "Food",
+            category: "Food",
+            targetAmount: M.fromReais(300),
+            certainty: "ACTUAL",
+          },
+        ],
+        goal: { id: createId("financial-goal"), label: "Savings", monthlySavingsTarget: M.fromReais(200) },
+        position,
+      }),
+    );
+    // "Já comprometido" is only the card (500) — neither the variable
+    // budget target (300) nor the protected savings goal (200) count as a
+    // "commitment" by the Founder's own definition.
+    expect(snapshot.recommendedCommittedTotal.cents).toBe(M.fromReais(500).cents);
+    // But the overall Safe-to-Spend total still correctly reflects both.
+    expect(snapshot.liquidity.recommendedTotal.cents).toBe(M.fromReais(9_000).cents); // 10000-500-300-200
+  });
+
+  it("falls back to the unchanged plan-based fixed commitments when there is no reliable liquidity", () => {
+    const snapshot = buildFinancialSnapshot(initialUserSnapshotInput);
+    expect(snapshot.liquidity.basis).toBe("PLAN_BASED");
+    expect(snapshot.recommendedCommittedTotal.cents).toBe(snapshot.commitments.fixed.cents);
+    expect(snapshot.recommendedCommittedTotal.cents).toBe(598_000);
   });
 });

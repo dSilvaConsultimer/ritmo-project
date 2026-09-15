@@ -3968,3 +3968,98 @@ A new additive-only migration (`0010_cheerful_leopardon.sql`) adds nullable colu
   question, not resolved here.
 - Whether "Já comprometido" and other Home figures beyond "Disponível para gastar" should also become
   liquidity-aware — out of scope for this DEC, which only touched the one field the Founder identified.
+
+**Update (2026-09-15) — corrections before push approval:** review of this DEC before authorizing the
+push surfaced several real gaps, all corrected here (still pre-push, still `staging`-only):
+
+1. **Due day is no longer treated as proof of realization.** The original implementation assumed a
+   declared `Income`/`FixedExpense` was "already realized" purely because its day-of-month had passed,
+   and "still pending" purely because it hadn't. Both directions were wrong: an early salary (expected
+   day 20, paid day 15) would have been added a second time; an overdue, never-paid rent (due day 10,
+   still unpaid on day 15) would have been silently dropped as "probably already paid." Replaced with
+   real reconciliation: `snapshot.ts` now matches each declared Income/FixedExpense against real
+   transactions THIS MONTH by amount only (reusing `recurring.ts`'s existing `amountsAreSimilar` 10%
+   tolerance — now exported — never a bespoke threshold, never description matching), month-scoped by
+   construction. A matched item is REALIZED (already in the balance, never added/subtracted again,
+   regardless of which side of its expected day the real transaction fell on). An unmatched item whose
+   day is still ahead is EXPECTED (future income adds; unpaid expense still subtracts). An unmatched
+   item whose day has passed is OVERDUE/UNRESOLVED: for income, conservatively NOT added (never assume
+   it'll still arrive — a warning is logged instead); for expenses, conservatively KEPT as a full
+   obligation (never assume it was paid). `matchAndConsume` removes a matched transaction from its pool
+   so the same real transaction can never realize two different planned items.
+2. **Provenance semantics corrected.** `createIncomeTool`'s `fromRecurringPattern: true` previously set
+   `HISTORY_INFERRED`. Since `createIncome` only ever executes after explicit user confirmation (its own
+   contract, unchanged since DEC-127), confirming a shown pattern IS the `USER_CONFIRMED_HISTORY` state,
+   not the bare unconfirmed inference — corrected. `HISTORY_INFERRED` remains a valid, settable
+   `IncomeSource` (for a hypothetical future path, and directly via `createIncome`/`updateIncome`), but
+   the liquidity-aware forward-income calculation now explicitly EXCLUDES it as a defense-in-depth
+   gate — an Income record left in that state can never become authoritative planned money on its own,
+   regardless of certainty or day-of-month, matching the instruction that history may teach Ritmo but
+   only user confirmation may strengthen it into planned knowledge.
+3. **"Já comprometido" is now a canonical engine figure.** New `LiquidityAwareSafeToSpend.
+   committedForwardTotal` (sum of the CARD_OBLIGATIONS + OTHER_LIABILITIES + UPCOMING_FIXED_COMMITMENTS
+   + UPCOMING_EVENT_RESERVATIONS + DEBT_COMMITMENTS components — explicitly never VARIABLE_BUDGETS, a
+   target rather than a firm obligation, and never PROTECTED_SAVINGS or FUTURE_CONFIRMED_INCOME) and a
+   new `FinancialSnapshot.recommendedCommittedTotal` (this total when liquidity-aware, else the
+   unchanged plan-based `commitments.fixed`). `LiquiditySafeToSpendComponentType`'s `UPCOMING_COMMITMENTS`
+   was split into `UPCOMING_FIXED_COMMITMENTS` and its own `VARIABLE_BUDGETS` entry so the split is
+   possible at all. `home.ts` now reads `snapshot.recommendedCommittedTotal` for "Já comprometido"
+   instead of `commitments.fixed` directly — the same "engine decides, apps/ritmo just reads" pattern as
+   `recommendedTotal`.
+4. **automaticallyInvestedBalance: unchanged decision, strengthened evidence/tests.** Confirmed still
+   correct not to subtract it — it is captured on `FinancialPosition.automaticallyInvestedBalance` for
+   explainability and proven (new tests) to never leak into `cashBalance` even when combined with a
+   `reservedBalance` and a `availableBalance` on the same account. The open product question (same-day
+   liquidity varies by institution) is unchanged and still unresolved by design.
+5. **reservedBalance handling reversed based on real evidence.** The original design preferred
+   `availableBalance` (Pluggy's `closingBalance`) and skipped subtracting `reservedBalance` whenever
+   `availableBalance` was present, assuming the provider's own "available balance" already excluded
+   reservations. Checking the REAL payload for this profile's own connected account disproves that
+   assumption: `balance` and `closingBalance` are IDENTICAL (both 35,995.75) despite
+   `hasReservedBalance: true` and a genuine R$1,000.04 reservation — `closingBalance` here does **not**
+   exclude it. Corrected to the safer rule: `reservedBalance` is now subtracted exactly once from
+   whichever cash figure is used (`availableBalance ?? balance`), unconditionally, every time it's
+   known — erring toward under-stating spendable cash rather than ever silently treating protected
+   money as available. The test fixture `fixtureBankAccountWithReservedBalance`
+   (`packages/open-finance`) was corrected to match the real observed payload (`closingBalance ===
+   balance`) instead of an idealized scenario that happened to validate the old (wrong) code.
+6. **Retroactive CARD_PAYMENT reclassification implemented.** New `reclassifyMisclassifiedCardPayments`
+   (`packages/app-services/src/sync.ts`) — reuses the exact canonical detector
+   (`isCardBillPaymentDescription`, newly exported from `packages/open-finance`, the SAME regex the live
+   mapper uses) against already-persisted transactions' `rawDescription`/`direction`/
+   `paymentSource.type` (the raw Pluggy payload itself is never persisted — see docs/OPEN-FINANCE.md,
+   "raw payload retention policy" — so the original per-transaction classifier cannot be literally
+   re-run; this works from the same domain fields its BANK branch keys off). Idempotent (only rows still
+   `CONSUMPTION` match; a second run reclassifies nothing) and non-destructive (only ever changes
+   `financialEffect`, nothing else). No general-purpose CLI/migration entry point was added — deliberately, per
+   the instruction not to add production migration complexity before it's needed; the function is ready
+   to be invoked (via a short script, exactly as this DEC's own validation did) against staging or
+   production whenever someone with that database's access runs it. **Applied to the local reproduction
+   of `financial-profile_9_mu1xbipy`** (the closest available proxy to "staging test data" this session
+   can reach) as part of validating this DEC: 4 transactions (`PAGAMENTO FATURA CARTAO VISA`, dated
+   2026-05-31 through 2026-08-31) were reclassified from `CONSUMPTION` to `CARD_PAYMENT`. None were in
+   the current month, so this did not change the plan-based `safeToSpend.total` for that profile, but it
+   is the correct, permanent fix for that data and demonstrates the mechanism against real rows, not
+   just fixtures. Neon (staging) itself was not touched — no access exists from this session; the same
+   function needs to be run there by whoever has that access.
+**Corrected result for `financial-profile_9_mu1xbipy`** (real local data, real clock, after
+reclassification, no fabricated values — see the delivery message for the full itemized breakdown):
+`basis: LIQUIDITY_AWARE`, `recommendedTotal` ≈ R$34,977.90, `recommendedCommittedTotal` ≈ R$1,017.85
+(card R$961.95 + a pre-existing unrelated Netflix installment debt commitment R$55.90 — not fabricated
+for this exercise, already present in the profile's real data from an earlier session). Reserved/
+invested balances are NOT yet reflected in this specific profile's stored data (its last sync predates
+this fix) — a fresh sync would populate them going forward; the mechanism itself is proven against the
+real observed payload via fixtures/tests, independent of when this one profile happens to resync.
+**Tests added for this update:** `snapshot.test.ts` (early income realized despite a future day;
+overdue unrealized income excluded with a warning; bill paid early reconciles; overdue unpaid bill
+stays a full obligation; HISTORY_INFERRED income excluded even with reliable certainty; realized event
+line item excluded from the liquidity-aware total; "Já comprometido" tests: card-only, paid-off card no
+longer committed, excludes variable budgets/protected savings/future income, PLAN_BASED fallback);
+`position.test.ts` (reservedBalance subtracted once regardless of availableBalance/closingBalance
+equality — evidence-based; automaticallyInvestedBalance never double-counted alongside
+reservedBalance+availableBalance; reservedBalance correct across multiple accounts;
+`committedForwardTotal` composition); `mappers.test.ts` (fixture corrected to the real payload shape);
+`sync.test.ts` (`reclassifyMisclassifiedCardPayments`: reclassifies the stale case, idempotent on
+rerun, never touches an unrelated description); `mutations.test.ts`/`tools.test.ts` (all three
+provenance states settable; `fromRecurringPattern` maps to `USER_CONFIRMED_HISTORY`, never
+`HISTORY_INFERRED`).

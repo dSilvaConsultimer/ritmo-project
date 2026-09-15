@@ -49,7 +49,14 @@ function daysBetween(isoA: string, isoB: string): number {
   return Math.abs(a - b) / (24 * 60 * 60 * 1000);
 }
 
-function amountsAreSimilar(amounts: readonly Money[]): boolean {
+/**
+ * True when every amount in the list is within `AMOUNT_TOLERANCE_RATIO`
+ * (10%) of the others. Exported (DEC-130) so the Safe-to-Spend
+ * reconciliation logic (`snapshot.ts`) can reuse the SAME tolerance
+ * definition when matching a planned Income/FixedExpense against a real
+ * transaction, rather than inventing a second threshold.
+ */
+export function amountsAreSimilar(amounts: readonly Money[]): boolean {
   const cents = amounts.map((a) => a.cents);
   const min = Math.min(...cents);
   const max = Math.max(...cents);

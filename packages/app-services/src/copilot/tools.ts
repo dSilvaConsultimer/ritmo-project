@@ -360,7 +360,7 @@ const createIncomeSchema = z.object({
   fromRecurringPattern: z
     .boolean()
     .describe(
-      "True when this declaration is confirming a getRecurringIncomeCandidates pattern the user was shown (sets provenance to HISTORY_INFERRED); false/null for a plain user statement made with no candidate involved (USER_DECLARED).",
+      "True when the user is confirming a getRecurringIncomeCandidates pattern Ritmo showed them (sets provenance to USER_CONFIRMED_HISTORY — by the time this tool is ever called, confirmation has already happened, per this tool's own contract); false/null for a plain statement with no candidate involved (USER_DECLARED).",
     )
     .nullable()
     .default(null),
@@ -378,7 +378,11 @@ const createIncomeTool = tool({
       grossAmount: fromReais(args.grossAmountReais),
       ...(args.recurring !== null ? { recurring: args.recurring } : {}),
       ...(args.expectedDayOfMonth !== null ? { expectedDayOfMonth: args.expectedDayOfMonth } : {}),
-      source: args.fromRecurringPattern ? "HISTORY_INFERRED" : "USER_DECLARED",
+      // DEC-130 (corrected): this tool only ever executes after explicit
+      // user confirmation (its own contract, unchanged since DEC-127) — a
+      // confirmed pattern is USER_CONFIRMED_HISTORY, never the bare,
+      // unconfirmed HISTORY_INFERRED state.
+      source: args.fromRecurringPattern ? "USER_CONFIRMED_HISTORY" : "USER_DECLARED",
     }),
 });
 

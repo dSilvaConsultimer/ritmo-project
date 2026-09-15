@@ -29,12 +29,19 @@ export interface FinancialPosition {
   /** ISO date/time this position was known to be accurate as of. */
   readonly asOf: string;
   /**
-   * Usable cash across bank accounts — already fully resolved (DEC-130):
-   * prefers each account's `availableBalance` when the provider reports one
-   * (already excludes holds/reserves at the provider's own discretion), and
-   * falls back to `balance` minus that account's own `reservedBalance` only
-   * when no `availableBalance` exists (so reserved money is never
-   * subtracted twice). See `buildFinancialPositionFromAccounts`.
+   * Usable cash across bank accounts — already fully resolved (DEC-130,
+   * corrected): prefers each account's `availableBalance` over `balance`
+   * when the provider reports one, then ALWAYS subtracts that account's own
+   * `reservedBalance` when known, regardless of which of the two was used.
+   * This is deliberately conservative — real observed Pluggy payloads (see
+   * docs/DECISIONS.md DEC-130's "Update") show `closingBalance` (mapped to
+   * `availableBalance`) sometimes EQUAL to the raw `balance` even while a
+   * reserved balance genuinely exists, meaning it cannot be assumed to
+   * already exclude reserves. Subtracting reserved money exactly once
+   * (never twice, since it only ever appears in this single sum) errs
+   * toward UNDER-stating spendable cash rather than ever silently treating
+   * protected/earmarked money as spendable. See
+   * `buildFinancialPositionFromAccounts`.
    */
   readonly cashBalance: CertainAmount;
   readonly cardOutstandingBalance: CertainAmount;
@@ -103,11 +110,18 @@ export function buildFinancialPositionFromAccounts(
   const bankAccounts = accounts.filter((a) => a.type !== "CREDIT_CARD");
   const cardAccounts = accounts.filter((a) => a.type === "CREDIT_CARD");
 
-  // DEC-130: per bank account, usable cash prefers `availableBalance`
-  // (Pluggy's own "available balance," already excluding holds/reserves)
-  // and falls back to `balance` minus THAT account's own `reservedBalance`
-  // only when no `availableBalance` was reported — this is the one place
-  // reserved money is ever subtracted, so it can never happen twice.
+  // DEC-130 (corrected): per bank account, usable cash prefers
+  // `availableBalance` over the raw `balance`, then ALWAYS subtracts that
+  // account's own `reservedBalance` when known — never conditionally
+  // skipped. A real observed Pluggy payload showed `closingBalance`
+  // (-> `availableBalance`) identical to `balance` even with an active
+  // reserved balance, so `availableBalance` cannot be trusted to already
+  // exclude it. Reserved money is only ever added into `reservedTotal`
+  // once per account and only ever subtracted from `cashTotal` once, in
+  // this exact spot — it can never be double-subtracted regardless of
+  // which balance field was preferred. `automaticallyInvestedBalance` is
+  // tracked separately for explainability but never enters `cashTotal` at
+  // all (see the field's own doc comment on `PaymentSource`).
   let cashTotal = M.ZERO;
   let cashAnyKnown = false;
   let cashAnyUnknown = false;
@@ -121,12 +135,10 @@ export function buildFinancialPositionFromAccounts(
     const raw = knownAmountOrNull(a.balance);
     const reserved = knownAmountOrNull(a.reservedBalance);
     const invested = knownAmountOrNull(a.automaticallyInvestedBalance);
+    const preferredCash = available ?? raw;
 
-    if (available !== null) {
-      cashTotal = M.add(cashTotal, available);
-      cashAnyKnown = true;
-    } else if (raw !== null) {
-      cashTotal = M.add(cashTotal, reserved !== null ? M.subtract(raw, reserved) : raw);
+    if (preferredCash !== null) {
+      cashTotal = M.add(cashTotal, reserved !== null ? M.subtract(preferredCash, reserved) : preferredCash);
       cashAnyKnown = true;
     } else {
       cashAnyUnknown = true;
@@ -210,11 +222,29 @@ export type LiquiditySafeToSpendComponentType =
   | "CURRENT_AVAILABLE_CASH"
   | "CARD_OBLIGATIONS"
   | "OTHER_LIABILITIES"
-  | "UPCOMING_COMMITMENTS"
+  | "UPCOMING_FIXED_COMMITMENTS"
+  | "VARIABLE_BUDGETS"
   | "UPCOMING_EVENT_RESERVATIONS"
   | "DEBT_COMMITMENTS"
   | "FUTURE_CONFIRMED_INCOME"
   | "PROTECTED_SAVINGS";
+
+/**
+ * DEC-130: component types that make up "Já comprometido" — current money
+ * already expected to be consumed by known forward obligations. Explicitly
+ * excludes `VARIABLE_BUDGETS` (a target/plan figure, not a firm obligation
+ * — see the Founder's own definition) and `PROTECTED_SAVINGS` (kept
+ * separate from "committed" by product decision — it is reserved, not
+ * consumed by an external obligation) and `FUTURE_CONFIRMED_INCOME`
+ * (income, never a commitment).
+ */
+const COMMITTED_COMPONENT_TYPES: ReadonlySet<LiquiditySafeToSpendComponentType> = new Set([
+  "CARD_OBLIGATIONS",
+  "OTHER_LIABILITIES",
+  "UPCOMING_FIXED_COMMITMENTS",
+  "UPCOMING_EVENT_RESERVATIONS",
+  "DEBT_COMMITMENTS",
+]);
 
 /**
  * One line of the liquidity-aware audit trail — same signed-amount
@@ -240,13 +270,22 @@ export interface LiquiditySafeToSpendComponent {
  * balance.
  */
 export interface LiquidityForwardAdjustments {
-  /** Declared fixed/variable commitments not yet due this cycle (`dueDayOfMonth` still ahead of today, or unknown timing). */
-  readonly upcomingCommitments: Money;
+  /**
+   * Declared fixed expenses NOT reconciled against a matching real
+   * transaction this month (see `snapshot.ts`'s reconciliation pass) — this
+   * is the DEC-130-corrected replacement for a due-day-only heuristic: a
+   * bill paid early still reconciles and drops out here, and an overdue,
+   * unmatched bill stays counted regardless of how far past its due day it
+   * is (never silently assumed paid).
+   */
+  readonly upcomingFixedCommitments: Money;
+  /** Variable budget targets (e.g. food) — a plan figure, not a firm obligation; excluded from "Já comprometido" but still reduces liquidity-aware Safe-to-Spend. */
+  readonly variableBudgets: Money;
   /** Future (not-yet-paid) event line items — CONFIRMED/ESTIMATED — whose event falls within the current planning horizon only. */
   readonly upcomingEventReservations: Money;
   /** This period's not-yet-paid installment/debt obligation. */
   readonly debtCommitments: Money;
-  /** Reliable future income expected before period end, not yet received (see `Income.expectedDayOfMonth`). */
+  /** Reliable, NOT-YET-REALIZED future income expected before period end — reconciled against real transactions first (see `snapshot.ts`), never merely because `expectedDayOfMonth` hasn't passed. */
   readonly futureIncome: Money;
   /** The monthly protected-savings goal — never spendable, liquidity-aware or not. */
   readonly protectedSavings: Money;
@@ -271,12 +310,23 @@ export interface LiquidityAwareSafeToSpend {
    * its own "which one do I show" logic.
    */
   readonly recommendedTotal: Money;
+  /**
+   * DEC-130: "Já comprometido" — current money already expected to be
+   * consumed by known forward obligations (card, unpaid fixed expenses,
+   * this-month event reservations, debt/installments, other liabilities).
+   * `null` only when `basis` is `PLAN_BASED` — Home falls back to
+   * `FinancialSnapshot.commitments.fixed` in that case (see `snapshot.ts`'s
+   * `recommendedCommittedTotal`, the one field any single-figure consumer
+   * should actually read).
+   */
+  readonly committedForwardTotal: Money | null;
   readonly confidence: LiquidityConfidence;
   readonly warnings: readonly string[];
 }
 
 const ZERO_ADJUSTMENTS: LiquidityForwardAdjustments = {
-  upcomingCommitments: M.ZERO,
+  upcomingFixedCommitments: M.ZERO,
+  variableBudgets: M.ZERO,
   upcomingEventReservations: M.ZERO,
   debtCommitments: M.ZERO,
   futureIncome: M.ZERO,
@@ -313,6 +363,7 @@ export function computeLiquidityAwareSafeToSpend(
       liquidityAwareSafeToSpend: null,
       components: [],
       recommendedTotal: planSafeToSpend,
+      committedForwardTotal: null,
       confidence: "UNKNOWN",
       warnings: [
         "Real-time liquidity is unknown — Safe-to-Spend reflects the monthly plan only, not actual cash on hand.",
@@ -364,11 +415,18 @@ export function computeLiquidityAwareSafeToSpend(
     );
   }
 
-  if (M.isPositive(forward.upcomingCommitments)) {
+  if (M.isPositive(forward.upcomingFixedCommitments)) {
     components.push({
       label: "Upcoming commitments",
-      type: "UPCOMING_COMMITMENTS",
-      amount: M.negate(forward.upcomingCommitments),
+      type: "UPCOMING_FIXED_COMMITMENTS",
+      amount: M.negate(forward.upcomingFixedCommitments),
+    });
+  }
+  if (M.isPositive(forward.variableBudgets)) {
+    components.push({
+      label: "Variable budgets",
+      type: "VARIABLE_BUDGETS",
+      amount: M.negate(forward.variableBudgets),
     });
   }
   if (M.isPositive(forward.upcomingEventReservations)) {
@@ -401,6 +459,13 @@ export function computeLiquidityAwareSafeToSpend(
   }
 
   const liquidityAwareSafeToSpend = M.sum(components.map((c) => c.amount));
+  // "Já comprometido": the absolute value of every component that
+  // represents a real forward-consuming obligation — never variable
+  // budgets (a target, not a firm commitment) or protected savings (kept
+  // separate by product decision) or future income (not an obligation).
+  const committedForwardTotal = M.sum(
+    components.filter((c) => COMMITTED_COMPONENT_TYPES.has(c.type)).map((c) => M.abs(c.amount)),
+  );
 
   return {
     basis: "LIQUIDITY_AWARE",
@@ -408,6 +473,7 @@ export function computeLiquidityAwareSafeToSpend(
     liquidityAwareSafeToSpend,
     components,
     recommendedTotal: liquidityAwareSafeToSpend,
+    committedForwardTotal,
     confidence,
     warnings,
   };
