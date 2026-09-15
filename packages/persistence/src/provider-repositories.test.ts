@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
+import { eq, sql } from "drizzle-orm";
 import { createId, type Id } from "@money-copilot/shared";
 import type { ProviderConnection, SyncRun, CreditCardBill } from "@money-copilot/financial-engine";
 import { EMPTY_SYNC_RUN_METRICS, fromCents } from "@money-copilot/financial-engine";
 import { createDatabase } from "./db";
 import { runMigrations } from "./migrate";
 import * as repo from "./repositories";
+import * as schema from "./schema";
+import * as mappers from "./mappers";
 
 async function freshDb() {
   const db = await createDatabase();
@@ -132,6 +135,90 @@ describe("bills", () => {
     const bills = await repo.listBillsForPaymentSource(db, paymentSourceId);
     expect(bills).toHaveLength(1);
     expect(bills[0]?.totalAmount.cents).toBe(85_000);
+  });
+});
+
+describe("PaymentSource — reserved/available/invested balance round-trip (DEC-130)", () => {
+  it("persists and reads back availableBalance, reservedBalance, and automaticallyInvestedBalance independently", async () => {
+    const db = await freshDb();
+    const profileId = await seedProfile(db);
+    const paymentSourceId = createId("payment-source");
+    await repo.upsertPaymentSource(
+      db,
+      {
+        id: paymentSourceId,
+        label: "Conta Corrente",
+        type: "DEBIT",
+        balance: { certainty: "ACTUAL", amount: fromCents(3_599_575) },
+        availableBalance: { certainty: "ACTUAL", amount: fromCents(3_499_571) },
+        reservedBalance: { certainty: "ACTUAL", amount: fromCents(100_004) },
+        automaticallyInvestedBalance: { certainty: "ACTUAL", amount: fromCents(359_957) },
+      },
+      profileId,
+    );
+
+    const [source] = await repo.listPaymentSourcesForProfile(db, profileId);
+    expect(source?.balance?.amount?.cents).toBe(3_599_575);
+    expect(source?.availableBalance?.amount?.cents).toBe(3_499_571);
+    expect(source?.reservedBalance?.amount?.cents).toBe(100_004);
+    expect(source?.automaticallyInvestedBalance?.amount?.cents).toBe(359_957);
+  });
+
+  it("leaves the new fields entirely absent (not zero) when never set", async () => {
+    const db = await freshDb();
+    const profileId = await seedProfile(db);
+    const paymentSourceId = createId("payment-source");
+    await repo.upsertPaymentSource(
+      db,
+      { id: paymentSourceId, label: "Card", type: "CREDIT_CARD", balance: { certainty: "ACTUAL", amount: fromCents(85_000) } },
+      profileId,
+    );
+
+    const [source] = await repo.listPaymentSourcesForProfile(db, profileId);
+    expect(source?.availableBalance).toBeUndefined();
+    expect(source?.reservedBalance).toBeUndefined();
+    expect(source?.automaticallyInvestedBalance).toBeUndefined();
+  });
+});
+
+describe("Income — provenance round-trip (DEC-130)", () => {
+  it("persists and reads back source and expectedDayOfMonth", async () => {
+    const db = await freshDb();
+    const profileId = await seedProfile(db);
+    const incomeId = createId("income");
+    await repo.upsertIncome(
+      db,
+      {
+        id: incomeId,
+        label: "Salário",
+        grossAmount: fromCents(850_000),
+        certainty: "CONFIRMED",
+        recurring: true,
+        source: "USER_CONFIRMED_HISTORY",
+        expectedDayOfMonth: 5,
+      },
+      profileId,
+    );
+
+    const [row] = await db.select().from(schema.incomes).where(eq(schema.incomes.id, incomeId));
+    const income = mappers.rowToIncome(row!);
+    expect(income.source).toBe("USER_CONFIRMED_HISTORY");
+    expect(income.expectedDayOfMonth).toBe(5);
+  });
+
+  it("defaults a legacy row with no source to USER_DECLARED, never leaving it ambiguous", async () => {
+    const db = await freshDb();
+    const profileId = await seedProfile(db);
+    // Simulates a pre-DEC-130 row: insert without ever setting `source`.
+    await db.execute(
+      sql`insert into incomes (id, financial_profile_id, label, gross_amount_cents, certainty, recurring)
+          values ('income-legacy-1', ${profileId}, 'Legacy income', 500000, 'CONFIRMED', true)`,
+    );
+
+    const [row] = await db.select().from(schema.incomes).where(eq(schema.incomes.id, "income-legacy-1"));
+    const income = mappers.rowToIncome(row!);
+    expect(income.source).toBe("USER_DECLARED");
+    expect(income.expectedDayOfMonth).toBeUndefined();
   });
 });
 

@@ -34,6 +34,7 @@ export const pjRevenue: Income = {
   grossAmount: M.fromReais(15_000),
   certainty: "CONFIRMED",
   recurring: true,
+  source: "USER_DECLARED",
 };
 
 const taxes: FixedExpense = {

@@ -62,6 +62,9 @@ export function paymentSourceToRow(
     currency: p.currency ?? null,
     balanceCertainty: p.balance?.certainty ?? null,
     balanceCents: p.balance?.amount?.cents ?? null,
+    availableBalanceCents: p.availableBalance?.amount?.cents ?? null,
+    reservedBalanceCents: p.reservedBalance?.amount?.cents ?? null,
+    automaticallyInvestedBalanceCents: p.automaticallyInvestedBalance?.amount?.cents ?? null,
     creditLimitCents: p.creditCard?.creditLimit?.cents ?? null,
     availableCreditLimitCents: p.creditCard?.availableCreditLimit?.cents ?? null,
     creditClosingDate: p.creditCard?.closingDate ?? null,
@@ -96,6 +99,20 @@ export function rowToPaymentSource(row: PaymentSourceRow): PaymentSource {
           },
         }
       : {}),
+    ...(row.balanceCertainty && row.availableBalanceCents !== null
+      ? { availableBalance: { certainty: row.balanceCertainty, amount: M.fromCents(row.availableBalanceCents) } }
+      : {}),
+    ...(row.balanceCertainty && row.reservedBalanceCents !== null
+      ? { reservedBalance: { certainty: row.balanceCertainty, amount: M.fromCents(row.reservedBalanceCents) } }
+      : {}),
+    ...(row.balanceCertainty && row.automaticallyInvestedBalanceCents !== null
+      ? {
+          automaticallyInvestedBalance: {
+            certainty: row.balanceCertainty,
+            amount: M.fromCents(row.automaticallyInvestedBalanceCents),
+          },
+        }
+      : {}),
     ...(hasCreditCardInfo
       ? {
           creditCard: {
@@ -126,6 +143,8 @@ export function incomeToRow(i: Income, financialProfileId: string): typeof schem
     grossAmountCents: i.grossAmount.cents,
     certainty: i.certainty,
     recurring: i.recurring,
+    source: i.source,
+    expectedDayOfMonth: i.expectedDayOfMonth ?? null,
   };
 }
 
@@ -136,6 +155,10 @@ export function rowToIncome(row: IncomeRow): Income {
     grossAmount: M.fromCents(row.grossAmountCents),
     certainty: row.certainty,
     recurring: row.recurring,
+    // DEC-130: a row from before this field existed predates provenance
+    // tracking but was, in fact, always a direct user statement.
+    source: row.source ?? "USER_DECLARED",
+    ...(row.expectedDayOfMonth !== null ? { expectedDayOfMonth: row.expectedDayOfMonth } : {}),
   };
 }
 
@@ -479,6 +502,10 @@ export function positionToRow(p: FinancialPosition): typeof schema.financialPosi
     cardOutstandingCents: p.cardOutstandingBalance.amount?.cents ?? null,
     otherLiabilitiesCertainty: p.otherLiabilities.certainty,
     otherLiabilitiesCents: p.otherLiabilities.amount?.cents ?? null,
+    reservedBalanceCertainty: p.reservedBalance.certainty,
+    reservedBalanceCents: p.reservedBalance.amount?.cents ?? null,
+    automaticallyInvestedBalanceCertainty: p.automaticallyInvestedBalance.certainty,
+    automaticallyInvestedBalanceCents: p.automaticallyInvestedBalance.amount?.cents ?? null,
     source: p.source,
     coverage: p.coverage,
   };
@@ -500,6 +527,17 @@ export function rowToPosition(row: PositionRow): FinancialPosition {
     otherLiabilities: {
       certainty: row.otherLiabilitiesCertainty,
       amount: row.otherLiabilitiesCents === null ? null : M.fromCents(row.otherLiabilitiesCents),
+    },
+    reservedBalance: {
+      certainty: row.reservedBalanceCertainty ?? "UNKNOWN",
+      amount: row.reservedBalanceCents === null ? null : M.fromCents(row.reservedBalanceCents),
+    },
+    automaticallyInvestedBalance: {
+      certainty: row.automaticallyInvestedBalanceCertainty ?? "UNKNOWN",
+      amount:
+        row.automaticallyInvestedBalanceCents === null
+          ? null
+          : M.fromCents(row.automaticallyInvestedBalanceCents),
     },
     source: row.source,
     coverage: row.coverage,

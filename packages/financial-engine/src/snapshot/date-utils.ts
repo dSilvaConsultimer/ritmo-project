@@ -20,3 +20,8 @@ export function daysRemainingInMonth(isoDate: string): number {
 export function isSameMonth(isoDate: string, referenceIsoDate: string): boolean {
   return isoDate.slice(0, 7) === referenceIsoDate.slice(0, 7);
 }
+
+/** The calendar day-of-month (1-31) of `isoDate` — display/comparison only, never a full date. */
+export function dayOfMonth(isoDate: string): number {
+  return parseIsoDate(isoDate).getUTCDate();
+}

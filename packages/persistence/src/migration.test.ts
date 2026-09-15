@@ -86,7 +86,20 @@ describe("migrations — Sprint 2 -> Sprint 3 forward migration", () => {
     await expect(migrate(db, { migrationsFolder: sprint3Folder })).resolves.not.toThrow();
 
     // 4. The Sprint 2 data survived, and the new Sprint 3 columns are usable.
-    const [paymentSource] = await db.select().from(schema.paymentSources);
+    // Selects only the columns that existed as of THIS migration boundary
+    // (not the full, ever-growing `schema.paymentSources`) — later
+    // migrations (e.g. DEC-130's reserved/available/invested balance
+    // columns) add more columns to this same table, which would otherwise
+    // make this SELECT reference columns that don't exist yet at this
+    // specific, deliberately-partial migration count.
+    const [paymentSource] = await db
+      .select({
+        id: schema.paymentSources.id,
+        label: schema.paymentSources.label,
+        subtype: schema.paymentSources.subtype,
+        provider: schema.paymentSources.provider,
+      })
+      .from(schema.paymentSources);
     expect(paymentSource?.id).toBe("ps-1");
     expect(paymentSource?.label).toBe("Nubank");
     expect(paymentSource?.subtype).toBeNull(); // new column, defaults to null for pre-existing rows
@@ -94,7 +107,9 @@ describe("migrations — Sprint 2 -> Sprint 3 forward migration", () => {
     await db.execute(
       sql`update payment_sources set subtype = 'CREDIT_CARD', provider = 'pluggy' where id = 'ps-1'`,
     );
-    const [updated] = await db.select().from(schema.paymentSources);
+    const [updated] = await db
+      .select({ provider: schema.paymentSources.provider })
+      .from(schema.paymentSources);
     expect(updated?.provider).toBe("pluggy");
 
     // The brand new Sprint 3 tables are present and queryable too.

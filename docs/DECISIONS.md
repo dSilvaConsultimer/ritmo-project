@@ -3851,3 +3851,120 @@ equivalent) — verified instead by direct inspection of `_protected.tsx`'s posi
 layout in the route tree, plus the `useRef` guard protecting against React 18 Strict Mode's dev-only
 double-invoke. All work is on the `staging` branch only, per the Founder's explicit instruction — `main`
 was not touched.
+
+---
+
+### DEC-130
+
+**Date:** 2026-09-15
+**Context:** Diagnosis (see the prior investigation, same day) found Home's "Disponível para gastar"
+showing -R$788.20 for `financial-profile_9_mu1xbipy` despite real, healthy liquidity (checking
+R$35,995.75, card owed R$961.95, salary R$8,500 already received this month) — because Home read
+`snapshot.safeToSpend.total`, the DECLARED-PLAN Safe-to-Spend (`usable income − commitments −
+actualSpending`), which is deeply negative whenever the `incomes` table is empty, regardless of real
+liquidity. `snapshot.liquidity.liquidityAwareSafeToSpend` already existed but computed
+`min(planSafeToSpend, availableLiquidity)` — a healthy liquidity figure was still capped by the broken
+plan number, reproducing the exact same -R$788.20.
+**Decision:**
+1. **Home Safe-to-Spend now starts from current liquidity, not the declared plan, when reliable
+   liquidity exists.** `computeLiquidityAwareSafeToSpend` (`packages/financial-engine/src/domain/
+   position.ts`) is rewritten: no more `min(plan, liquidity)`; the liquidity-based total is now
+   `currentAvailableCash − cardObligations − otherLiabilities − upcomingCommitments −
+   upcomingEventReservations − debtCommitments − protectedSavings + futureIncome`, computed and
+   returned directly. A new `basis: "LIQUIDITY_AWARE" | "PLAN_BASED"` field records which one is
+   authoritative (`PLAN_BASED` only when the cash balance itself is unknown — the pre-existing
+   fallback, unchanged in spirit). A new `recommendedTotal` field is the ONE number any single-figure
+   consumer (Home) should read — the selection logic lives in the engine, never duplicated in
+   `apps/ritmo`. The declared-plan `safeToSpend.total`/`safeToSpendBreakdown` formula in `snapshot.ts`
+   is **completely unchanged** — still computed, still returned, just no longer capping a healthy
+   liquidity figure.
+2. **No double counting, by construction, not by reconciliation.** The liquidity-aware total never
+   reads real transactions directly — `position.cashBalance`/`cardOutstandingBalance` already net
+   every past-realized movement (income received, money spent, a card bill already paid) by
+   definition of what a bank balance IS. Concretely:
+   - Realized income/spending already happened → already in the balance → never re-added/re-subtracted.
+   - A card purchase not yet reflected in checking → represented once, via the card's own
+     `cardOutstandingBalance` (subtracted once) — never also subtracted as a future "card payment event."
+   - A `FixedExpense` with a `dueDayOfMonth` already passed this month is presumed already paid (already
+     in the balance) and excluded from "upcoming commitments" — `dueDayOfMonth`'s own doc comment is
+     updated to note this NEW liquidity-only usage; the plan-based formula's treatment (always committed,
+     regardless of due day) is explicitly unchanged.
+   - A declared `Income.expectedDayOfMonth` already passed this month is presumed already received
+     (already in the balance) and excluded from "future income"; only a day still ahead of `asOfDate`,
+     with CONFIRMED/ACTUAL certainty, counts forward.
+   - A `FinancialEvent` reservation only reduces the liquidity-aware total when its `startDate` falls
+     within the CURRENT calendar month (`isSameMonth`) — the broader declared-plan total still reserves
+     for every known future event regardless of timing (a genuinely different, intentionally broader
+     question: "financial plan" vs. "safe to spend today").
+3. **Planned income now has explicit provenance.** `Income` (`packages/financial-engine/src/domain/
+   income.ts`) gains `source: "USER_DECLARED" | "HISTORY_INFERRED" | "USER_CONFIRMED_HISTORY"`
+   (required; defaults to `USER_DECLARED` for any pre-existing/legacy row, since every `Income` before
+   this DEC was, in fact, a direct user statement — `createIncome` has always required explicit
+   confirmation, DEC-127) and an optional `expectedDayOfMonth` (mirrors `FixedExpense.dueDayOfMonth`
+   exactly). `createIncomeTool` (copilot) gained a `fromRecurringPattern` boolean: `true` sets
+   `HISTORY_INFERRED` (confirming a `getRecurringIncomeCandidates` result), omitted/`false` sets
+   `USER_DECLARED` (a plain statement). `USER_CONFIRMED_HISTORY` is reachable only via `updateIncome`
+   with an explicit `source` — no code path ever assigns it automatically. **Nothing was added that
+   lets a learned pattern silently overwrite a declared `Income`** — `updateIncome` already only ever
+   changes fields a caller explicitly supplies (Sprint 9 DEC-127 behavior, unchanged); a conflicting
+   history observation is surfaced as a new/updated `RecurringExpenseCandidate` for a human to act on,
+   never an automatic mutation. `detectRecurringCandidates`'s existing `MIN_OCCURRENCES = 2` gate
+   (Sprint 9) already prevents one isolated transaction from ever becoming a candidate at all, before
+   provenance is even relevant.
+4. **`reservedBalances`/`automaticallyInvestedBalance` are now modeled, with a resolved and an
+   unresolved half.** Pluggy's SDK types (`node_modules/pluggy-sdk`) document `bankData.closingBalance`
+   as the account's "available balance" (distinct from `balance`'s "current balance") — this is the
+   provider's own already-computed spendable figure, and is read into a new `PaymentSource.
+   availableBalance` field, preferred over `balance` wherever usable liquidity is computed
+   (`buildFinancialPositionFromAccounts`). `bankData.reservedBalances` (e.g. a goal-based "Caixinha")
+   is summed into a new `PaymentSource.reservedBalance` field and subtracted from usable cash **only
+   when `availableBalance` is absent** (i.e. we fell back to the raw `balance`, which cannot be assumed
+   to already exclude it) — this is the one and only place reserved money is ever subtracted, so it can
+   never happen twice regardless of how many accounts or how they're shaped.
+   `bankData.automaticallyInvestedBalance` is captured into a new `PaymentSource.
+   automaticallyInvestedBalance` field for explainability but **deliberately NOT subtracted anywhere** —
+   whether this money is same-day spendable varies by institution, and guessing wrong in either
+   direction (subtracting money that's actually available, or not subtracting money that isn't) is a
+   real product risk neither the investigation nor this DEC has enough information to resolve safely.
+   Left as an explicit, documented open decision (see "Remaining ambiguity" below), not silently
+   assumed either way.
+5. **Fixed the confirmed Pluggy classification bug.** `classifyFinancialEffect`
+   (`packages/open-finance/src/pluggy/mappers.ts`) checked `CARD_PAYMENT_KEYWORDS` only on the
+   CREDIT_CARD-account side; a checking-account DEBIT paying a card bill (e.g. real-world
+   `"PAGAMENTO FATURA CARTAO VISA"`) fell through to the generic `CONSUMPTION` default on the BANK
+   side. Fixed by applying the SAME existing regex (never a single literal string) to the BANK branch
+   too. This is forward-looking only — an already-imported transaction with the old, wrong
+   classification is not retroactively corrected by this change; see "Remaining ambiguity."
+**Rationale:** "How much can I safely spend from now until period end" is fundamentally a question
+about current liquidity plus known forward changes — not a question the declared/expected income table
+can answer when nothing has been declared yet, however healthy the user's real accounts are. Deriving
+the liquidity-aware total entirely from already-net balances (rather than re-deriving it from
+transactions) is what makes the "no double counting" guarantee structural rather than something that
+has to be maintained by careful reconciliation logic scattered across the codebase.
+**Status:** Accepted.
+**Consequences:** New/updated tests: `position.test.ts` (basis selection, no more min() capping,
+available/reserved/invested balance precedence, exactly-once card deduction, explainability
+reconciliation); `snapshot.test.ts` (12 scenarios: positive liquidity with zero declared income;
+already-received salary and already-paid expense not double counted; reliable vs. unreliable future
+income; event horizon scoping; card purchase + bill payment; PLAN_BASED fallback; the full
+`financial-profile_9_mu1xbipy`-shaped regression); `mappers.test.ts` (reserved/available/invested
+balance mapping; the BANK-side CARD_PAYMENT regression); `provider-repositories.test.ts` (persistence
+round-trips, including a simulated legacy Income row defaulting to `USER_DECLARED`); `mutations.test.ts`
+/`tools.test.ts` (provenance defaults, explicit source, conflicting-history-never-silently-overwrites).
+A new additive-only migration (`0010_cheerful_leopardon.sql`) adds nullable columns to
+`payment_sources`, `financial_positions`, and `incomes` — no existing column changed or dropped.
+`home.ts` now reads `snapshot.liquidity.recommendedTotal`/`.basis` instead of
+`snapshot.safeToSpend.total`; no new Safe-to-Spend math was added inside `apps/ritmo`.
+**Remaining ambiguity requiring product/business input:**
+- Whether `automaticallyInvestedBalance` should ever reduce usable liquidity (or under what
+  institution-specific conditions) — deliberately left unresolved rather than guessed.
+- Whether already-imported transactions with the pre-fix `CARD_PAYMENT` misclassification (any
+  environment's existing data, imported before this DEC) should be backfilled/reclassified — no
+  backfill was implemented; only new imports are affected by the fix.
+- The exact conversational rule for when the copilot should offer `USER_CONFIRMED_HISTORY` (vs. leaving
+  a `HISTORY_INFERRED` Income as-is, or surfacing a fresh candidate) when a learned pattern reinforces
+  or conflicts with a declared Income — the domain/mutation layer supports all three provenance states
+  correctly, but the conversational trigger logic for transitioning between them is a product design
+  question, not resolved here.
+- Whether "Já comprometido" and other Home figures beyond "Disponível para gastar" should also become
+  liquidity-aware — out of scope for this DEC, which only touched the one field the Founder identified.

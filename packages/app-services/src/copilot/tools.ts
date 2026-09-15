@@ -347,6 +347,23 @@ const createIncomeSchema = z.object({
     .describe("Whether this recurs monthly. True unless the user says otherwise.")
     .nullable()
     .default(null),
+  expectedDayOfMonth: z
+    .number()
+    .int()
+    .min(1)
+    .max(31)
+    .describe(
+      "Day of month this income is typically received, only if the user stated one. Null otherwise — never guess. Used to tell an already-received month's occurrence apart from one still expected (DEC-130).",
+    )
+    .nullable()
+    .default(null),
+  fromRecurringPattern: z
+    .boolean()
+    .describe(
+      "True when this declaration is confirming a getRecurringIncomeCandidates pattern the user was shown (sets provenance to HISTORY_INFERRED); false/null for a plain user statement made with no candidate involved (USER_DECLARED).",
+    )
+    .nullable()
+    .default(null),
 });
 
 const createIncomeTool = tool({
@@ -360,6 +377,8 @@ const createIncomeTool = tool({
       label: args.label,
       grossAmount: fromReais(args.grossAmountReais),
       ...(args.recurring !== null ? { recurring: args.recurring } : {}),
+      ...(args.expectedDayOfMonth !== null ? { expectedDayOfMonth: args.expectedDayOfMonth } : {}),
+      source: args.fromRecurringPattern ? "HISTORY_INFERRED" : "USER_DECLARED",
     }),
 });
 

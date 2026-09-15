@@ -5,6 +5,7 @@ import type {
   Certainty,
   EventLineItemStatus,
   FinancialEffect,
+  IncomeSource,
   InstallmentPlanStatus,
   LifestyleScenarioType,
   LiquidityCoverage,
@@ -108,6 +109,13 @@ export const paymentSources = pgTable("payment_sources", {
   currency: text("currency"),
   balanceCertainty: text("balance_certainty").$type<Certainty>(),
   balanceCents: integer("balance_cents"),
+  // DEC-130: reserved/available/invested balances — see PaymentSource's own
+  // doc comments in packages/financial-engine for exact semantics. All
+  // three share `balanceCertainty` (always known together, from the same
+  // sync moment) rather than each needing its own certainty column.
+  availableBalanceCents: integer("available_balance_cents"),
+  reservedBalanceCents: integer("reserved_balance_cents"),
+  automaticallyInvestedBalanceCents: integer("automatically_invested_balance_cents"),
   creditLimitCents: integer("credit_limit_cents"),
   availableCreditLimitCents: integer("available_credit_limit_cents"),
   creditClosingDate: text("credit_closing_date"),
@@ -125,6 +133,12 @@ export const incomes = pgTable("incomes", {
   grossAmountCents: integer("gross_amount_cents").notNull(),
   certainty: text("certainty").$type<Certainty>().notNull(),
   recurring: boolean("recurring").notNull(),
+  // DEC-130: nullable at the DB level (existing rows predate this field) —
+  // `rowToIncome` defaults a null `source` to `"USER_DECLARED"`, since every
+  // Income before DEC-130 was, in fact, entered as a direct user statement
+  // (createIncome always required explicit confirmation — see DEC-127).
+  source: text("source").$type<IncomeSource>(),
+  expectedDayOfMonth: integer("expected_day_of_month"),
 });
 
 export const fixedExpenses = pgTable("fixed_expenses", {
@@ -359,6 +373,11 @@ export const financialPositions = pgTable("financial_positions", {
   cardOutstandingCents: integer("card_outstanding_cents"),
   otherLiabilitiesCertainty: text("other_liabilities_certainty").$type<Certainty>().notNull(),
   otherLiabilitiesCents: integer("other_liabilities_cents"),
+  // DEC-130.
+  reservedBalanceCertainty: text("reserved_balance_certainty").$type<Certainty>(),
+  reservedBalanceCents: integer("reserved_balance_cents"),
+  automaticallyInvestedBalanceCertainty: text("automatically_invested_balance_certainty").$type<Certainty>(),
+  automaticallyInvestedBalanceCents: integer("automatically_invested_balance_cents"),
   source: text("source").notNull(),
   coverage: text("coverage").$type<LiquidityCoverage>().notNull(),
 });

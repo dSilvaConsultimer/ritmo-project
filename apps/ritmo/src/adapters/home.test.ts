@@ -18,6 +18,7 @@ function baseData(overrides: Partial<HomeData> = {}): HomeData {
     displayName: "Douglas",
     asOfDate: "2026-09-05",
     safeToSpendCents: 217_111,
+    safeToSpendBasis: "PLAN_BASED",
     daysRemainingInMonth: 26,
     incomeCents: 1_500_000,
     committedCents: 598_000,

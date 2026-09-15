@@ -14,7 +14,7 @@ import { summarizeFutureInstallmentCommitments, type FutureCommitmentSummary } f
 import { excludedTransactionIds, type ReconciliationLink } from "../domain/reconciliation";
 import type { FinancialPosition } from "../domain/position";
 import { computeLiquidityAwareSafeToSpend, type LiquidityAwareSafeToSpend } from "../domain/position";
-import { daysRemainingInMonth, isSameMonth } from "./date-utils";
+import { daysRemainingInMonth, isSameMonth, dayOfMonth } from "./date-utils";
 
 export interface FinancialSnapshotInput {
   readonly asOfDate: string;
@@ -118,6 +118,7 @@ export function buildFinancialSnapshot(input: FinancialSnapshotInput): Financial
   const warnings: string[] = [];
   let hasEstimated = false;
   let hasUnknown = false;
+  const currentDayOfMonth = dayOfMonth(input.asOfDate);
 
   // --- Income ---
   const gross = M.sum(input.income.map((i) => i.grossAmount));
@@ -130,6 +131,25 @@ export function buildFinancialSnapshot(input: FinancialSnapshotInput): Financial
     if (incomeItem.certainty === "ESTIMATED") hasEstimated = true;
     if (incomeItem.certainty === "UNKNOWN") hasUnknown = true;
   }
+
+  // DEC-130: future planned income for the liquidity-aware forward total —
+  // only a declared Income whose `expectedDayOfMonth` is STILL AHEAD of
+  // today (this month's occurrence has not happened yet, so it cannot
+  // already be reflected in the current balance) and whose certainty is
+  // reliable (CONFIRMED/ACTUAL — never ESTIMATED/UNKNOWN) counts. An
+  // Income with no `expectedDayOfMonth` at all (timing genuinely unknown)
+  // never contributes here — it still counts in the plan-based total via
+  // `usable` above, unchanged.
+  const futureIncome = M.sum(
+    input.income
+      .filter(
+        (i) =>
+          i.expectedDayOfMonth !== undefined &&
+          i.expectedDayOfMonth > currentDayOfMonth &&
+          (i.certainty === "CONFIRMED" || i.certainty === "ACTUAL"),
+      )
+      .map((i) => i.grossAmount),
+  );
 
   // --- Fixed commitments (excluding tax, which is already netted out of income) ---
   const nonTaxFixed = input.fixedExpenses.filter((e) => e.category !== TAX_CATEGORY);
@@ -147,6 +167,19 @@ export function buildFinancialSnapshot(input: FinancialSnapshotInput): Financial
     if (budget.certainty === "ESTIMATED") hasEstimated = true;
     if (budget.certainty === "UNKNOWN") hasUnknown = true;
   }
+
+  // --- DEC-130: liquidity-aware forward adjustments ---
+  // A fixed expense with a KNOWN due day that has already passed this month
+  // is presumed already reflected in the current account balance — counting
+  // it again would double-subtract money the balance already paid out.
+  // Unknown timing is treated conservatively as still-upcoming (never
+  // silently dropped). Variable budgets have no due-day concept at all, so
+  // they are always treated as still-upcoming, matching the plan-based
+  // formula's own treatment of them as a forward target.
+  const upcomingFixed = nonTaxFixed.filter(
+    (e) => e.dueDayOfMonth === undefined || e.dueDayOfMonth >= currentDayOfMonth,
+  );
+  const upcomingCommitments = M.add(M.sum(upcomingFixed.map((e) => e.amount)), variableBudgetsTotal);
 
   // --- Reconciled transactions this month: consumption-like effects only, refunds net against them ---
   const excludedIds = excludedTransactionIds(input.reconciliationLinks);
@@ -189,6 +222,22 @@ export function buildFinancialSnapshot(input: FinancialSnapshotInput): Financial
   }
 
   const actualSpending = M.add(transactionsActualSpending, eventAlreadyPaid);
+
+  // DEC-130: unlike the plan-based `futureConfirmed`/`futureEstimated` above
+  // (which reserve for every known future event regardless of when it
+  // happens — a broader "financial plan" view), the liquidity-aware forward
+  // total is explicitly scoped to the CURRENT planning horizon only (this
+  // calendar month) — an event six months out must not reduce what's safe
+  // to spend today.
+  let upcomingEventReservationsThisMonth = M.ZERO;
+  for (const event of input.events) {
+    if (!isSameMonth(event.startDate, input.asOfDate)) continue;
+    const breakdown = breakdownEvent(event);
+    upcomingEventReservationsThisMonth = M.add(
+      upcomingEventReservationsThisMonth,
+      M.add(breakdown.futureConfirmed, breakdown.futureEstimated),
+    );
+  }
 
   // --- Debt / installment commitments (never counted as fresh category consumption) ---
   const futureInstallmentCommitments = summarizeFutureInstallmentCommitments(input.installmentPlans);
@@ -302,10 +351,19 @@ export function buildFinancialSnapshot(input: FinancialSnapshotInput): Financial
 
   const position = input.position;
   const liquidity: LiquidityAwareSafeToSpend = position
-    ? computeLiquidityAwareSafeToSpend(safeTotal, position)
+    ? computeLiquidityAwareSafeToSpend(safeTotal, position, {
+        upcomingCommitments,
+        upcomingEventReservations: upcomingEventReservationsThisMonth,
+        debtCommitments,
+        futureIncome,
+        protectedSavings,
+      })
     : {
+        basis: "PLAN_BASED",
         planSafeToSpend: safeTotal,
         liquidityAwareSafeToSpend: null,
+        components: [],
+        recommendedTotal: safeTotal,
         confidence: "UNKNOWN",
         warnings: [
           "Real-time liquidity is unknown — Safe-to-Spend reflects the monthly plan only, not actual cash on hand.",

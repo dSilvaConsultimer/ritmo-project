@@ -24,6 +24,12 @@ export interface ExternalAccountInput {
   /** Null when the provider hasn't reported a balance yet. */
   readonly balanceCents: number | null;
   readonly balanceCertainty: Certainty;
+  /** DEC-130: the provider's own "available/spendable" balance, when distinct from `balanceCents`. See `PaymentSource.availableBalance`. */
+  readonly availableBalanceCents?: number;
+  /** DEC-130: earmarked/reserved money on this account. See `PaymentSource.reservedBalance`. */
+  readonly reservedBalanceCents?: number;
+  /** DEC-130: money automatically swept into an auto-invest product. See `PaymentSource.automaticallyInvestedBalance`. */
+  readonly automaticallyInvestedBalanceCents?: number;
   readonly creditCard?: {
     readonly creditLimitCents?: number;
     readonly availableCreditLimitCents?: number;
@@ -62,6 +68,20 @@ export function paymentSourceFromExternalAccount(
       certainty: input.balanceCertainty,
       amount: input.balanceCents === null ? null : M.fromCents(input.balanceCents),
     },
+    ...(input.availableBalanceCents !== undefined
+      ? { availableBalance: { certainty: input.balanceCertainty, amount: M.fromCents(input.availableBalanceCents) } }
+      : {}),
+    ...(input.reservedBalanceCents !== undefined
+      ? { reservedBalance: { certainty: input.balanceCertainty, amount: M.fromCents(input.reservedBalanceCents) } }
+      : {}),
+    ...(input.automaticallyInvestedBalanceCents !== undefined
+      ? {
+          automaticallyInvestedBalance: {
+            certainty: input.balanceCertainty,
+            amount: M.fromCents(input.automaticallyInvestedBalanceCents),
+          },
+        }
+      : {}),
     ...(input.creditCard
       ? {
           creditCard: {

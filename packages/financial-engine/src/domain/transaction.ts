@@ -48,6 +48,36 @@ export interface PaymentSource {
   readonly currency?: string;
   /** Known account balance, when synced from a provider. */
   readonly balance?: CertainAmount;
+  /**
+   * DEC-130: the provider's own "available/spendable" balance, when it
+   * reports one distinct from `balance` (Pluggy's `bankData.closingBalance`
+   * — documented as "available balance," as opposed to `balance`'s "current
+   * balance"). Already excludes holds/reserves at the provider's own
+   * discretion — see `reservedBalance` below for the fallback case where no
+   * such field exists. Preferred over `balance` for any usable-liquidity
+   * calculation; `balance` remains the one shown as "the account balance."
+   */
+  readonly availableBalance?: CertainAmount;
+  /**
+   * DEC-130: money earmarked/reserved on this account (e.g. a goal-based
+   * "Caixinha" or a judicial hold — Pluggy's `bankData.reservedBalances`).
+   * Only ever subtracted from usable liquidity when `availableBalance` is
+   * ABSENT (i.e. we fell back to the raw `balance`, which we cannot assume
+   * already excludes it) — see `computeLiquidityAwareSafeToSpend`. Never
+   * subtracted when `availableBalance` is present, to avoid double-counting
+   * money the provider already excluded.
+   */
+  readonly reservedBalance?: CertainAmount;
+  /**
+   * DEC-130: money automatically swept into an auto-invest product (Pluggy's
+   * `bankData.automaticallyInvestedBalance`). Captured for explainability
+   * only — NOT currently subtracted from usable liquidity anywhere, since
+   * whether this money is same-day spendable varies by institution and
+   * genuinely requires product input to resolve safely either way (see
+   * docs/DECISIONS.md DEC-130, "remaining ambiguity"). Never silently
+   * assumed to be unavailable.
+   */
+  readonly automaticallyInvestedBalance?: CertainAmount;
   readonly creditCard?: PaymentSourceCreditCardInfo;
   /** Certainty of the balance/metadata above (distinct from any transaction's own certainty). */
   readonly certainty?: Certainty;

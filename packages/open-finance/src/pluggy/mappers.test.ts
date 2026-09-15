@@ -6,6 +6,9 @@ import {
 } from "./mappers";
 import {
   fixtureBankAccount,
+  fixtureBankAccountWithInvestedBalance,
+  fixtureBankAccountWithReservedBalance,
+  fixtureBankCardBillPaymentTransaction,
   fixtureBankCreditTransaction,
   fixtureBankDebitTransaction,
   fixtureBankFeeTransaction,
@@ -45,6 +48,37 @@ describe("mapPluggyAccountToExternalAccountInput — credit card", () => {
   });
 });
 
+describe("mapPluggyAccountToExternalAccountInput — reserved / available / invested balances (DEC-130)", () => {
+  it("surfaces bankData.closingBalance as availableBalanceCents, distinct from the raw balance", () => {
+    const result = mapPluggyAccountToExternalAccountInput(fixtureBankAccountWithReservedBalance);
+    expect(result.balanceCents).toBe(3_599_575);
+    expect(result.availableBalanceCents).toBe(3_499_571);
+  });
+
+  it("sums reservedBalances across every band into reservedBalanceCents", () => {
+    const result = mapPluggyAccountToExternalAccountInput(fixtureBankAccountWithReservedBalance);
+    expect(result.reservedBalanceCents).toBe(100_004);
+  });
+
+  it("never reports reservedBalanceCents when hasReservedBalance is not true", () => {
+    const result = mapPluggyAccountToExternalAccountInput(fixtureBankAccount);
+    expect(result.reservedBalanceCents).toBeUndefined();
+  });
+
+  it("surfaces automaticallyInvestedBalance without touching availableBalanceCents", () => {
+    const result = mapPluggyAccountToExternalAccountInput(fixtureBankAccountWithInvestedBalance);
+    expect(result.automaticallyInvestedBalanceCents).toBe(359_957);
+    expect(result.availableBalanceCents).toBe(3_599_575);
+  });
+
+  it("never reports these fields for a CREDIT_CARD account (bankData is null there)", () => {
+    const result = mapPluggyAccountToExternalAccountInput(fixtureCreditCardAccount);
+    expect(result.availableBalanceCents).toBeUndefined();
+    expect(result.reservedBalanceCents).toBeUndefined();
+    expect(result.automaticallyInvestedBalanceCents).toBeUndefined();
+  });
+});
+
 describe("mapPluggyTransactionToExternalTransactionInput — bank DEBIT", () => {
   it("maps direction from Pluggy's `type` field, not the sign of `amount`", () => {
     const result = mapPluggyTransactionToExternalTransactionInput(fixtureBankDebitTransaction, "BANK");
@@ -73,6 +107,22 @@ describe("mapPluggyTransactionToExternalTransactionInput — bank fee", () => {
   it("classifies a bank maintenance fee as FEE", () => {
     const result = mapPluggyTransactionToExternalTransactionInput(fixtureBankFeeTransaction, "BANK");
     expect(result.financialEffect).toBe("FEE");
+  });
+});
+
+describe("mapPluggyTransactionToExternalTransactionInput — bank-side card bill payment (DEC-130 regression)", () => {
+  it("classifies a checking-account DEBIT paying a card bill as CARD_PAYMENT, never CONSUMPTION", () => {
+    const result = mapPluggyTransactionToExternalTransactionInput(
+      fixtureBankCardBillPaymentTransaction,
+      "BANK",
+    );
+    expect(result.direction).toBe("DEBIT");
+    expect(result.financialEffect).toBe("CARD_PAYMENT");
+  });
+
+  it("still classifies an ordinary checking DEBIT with no bill-payment wording as CONSUMPTION", () => {
+    const result = mapPluggyTransactionToExternalTransactionInput(fixtureBankDebitTransaction, "BANK");
+    expect(result.financialEffect).toBe("CONSUMPTION");
   });
 });
 

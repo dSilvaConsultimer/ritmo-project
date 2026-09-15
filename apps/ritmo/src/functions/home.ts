@@ -49,7 +49,16 @@ export const getHomeData = createServerFn({ method: "GET" }).handler(async () =>
   return {
     displayName,
     asOfDate,
-    safeToSpendCents: snapshot.safeToSpend.total.cents,
+    // DEC-130: the canonical engine result — `snapshot.liquidity.
+    // recommendedTotal` is `liquidityAwareSafeToSpend` when real current
+    // liquidity exists (`basis: "LIQUIDITY_AWARE"`), otherwise the
+    // unchanged declared-plan `planSafeToSpend` (`basis: "PLAN_BASED"`).
+    // Never `snapshot.safeToSpend.total` directly — that field alone
+    // produced a nonsensical negative Home value whenever declared Income
+    // was empty, even with healthy real liquidity. See docs/DECISIONS.md
+    // DEC-130.
+    safeToSpendCents: snapshot.liquidity.recommendedTotal.cents,
+    safeToSpendBasis: snapshot.liquidity.basis,
     daysRemainingInMonth: snapshot.safeToSpend.daysRemainingInMonth,
     // Sprint 9 (DEC-127): "Entradas do mês" is REALIZED income this month —
     // real posted transactions with financial_effect = INCOME — never the

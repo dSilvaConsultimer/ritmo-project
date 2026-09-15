@@ -191,6 +191,34 @@ describe("tool execution against seeded data", () => {
     expect(result.recurring).toBe(true);
   });
 
+  it("createIncome (DEC-130) defaults provenance to USER_DECLARED when fromRecurringPattern is omitted", async () => {
+    const db = await freshSeededDb();
+    const createTool = findTool("createIncome")!;
+    const args = createTool.schema.parse({ label: "Salário", grossAmountReais: 8500 });
+    const result = (await createTool.execute(
+      { db, financialProfileId: fixtureProfile.id, asOfDate: ASOF },
+      args,
+    )) as { source: string };
+    expect(result.source).toBe("USER_DECLARED");
+  });
+
+  it("createIncome (DEC-130) sets provenance to HISTORY_INFERRED when confirming a recurring pattern, and persists expectedDayOfMonth", async () => {
+    const db = await freshSeededDb();
+    const createTool = findTool("createIncome")!;
+    const args = createTool.schema.parse({
+      label: "Salário",
+      grossAmountReais: 8500,
+      expectedDayOfMonth: 5,
+      fromRecurringPattern: true,
+    });
+    const result = (await createTool.execute(
+      { db, financialProfileId: fixtureProfile.id, asOfDate: ASOF },
+      args,
+    )) as { source: string; expectedDayOfMonth?: number };
+    expect(result.source).toBe("HISTORY_INFERRED");
+    expect(result.expectedDayOfMonth).toBe(5);
+  });
+
   it("createFixedExpense (DEC-127) persists a real FixedExpense only via the tool's own execute", async () => {
     const db = await freshSeededDb();
     const tool = findTool("createFixedExpense")!;

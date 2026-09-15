@@ -8,6 +8,7 @@ import {
   type FinancialTransaction,
   type FixedExpense,
   type Income,
+  type IncomeSource,
   type Money,
   type PaymentSource,
 } from "@money-copilot/financial-engine";
@@ -218,6 +219,15 @@ export interface CreateIncomeInput {
   readonly certainty?: Certainty;
   /** Whether this recurs monthly. An explicit declared income defaults to recurring — see `Income.recurring`'s own doc comment. */
   readonly recurring?: boolean;
+  /**
+   * DEC-130: where this knowledge came from — see `IncomeSource`. Defaults
+   * to `USER_DECLARED` (a direct statement) when the caller doesn't specify
+   * one; a copilot flow confirming a `RecurringExpenseCandidate` should
+   * pass `HISTORY_INFERRED` or `USER_CONFIRMED_HISTORY` explicitly.
+   */
+  readonly source?: IncomeSource;
+  /** DEC-130: day of the month (1-31) this income is typically received, when known — see `Income.expectedDayOfMonth`. */
+  readonly expectedDayOfMonth?: number;
 }
 
 /**
@@ -241,6 +251,8 @@ export async function createIncome(
     grossAmount: input.grossAmount,
     certainty: input.certainty ?? "CONFIRMED",
     recurring: input.recurring ?? true,
+    source: input.source ?? "USER_DECLARED",
+    ...(input.expectedDayOfMonth !== undefined ? { expectedDayOfMonth: input.expectedDayOfMonth } : {}),
   };
 
   await repo.upsertIncome(db, income, financialProfileId);
@@ -254,6 +266,9 @@ export interface UpdateIncomeInput {
   readonly grossAmount?: Money;
   readonly certainty?: Certainty;
   readonly recurring?: boolean;
+  /** DEC-130: never silently changed by history alone — only ever set via an explicit caller-supplied value (see `Income.source`'s own doc comment on conflicting history). */
+  readonly source?: IncomeSource;
+  readonly expectedDayOfMonth?: number;
 }
 
 /**
@@ -282,6 +297,8 @@ export async function updateIncome(
     ...(input.grossAmount !== undefined ? { grossAmount: input.grossAmount } : {}),
     ...(input.certainty ? { certainty: input.certainty } : {}),
     ...(input.recurring !== undefined ? { recurring: input.recurring } : {}),
+    ...(input.source ? { source: input.source } : {}),
+    ...(input.expectedDayOfMonth !== undefined ? { expectedDayOfMonth: input.expectedDayOfMonth } : {}),
   };
 
   await repo.upsertIncome(db, updated, financialProfileId);

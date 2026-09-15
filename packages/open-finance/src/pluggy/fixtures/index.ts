@@ -35,6 +35,56 @@ export const fixtureBankAccount: Account = {
   creditData: null,
 };
 
+/**
+ * DEC-130: a checking account where the provider's own "available balance"
+ * (`closingBalance`) is LOWER than the raw `balance` because of an active
+ * reserved balance ("Caixinha Para Férias") — proves the mapper prefers
+ * `closingBalance` for liquidity purposes and separately surfaces the
+ * reserved amount for explainability, never double-subtracting it.
+ */
+export const fixtureBankAccountWithReservedBalance: Account = {
+  ...fixtureBankAccount,
+  id: "fixture-bank-account-reserved-1",
+  balance: 35_995.75,
+  bankData: {
+    transferNumber: "0001-1",
+    closingBalance: 34_995.71,
+    automaticallyInvestedBalance: null,
+    overdraftContractedLimit: null,
+    overdraftUsedLimit: null,
+    unarrangedOverdraftAmount: null,
+    hasReservedBalance: true,
+    reservedBalances: [
+      {
+        name: "Caixinha Para Férias",
+        identification: "fixture-reserve-1",
+        availableAmounts: [{ amount: 1_000.04, currencyCode: "BRL", remuneration: null }],
+      },
+    ],
+  },
+};
+
+/**
+ * DEC-130: a checking account with money automatically swept into an
+ * auto-invest product — captured for explainability, never subtracted from
+ * usable liquidity (see docs/DECISIONS.md DEC-130, "remaining ambiguity").
+ */
+export const fixtureBankAccountWithInvestedBalance: Account = {
+  ...fixtureBankAccount,
+  id: "fixture-bank-account-invested-1",
+  balance: 35_995.75,
+  bankData: {
+    transferNumber: "0001-1",
+    closingBalance: 35_995.75,
+    automaticallyInvestedBalance: 3_599.57,
+    overdraftContractedLimit: null,
+    overdraftUsedLimit: null,
+    unarrangedOverdraftAmount: null,
+    hasReservedBalance: null,
+    reservedBalances: null,
+  },
+};
+
 export const fixtureCreditCardAccount: Account = {
   id: "fixture-credit-card-1",
   itemId: "fixture-item-1",
@@ -161,6 +211,22 @@ export const fixtureCardFeeTransaction: Transaction = {
   descriptionRaw: "ANUIDADE CARTAO",
   type: "DEBIT",
   amount: 30.0,
+};
+
+/**
+ * DEC-130: a checking-account DEBIT paying off a credit card bill — this is
+ * the exact real-world case (`PAGAMENTO FATURA CARTAO VISA`) that was
+ * misclassified as CONSUMPTION before this DEC (the BANK-side branch of
+ * `classifyFinancialEffect` never checked `CARD_PAYMENT_KEYWORDS`, only the
+ * CREDIT_CARD-side branch did).
+ */
+export const fixtureBankCardBillPaymentTransaction: Transaction = {
+  ...fixtureBankDebitTransaction,
+  id: "fixture-tx-bank-card-payment-1",
+  description: "PAGAMENTO FATURA CARTAO VISA",
+  descriptionRaw: "PAGAMENTO FATURA CARTAO VISA",
+  type: "DEBIT",
+  amount: 291.15,
 };
 
 export const fixtureBankFeeTransaction: Transaction = {

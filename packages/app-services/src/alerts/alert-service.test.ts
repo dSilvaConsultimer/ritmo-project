@@ -98,7 +98,7 @@ describe("evaluateAlerts — Safe-to-Spend material drop (A-G, X)", () => {
     // Simulate recovery by adjusting income so Safe-to-Spend returns near baseline.
     await repo.upsertIncome(
       db,
-      { id: createId("income"), label: "Recovery bonus", grossAmount: fromReais(100_000), certainty: "ACTUAL", recurring: false },
+      { id: createId("income"), label: "Recovery bonus", grossAmount: fromReais(100_000), certainty: "ACTUAL", recurring: false, source: "USER_DECLARED" },
       fixtureProfile.id,
     );
     const afterRecoverySnapshot = await getSafeToSpend(db, fixtureProfile.id, ASOF);

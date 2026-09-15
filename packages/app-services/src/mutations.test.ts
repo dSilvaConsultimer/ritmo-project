@@ -294,6 +294,29 @@ describe("createIncome (Sprint 9, DEC-127)", () => {
     const after = await getRealizedIncomeForProfile(db, fixtureProfile.id, ASOF);
     expect(after.cents).toBe(before.cents);
   });
+
+  it("(DEC-130) defaults provenance to USER_DECLARED when the caller doesn't specify one", async () => {
+    const db = await freshSeededDb();
+    const income = await createIncome(db, fixtureProfile.id, { label: "Salário", grossAmount: fromCents(850_000) });
+    expect(income.source).toBe("USER_DECLARED");
+  });
+
+  it("(DEC-130) persists an explicit source and expectedDayOfMonth", async () => {
+    const db = await freshSeededDb();
+    const income = await createIncome(db, fixtureProfile.id, {
+      label: "Salário",
+      grossAmount: fromCents(850_000),
+      source: "USER_CONFIRMED_HISTORY",
+      expectedDayOfMonth: 5,
+    });
+    expect(income.source).toBe("USER_CONFIRMED_HISTORY");
+    expect(income.expectedDayOfMonth).toBe(5);
+
+    const input = await repo.loadFinancialSnapshotInput(db, fixtureProfile.id, ASOF);
+    const persisted = input.income.find((i) => i.id === income.id);
+    expect(persisted?.source).toBe("USER_CONFIRMED_HISTORY");
+    expect(persisted?.expectedDayOfMonth).toBe(5);
+  });
 });
 
 describe("updateIncome (Sprint 9, DEC-127)", () => {
@@ -319,5 +342,26 @@ describe("updateIncome (Sprint 9, DEC-127)", () => {
     await expect(
       updateIncome(db, fixtureProfile.id, ASOF, { incomeId: "income_does-not-exist", grossAmount: fromCents(1) }),
     ).rejects.toThrow();
+  });
+
+  it("(DEC-130) never changes source/amount just because a caller omits them — a conflicting learned pattern must be an explicit updateIncome call, never automatic", async () => {
+    const db = await freshSeededDb();
+    const income = await createIncome(db, fixtureProfile.id, {
+      label: "Salário",
+      grossAmount: fromCents(850_000),
+      source: "USER_DECLARED",
+    });
+
+    // Simulating "history now shows a different amount" — merely detecting
+    // that (getRecurringIncomeCandidates, exercised elsewhere) never calls
+    // updateIncome by itself. Calling updateIncome with unrelated fields
+    // must leave the declared amount/source exactly as the user stated.
+    const updated = await updateIncome(db, fixtureProfile.id, ASOF, {
+      incomeId: income.id,
+      label: "Salário CLT",
+    });
+
+    expect(updated.grossAmount.cents).toBe(850_000);
+    expect(updated.source).toBe("USER_DECLARED");
   });
 });

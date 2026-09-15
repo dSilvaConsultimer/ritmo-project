@@ -11,6 +11,7 @@ import * as repo from "@money-copilot/persistence";
 import { createId } from "@money-copilot/shared";
 import {
   getFinancialPosition,
+  getFinancialSnapshot,
   getInstallmentCommitments,
   getConnections,
   getReconciliationCandidates,
@@ -27,7 +28,7 @@ import {
 } from "./queries";
 import { syncConnection } from "./sync";
 import { resetProviderRegistry } from "./provider-registry";
-import { freshSeededDb, installMockProvider } from "./test-helpers";
+import { freshSeededDb, installMockProvider, seedSecondProfile } from "./test-helpers";
 
 const ASOF = "2026-09-05";
 
@@ -71,6 +72,58 @@ describe("getFinancialPosition", () => {
     const position = await getFinancialPosition(db, fixtureProfile.id, ASOF);
     expect(position.coverage).toBe("COMPLETE");
     expect(position.cashBalance.amount?.cents).toBe(250_000);
+  });
+});
+
+describe("getFinancialSnapshot — liquidity-aware wiring end-to-end (DEC-130)", () => {
+  it("a freshly-provisioned profile (zero declared income/commitments) with a real synced balance gets a positive, LIQUIDITY_AWARE Safe-to-Spend — not the old empty-plan negative", async () => {
+    const db = await freshSeededDb();
+    const profileId = await seedSecondProfile(db);
+
+    const checking: ExternalAccountInput = {
+      provider: "mock",
+      externalAccountId: "mock-liquidity-checking-1",
+      connectionExternalId: "mock-liquidity-conn-1",
+      kind: "BANK",
+      displayName: "Mock Checking",
+      currency: "BRL",
+      balanceCents: 3_599_575, // R$ 35.995,75
+      balanceCertainty: "ACTUAL",
+      lastSyncedAt: "2026-09-05T00:00:00.000Z",
+    };
+    const card: ExternalAccountInput = {
+      provider: "mock",
+      externalAccountId: "mock-liquidity-card-1",
+      connectionExternalId: "mock-liquidity-conn-1",
+      kind: "CREDIT_CARD",
+      displayName: "Mock Card",
+      currency: "BRL",
+      balanceCents: 96_195, // R$ 961,95
+      balanceCertainty: "ACTUAL",
+      lastSyncedAt: "2026-09-05T00:00:00.000Z",
+    };
+    installMockProvider({ accounts: [checking, card], transactionsByAccount: new Map() });
+    const connection = {
+      id: createId("provider-connection"),
+      financialProfileId: profileId,
+      provider: "mock" as const,
+      externalConnectionId: checking.connectionExternalId,
+      status: "PENDING" as const,
+      createdAt: "2026-09-05",
+      updatedAt: "2026-09-05",
+    };
+    await repo.upsertProviderConnection(db, connection);
+    await syncConnection(db, profileId, connection.id);
+
+    const snapshot = await getFinancialSnapshot(db, profileId, ASOF);
+
+    // The old, still-present plan-based figure is exactly the DEC-130 bug:
+    // zero declared income minus zero declared commitments is merely zero
+    // here (this profile has no transactions at all), but it is NEVER
+    // authoritative regardless — the point is what Home actually shows.
+    expect(snapshot.income.gross.cents).toBe(0);
+    expect(snapshot.liquidity.basis).toBe("LIQUIDITY_AWARE");
+    expect(snapshot.liquidity.recommendedTotal.cents).toBe(3_503_380); // 3,599,575 - 96,195
   });
 });
 

@@ -30,13 +30,32 @@ function toCents(amount: number): number {
  * the amount currently owed (Pluggy's `balance` on a CREDIT account), for a
  * bank account the cash available.
  */
+/**
+ * DEC-130: sums every reserved-balance band across every named reservation
+ * (Pluggy's `bankData.reservedBalances` — e.g. a goal-based "Caixinha" or a
+ * judicial hold) into one cents figure. `null`/absent means the account
+ * genuinely reports no reserved balance, not zero-and-unknown.
+ */
+function sumReservedBalancesCents(bankData: PluggyAccount["bankData"]): number | undefined {
+  if (!bankData?.hasReservedBalance || !bankData.reservedBalances) return undefined;
+  let totalCents = 0;
+  for (const reservation of bankData.reservedBalances) {
+    for (const band of reservation.availableAmounts) {
+      totalCents += toCents(band.amount);
+    }
+  }
+  return totalCents;
+}
+
 export function mapPluggyAccountToExternalAccountInput(
   account: PluggyAccount,
 ): ExternalAccountInput {
   const isCreditCard = account.type === "CREDIT";
   const creditData = account.creditData;
+  const bankData = account.bankData;
   const closingDate = creditData ? toIsoDate(creditData.balanceCloseDate) : undefined;
   const dueDate = creditData ? toIsoDate(creditData.balanceDueDate) : undefined;
+  const reservedBalanceCents = !isCreditCard ? sumReservedBalancesCents(bankData) : undefined;
 
   return {
     provider: PLUGGY_PROVIDER_NAME,
@@ -48,6 +67,20 @@ export function mapPluggyAccountToExternalAccountInput(
     currency: account.currencyCode,
     balanceCents: toCents(account.balance),
     balanceCertainty: "ACTUAL",
+    // DEC-130: `bankData.closingBalance` is Pluggy's own documented
+    // "available balance," distinct from `balance`'s "current balance" —
+    // preferred for liquidity purposes precisely because the provider
+    // already computed it (see `computeLiquidityAwareSafeToSpend`, which
+    // never subtracts `reservedBalanceCents` again when this is present).
+    ...(!isCreditCard && bankData?.closingBalance !== null && bankData?.closingBalance !== undefined
+      ? { availableBalanceCents: toCents(bankData.closingBalance) }
+      : {}),
+    ...(reservedBalanceCents !== undefined ? { reservedBalanceCents } : {}),
+    ...(!isCreditCard &&
+    bankData?.automaticallyInvestedBalance !== null &&
+    bankData?.automaticallyInvestedBalance !== undefined
+      ? { automaticallyInvestedBalanceCents: toCents(bankData.automaticallyInvestedBalance) }
+      : {}),
     ...(isCreditCard && creditData
       ? {
           creditCard: {
@@ -126,6 +159,15 @@ function classifyFinancialEffect(
 
   // BANK account
   if (transaction.type === "CREDIT") return "INCOME";
+  // DEC-130: a checking-account DEBIT paying off a card bill (e.g.
+  // "PAGAMENTO FATURA CARTAO VISA") is CARD_PAYMENT, not CONSUMPTION — the
+  // underlying purchases are already (or will be) their own CONSUMPTION
+  // transactions on the card account; counting the bill payment too would
+  // double-count the same spending. `CARD_PAYMENT_KEYWORDS` was already
+  // being checked on the CREDIT_CARD side above but was never applied here
+  // on the BANK side, where a real bill payment actually shows up as a
+  // DEBIT. Reuses the same pattern (never a single literal description).
+  if (CARD_PAYMENT_KEYWORDS.test(description)) return "CARD_PAYMENT";
   if (OWN_ACCOUNT_TRANSFER_KEYWORDS.test(description)) return "TRANSFER";
   return "CONSUMPTION";
 }

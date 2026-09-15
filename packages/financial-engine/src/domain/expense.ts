@@ -31,11 +31,17 @@ export interface FixedExpense {
   /**
    * Day of the month (1-31) this commitment is typically due, when known.
    * Sprint 8 (Ritmo UI integration): purely a DISPLAY convenience for
-   * showing due-date badges/timelines — never used in any Safe-to-Spend or
-   * snapshot calculation, which already treats every fixed expense as
-   * committed for the current month regardless of its due day. Absent
-   * (`undefined`) means genuinely unknown — never guessed, and never
-   * defaulted to a specific day. See docs/RITMO.md, "Data-model gaps."
+   * due-date badges/timelines in the DECLARED-PLAN Safe-to-Spend
+   * (`snapshot.safeToSpend`), which still treats every fixed expense as
+   * committed for the current month regardless of its due day — unchanged.
+   * DEC-130: the LIQUIDITY-AWARE Safe-to-Spend (`snapshot.liquidity`) DOES
+   * use this field — a due day already passed this month is presumed
+   * already reflected in the current account balance and excluded from
+   * that calculation's "upcoming commitments," to avoid double-subtracting
+   * money the balance already paid out. Absent (`undefined`) means
+   * genuinely unknown — never guessed, and treated conservatively as
+   * still-upcoming in the liquidity-aware path. See docs/RITMO.md,
+   * "Data-model gaps," and docs/DECISIONS.md DEC-130.
    */
   readonly dueDayOfMonth?: number;
 }
