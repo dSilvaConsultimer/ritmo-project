@@ -3572,3 +3572,60 @@ like every other handler here — a forged `connectionId` from another user is r
 `BETTER_AUTH_URL` is set, unchanged staging/production behavior) cover this. `check-client-bundle.mjs`
 re-run clean against the new client code (`ConnectWidget`'s new prop, the new pill/banner) — no
 `PLUGGY_CLIENT_SECRET` value or server-only package reached the client bundle.
+
+---
+
+### DEC-125
+
+**Date:** 2026-09-14
+**Context:** Founder review of the Mais/Planejamento functional work also flagged two unresolved
+branding gaps: (1) after entering the authenticated product, the Ritmo name is nearly absent — the
+wordmark only appears on Auth screens and the Mais footer; (2) the Founder suspects `RitmoMark.tsx`'s
+inline SVG may be a Lovable-era recreation approximating the brand board rather than the actual
+official exported asset, and asked for this to be re-audited rather than assumed correct.
+**Decision:** (1) Added a small, subtle brand signature — the existing `RitmoMark` symbol plus a
+compact "Ritmo" wordmark label — to the Home screen's header only (`_protected/index.tsx`), replacing
+the previously symbol-only mark there. No other authenticated tab (Transações/Planejamento/
+Insights/Assistente) gained new branding — the brief was explicit that repetition, not absence, was
+the wrong failure mode to correct into. Mais's existing footer mark/tagline was left as-is (already an
+acceptable "institutional/about" presence). (2) Audited the entire repository, including git history,
+for any official exported logo file (`.svg`/`.png`/`.ai`/`.fig`/`.pdf`) — none exists.
+`apps/ritmo/README.md`'s own original Lovable prompt confirms the mark was never an extracted asset:
+it instructs an AI UI generator to "use the attached image as the main brand and visual identity
+reference," and that reference image itself was never checked into the repository. Per the Founder's
+explicit instruction, the mark was **not** redrawn or "improved" — doing so would repeat the exact
+mistake being corrected (an approximation presented as official). Instead: created
+`apps/ritmo/public/brand/` as the canonical asset boundary, with a `README.md` documenting exactly
+which four files are needed (`ritmo-symbol-light.svg`, `ritmo-symbol-dark.svg`,
+`ritmo-logo-light.svg`, `ritmo-logo-dark.svg`) and how `RitmoMark`/`RitmoWordmark` should consume them
+once supplied; updated `RitmoMark.tsx`'s own doc comment to state plainly that its current paths are
+an unverified placeholder, not canonical. The light/dark color treatment established in DEC-124
+(two-tone light vs. monotone violet dark) is unchanged — no new or alternate geometry was introduced
+anywhere.
+**Rationale:** Placement (brand frequency) and authenticity (source-of-truth asset) are independent
+problems — blocking the first on the second would leave a real, actionable, zero-risk fix (adding the
+existing symbol+wordmark to one more screen) undone for no benefit, while the second genuinely cannot
+be resolved without Founder-supplied source files and must not be guessed at.
+**Status:** Accepted. Item (2) is explicitly incomplete pending the Founder's real asset files — this
+is a known, documented gap, not a silent omission.
+**Consequences:** Once real brand files exist at `apps/ritmo/public/brand/`, `RitmoMark`/`RitmoWordmark`
+need a small, mechanical update to render them (e.g. `<img src="/brand/ritmo-symbol-light.svg">`,
+switched by theme) instead of the current inline paths — everywhere that already uses `RitmoMark`/
+`RitmoWordmark` (Auth screens, Home, Mais footer) picks up the real asset automatically once that one
+component changes, with no call-site changes needed.
+
+**Update (2026-09-14) — item (2) resolved, V1 canonical assets installed:** the Founder supplied four
+files as the replacement asset set; auditing them (`file`/`sips`/raw byte inspection) found they were
+**not SVGs at all** — raster PNGs with a `.svg` extension, each carrying embedded C2PA content-
+provenance metadata whose one genuine embedded vector fragment turned out to be OpenAI's own
+attribution icon (unrelated to the Ritmo mark). Per this DEC's own instruction to stop rather than
+guess, that set was rejected without being wired in or edited — see the "History" section of
+`apps/ritmo/public/brand/README.md` for the full detail. The Founder confirmed the rejection and
+supplied a second set — real PNGs derived directly from the brand board, explicitly **not** AI-redrawn,
+with no original vector master existing at all. These are now the accepted V1 canonical assets.
+`RitmoMark`/`RitmoWordmark` were updated to render them as plain `<img>` elements (theme-selected
+`src`, no CSS recoloring/filtering/geometry changes) — the exact "small, mechanical update" this DEC
+anticipated. The favicon now derives from `ritmo-symbol-light.png` (replacing the interim hand-authored
+`favicon.svg`, which was deleted). `RitmoMark.tsx`'s doc comment and `public/brand/README.md` were
+both rewritten to describe this as the current, accepted state rather than a pending placeholder.
+**Status is now fully Accepted** — no part of this DEC remains outstanding.

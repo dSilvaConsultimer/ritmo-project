@@ -1,5 +1,5 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { ArrowDownLeft, ArrowUpRight, CalendarHeart, Repeat } from "lucide-react";
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { ArrowDownLeft, ArrowUpRight, CalendarHeart, Plus, Repeat, Sparkles } from "lucide-react";
 import { PhoneShell, ScreenHeader } from "@/components/ritmo/PhoneShell";
 import { ThemeToggle } from "@/components/ritmo/ThemeToggle";
 import { getPlanejamentoData } from "@/functions/planejamento";
@@ -32,6 +32,23 @@ function Planejamento() {
   return (
     <PhoneShell>
       <ScreenHeader title="Planejamento" subtitle="Mês atual" action={<ThemeToggle />} />
+
+      <div className="mb-5 grid grid-cols-2 gap-3">
+        <Link
+          to="/planejamento-novo"
+          className="surface flex items-center justify-center gap-2 p-3.5 text-[13px] font-semibold"
+        >
+          <Plus className="h-4 w-4 shrink-0 text-primary" />
+          Criar manualmente
+        </Link>
+        <Link
+          to="/planejamento-ia"
+          className="surface flex items-center justify-center gap-2 p-3.5 text-[13px] font-semibold"
+        >
+          <Sparkles className="h-4 w-4 shrink-0 text-primary" />
+          Criar com IA
+        </Link>
+      </div>
 
       <section className="surface p-5">
         <p className="text-[12.5px] text-muted-foreground">Disponível até o fim do mês</p>

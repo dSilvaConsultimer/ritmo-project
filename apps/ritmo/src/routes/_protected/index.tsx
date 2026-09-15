@@ -47,7 +47,17 @@ function Home() {
     <PhoneShell>
       <header className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-4 pb-6">
         <div className="flex min-w-0 items-center gap-3">
-          <RitmoMark className="h-9 w-9 shrink-0" />
+          {/*
+            Brand correction: Home is the one authenticated screen that
+            carries the subtle primary brand signature (symbol + wordmark) —
+            small and elegant, not repeated on every tab. See
+            docs/DECISIONS.md, "Ritmo identity inside the authenticated
+            product."
+          */}
+          <div className="flex shrink-0 items-center gap-1.5">
+            <RitmoMark className="h-8 w-8" />
+            <span className="font-display text-[13px] font-extrabold tracking-tight">Ritmo</span>
+          </div>
           <div className="min-w-0">
             <p className="text-[13px] text-muted-foreground">{vm.greeting}</p>
             <p className="truncate font-display text-lg font-extrabold">{vm.displayName}</p>

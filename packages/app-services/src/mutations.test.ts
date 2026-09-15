@@ -3,10 +3,12 @@ import { events as fixtureEvents, fixtureProfile, fromCents } from "@money-copil
 import { freshSeededDb } from "./test-helpers";
 import { getFinancialSnapshot, getSafeToSpend, getUpcomingFinancialEventsForProfile } from "./queries";
 import {
+  createFixedExpense,
   createPlannedFinancialEvent,
   recordManualTransaction,
   updatePlannedFinancialEvent,
 } from "./mutations";
+import { getFixedExpensesForProfile } from "./queries";
 
 const ASOF = "2026-09-05";
 
@@ -183,5 +185,66 @@ describe("updatePlannedFinancialEvent", () => {
 
     const updatedDrinks = updated.lineItems.find((li) => li.id === drinksLineItem!.id);
     expect(updatedDrinks?.amount?.cents).toBe(20_000);
+  });
+});
+
+describe("createFixedExpense", () => {
+  it("persists a new recurring commitment, immediately visible via getFixedExpensesForProfile", async () => {
+    const db = await freshSeededDb();
+    const before = await getFixedExpensesForProfile(db, fixtureProfile.id, ASOF);
+
+    const expense = await createFixedExpense(db, fixtureProfile.id, {
+      label: "Streaming service",
+      category: "Entertainment",
+      amount: fromCents(3_990),
+    });
+
+    const after = await getFixedExpensesForProfile(db, fixtureProfile.id, ASOF);
+    expect(after.length).toBe(before.length + 1);
+    expect(after.some((e) => e.id === expense.id && e.amount.cents === 3_990)).toBe(true);
+  });
+
+  it("defaults to CONFIRMED certainty and unprotected — never a fabricated protection", async () => {
+    const db = await freshSeededDb();
+    const expense = await createFixedExpense(db, fixtureProfile.id, {
+      label: "Gym",
+      category: "Health",
+      amount: fromCents(15_000),
+    });
+
+    expect(expense.certainty).toBe("CONFIRMED");
+    expect(expense.protected).toBe(false);
+  });
+
+  it("immediately affects Safe-to-Spend as a new fixed commitment", async () => {
+    const db = await freshSeededDb();
+    const before = await getSafeToSpend(db, fixtureProfile.id, ASOF);
+
+    await createFixedExpense(db, fixtureProfile.id, {
+      label: "New subscription",
+      category: "Entertainment",
+      amount: fromCents(2_000),
+    });
+
+    const after = await getSafeToSpend(db, fixtureProfile.id, ASOF);
+    expect(after.total.cents).toBe(before.total.cents - 2_000);
+  });
+
+  it("never invents a due day when none is given, and stores one exactly when given", async () => {
+    const db = await freshSeededDb();
+    const withoutDueDay = await createFixedExpense(db, fixtureProfile.id, {
+      label: "Insurance",
+      category: "Protection",
+      amount: fromCents(8_000),
+    });
+    expect(withoutDueDay.dueDayOfMonth).toBeUndefined();
+
+    const withDueDay = await createFixedExpense(db, fixtureProfile.id, {
+      label: "Rent",
+      category: "Housing",
+      amount: fromCents(180_000),
+      dueDayOfMonth: 5,
+    });
+    expect(withDueDay.dueDayOfMonth).toBe(5);
   });
 });

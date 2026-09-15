@@ -25,6 +25,10 @@ export interface ProfileContext {
   readonly financialProfileId: string;
   /** The user's own real name (Better Auth's `user.name`) */
   readonly displayName: string;
+  /** The user's own real email (Better Auth's `user.email`) — never fabricated. */
+  readonly email: string;
+  /** ISO 8601. Better Auth's `user.createdAt` — real account-creation time. */
+  readonly createdAt: string;
 }
 
 /** Thrown whenever no valid authenticated session exists */
@@ -52,7 +56,12 @@ export async function getCurrentProfileContext(): Promise<ProfileContext> {
   assertDevOnlyFlagNotInProduction(DEV_AUTH_BYPASS_FLAG);
   if (isDevOrTestEnvironment() && process.env[DEV_AUTH_BYPASS_FLAG] === "true") {
     const { DEMO_PROFILE_ID } = await import("@money-copilot/app-services");
-    return { financialProfileId: DEMO_PROFILE_ID, displayName: "Douglas (dev bypass)" };
+    return {
+      financialProfileId: DEMO_PROFILE_ID,
+      displayName: "Douglas (dev bypass)",
+      email: "dev-bypass@ritmo.local",
+      createdAt: new Date(0).toISOString(),
+    };
   }
 
   const auth = await getAuth();
@@ -65,5 +74,10 @@ export async function getCurrentProfileContext(): Promise<ProfileContext> {
   const displayName = session.user.name || session.user.email;
   const profile = await resolveOrProvisionProfileForOwner(db, session.user.id, displayName);
 
-  return { financialProfileId: profile.id, displayName };
+  return {
+    financialProfileId: profile.id,
+    displayName,
+    email: session.user.email,
+    createdAt: new Date(session.user.createdAt).toISOString(),
+  };
 }

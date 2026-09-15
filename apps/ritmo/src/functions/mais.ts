@@ -29,6 +29,10 @@ export const getMaisData = createServerFn({ method: "GET" }).handler(async () =>
     categoryRuleCount,
     quietHoursStart: notificationPreferences.quietHoursStart ?? null,
     quietHoursEnd: notificationPreferences.quietHoursEnd ?? null,
+    // Real package version — set by pnpm/npm for any script-invoked process
+    // (dev/build); falls back to today's actual shipped version rather than
+    // showing a stale hardcoded number if unset in some deploy contexts.
+    appVersion: process.env["npm_package_version"] ?? "0.1.0",
   };
 });
 

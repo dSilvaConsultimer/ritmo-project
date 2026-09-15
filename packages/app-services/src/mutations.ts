@@ -6,6 +6,7 @@ import {
   type FinancialEvent,
   type FinancialEventLineItem,
   type FinancialTransaction,
+  type FixedExpense,
   type Money,
   type PaymentSource,
 } from "@money-copilot/financial-engine";
@@ -167,6 +168,46 @@ export async function createPlannedFinancialEvent(
 
   await repo.upsertEvent(db, event, financialProfileId);
   return event;
+}
+
+export interface CreateFixedExpenseInput {
+  readonly label: string;
+  readonly category: string;
+  readonly amount: Money;
+  readonly certainty?: Certainty;
+  /** Never a fabricated protection — defaults to false (a normal, reducible commitment). */
+  readonly protected?: boolean;
+  /** Day of month (1-31), when actually known — never guessed. See `FixedExpense.dueDayOfMonth`. */
+  readonly dueDayOfMonth?: number;
+}
+
+/**
+ * Creates a new recurring monthly commitment (e.g. rent, a subscription).
+ * Mirrors `createPlannedFinancialEvent`'s shape for the one-off case —
+ * same file, same mutation-policy discipline (see this file's own
+ * top-of-file doc comment), same persistence primitive
+ * (`repo.upsertFixedExpense`) `seed.ts` already uses for fixture data. Every
+ * fixed expense is treated as committed for the current month regardless of
+ * `dueDayOfMonth` (display-only — see `FixedExpense`'s own doc comment);
+ * there is no notion of "starts next month" here.
+ */
+export async function createFixedExpense(
+  db: Database,
+  financialProfileId: string,
+  input: CreateFixedExpenseInput,
+): Promise<FixedExpense> {
+  const expense: FixedExpense = {
+    id: createId("fixed-expense"),
+    label: input.label,
+    category: input.category,
+    amount: input.amount,
+    certainty: input.certainty ?? "CONFIRMED",
+    protected: input.protected ?? false,
+    ...(input.dueDayOfMonth !== undefined ? { dueDayOfMonth: input.dueDayOfMonth } : {}),
+  };
+
+  await repo.upsertFixedExpense(db, expense, financialProfileId);
+  return expense;
 }
 
 export interface UpdatePlannedFinancialEventInput {

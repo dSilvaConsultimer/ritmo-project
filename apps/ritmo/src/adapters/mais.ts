@@ -1,8 +1,14 @@
 import type { MaisData } from "@/functions/mais";
 
+/** Every real subpage a Mais row can now navigate to. */
+export type MaisDestination =
+  "/perfil" | "/notificacoes" | "/conectar-banco" | "/categorias" | "/ajuda" | "/privacidade";
+
 export interface MaisItem {
   readonly label: string;
   readonly hint: string;
+  /** Real destination every item now navigates to — see conectar-banco.tsx's own precedent. */
+  readonly to: MaisDestination;
 }
 
 export interface MaisGroup {
@@ -15,6 +21,7 @@ export interface MaisViewModel {
   readonly initials: string;
   readonly profileSubtitle: string;
   readonly groups: readonly MaisGroup[];
+  readonly appVersion: string;
 }
 
 /** Initials from whatever real name is known — never a fabricated last name. */
@@ -42,31 +49,27 @@ function notificationsHint(quietHoursStart: string | null, quietHoursEnd: string
 }
 
 /**
- * Pure reshaping only. "Perfil e dados" shows only the real known display
- * name — no fabricated last name, plan, or subscription tier (there is no
- * billing/plan concept in the domain yet). "Notificações" reflects the real
- * quiet-hours preference instead of claiming a scheduled daily digest that
- * doesn't exist (see "Data-model gaps" #5). This is also the seam Sprint 9's
- * real authentication replaces — see docs/RITMO.md, "Login exception."
- *
- * The mock's "Plano Ritmo Premium" subtitle has no engine equivalent —
- * there is no billing/subscription-tier concept in the domain — so this
- * honestly labels the profile as what it currently is instead of inventing
- * a plan.
+ * Pure reshaping only. Every item now has a real destination (`to`) — a
+ * dedicated detail/settings subpage, following the exact same pattern
+ * `conectar-banco.tsx` already established for "Instituições conectadas."
+ * "Perfil e dados" shows only real Better Auth identity — no fabricated
+ * plan/subscription tier (there is no billing concept in the domain yet).
  */
 export function toMaisViewModel(data: MaisData): MaisViewModel {
   return {
     displayName: data.displayName,
     initials: initialsFor(data.displayName),
-    profileSubtitle: "Perfil de demonstração",
+    profileSubtitle: "Ver perfil e dados da conta",
+    appVersion: data.appVersion,
     groups: [
       {
         titulo: "Conta",
         itens: [
-          { label: "Perfil e dados", hint: data.displayName },
+          { label: "Perfil e dados", hint: data.displayName, to: "/perfil" },
           {
             label: "Notificações",
             hint: notificationsHint(data.quietHoursStart, data.quietHoursEnd),
+            to: "/notificacoes",
           },
         ],
       },
@@ -79,15 +82,20 @@ export function toMaisViewModel(data: MaisData): MaisViewModel {
               data.connectedInstitutionsCount === 1
                 ? "1 conectada"
                 : `${data.connectedInstitutionsCount} conectadas`,
+            to: "/conectar-banco",
           },
-          { label: "Categorias e regras", hint: `${data.categoryRuleCount} regras ativas` },
+          {
+            label: "Categorias e regras",
+            hint: `${data.categoryRuleCount} regras ativas`,
+            to: "/categorias",
+          },
         ],
       },
       {
         titulo: "Suporte",
         itens: [
-          { label: "Central de ajuda", hint: "" },
-          { label: "Privacidade e segurança", hint: "" },
+          { label: "Central de ajuda", hint: "", to: "/ajuda" },
+          { label: "Privacidade e segurança", hint: "", to: "/privacidade" },
         ],
       },
     ],

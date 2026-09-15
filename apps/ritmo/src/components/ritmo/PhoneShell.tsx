@@ -1,4 +1,6 @@
 import type { ReactNode } from "react";
+import { ChevronLeft } from "lucide-react";
+import { Link } from "@tanstack/react-router";
 import { BottomNav } from "./BottomNav";
 
 export function PhoneShell({ children }: { children: ReactNode }) {
@@ -18,14 +20,31 @@ export function ScreenHeader({
   title,
   subtitle,
   action,
+  backTo,
 }: {
   title: string;
   subtitle?: string;
   action?: ReactNode;
+  /**
+   * Detail/settings subpages reached FROM a tab (e.g. Mais → "Perfil e
+   * dados") pass their real origin here so the user always has an explicit,
+   * visible way back — never relying on the browser's own back button.
+   * Omitted by the five main tab screens, which have no "back" concept.
+   */
+  backTo?: string;
 }) {
   return (
     <header className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-4 pb-6">
       <div className="min-w-0">
+        {backTo ? (
+          <Link
+            to={backTo}
+            className="mb-2 inline-flex items-center gap-1 text-[13px] font-semibold text-muted-foreground"
+          >
+            <ChevronLeft className="h-4 w-4" />
+            Voltar
+          </Link>
+        ) : null}
         <h1 className="truncate font-display text-[26px] font-extrabold">{title}</h1>
         {subtitle ? <p className="mt-1 text-[13px] text-muted-foreground">{subtitle}</p> : null}
       </div>

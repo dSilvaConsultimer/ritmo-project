@@ -9,6 +9,7 @@ function baseData(overrides: Partial<MaisData> = {}): MaisData {
     categoryRuleCount: 21,
     quietHoursStart: null,
     quietHoursEnd: null,
+    appVersion: "0.1.0",
     ...overrides,
   };
 }
@@ -22,7 +23,25 @@ describe("toMaisViewModel", () => {
 
   it("never invents a subscription plan the domain doesn't model", () => {
     const vm = toMaisViewModel(baseData());
-    expect(vm.profileSubtitle).toBe("Perfil de demonstração");
+    expect(vm.profileSubtitle).toBe("Ver perfil e dados da conta");
+  });
+
+  it("every item now has a real navigation destination", () => {
+    const vm = toMaisViewModel(baseData());
+    const allTargets = vm.groups.flatMap((g) => g.itens.map((i) => i.to));
+    expect(allTargets).toEqual([
+      "/perfil",
+      "/notificacoes",
+      "/conectar-banco",
+      "/categorias",
+      "/ajuda",
+      "/privacidade",
+    ]);
+  });
+
+  it("shows the real package version, never a hardcoded/stale number", () => {
+    const vm = toMaisViewModel(baseData({ appVersion: "1.2.3" }));
+    expect(vm.appVersion).toBe("1.2.3");
   });
 
   it("shows the real quiet-hours window when configured, instead of a fabricated daily digest time", () => {

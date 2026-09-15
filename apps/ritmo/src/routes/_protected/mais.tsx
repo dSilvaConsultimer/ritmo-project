@@ -54,7 +54,10 @@ function Mais() {
     <PhoneShell>
       <ScreenHeader title="Mais" subtitle="Perfil e preferências" action={<ThemeToggle />} />
 
-      <div className="surface flex items-center gap-4 p-4">
+      <button
+        onClick={() => navigate({ to: "/perfil" })}
+        className="surface flex w-full items-center gap-4 p-4 text-left"
+      >
         <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl brand-gradient font-display text-lg font-extrabold text-primary-foreground">
           {vm.initials}
         </div>
@@ -63,7 +66,7 @@ function Mais() {
           <p className="truncate text-[12.5px] text-muted-foreground">{vm.profileSubtitle}</p>
         </div>
         <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
-      </div>
+      </button>
 
       <section className="mt-6">
         <h2 className="mb-3 font-display text-[15px] font-bold">Aparência</h2>
@@ -77,20 +80,12 @@ function Mais() {
         <section key={g.titulo} className="mt-6">
           <h2 className="mb-3 font-display text-[15px] font-bold">{g.titulo}</h2>
           <div className="surface divide-y divide-border overflow-hidden">
-            {g.itens.map(({ label, hint }, index) => {
+            {g.itens.map(({ label, hint, to }, index) => {
               const Icon = GROUP_ICONS[g.titulo]![index]!;
-              // Sprint 9 Phase 4 (brief §18): `/mais` stays the account-management
-              // entry point; this row routes to the dedicated Bank Connection
-              // screen for connect/reconnect/manage instead of `/mais` reimplementing
-              // any of that itself.
-              const onClick =
-                label === "Instituições conectadas"
-                  ? () => navigate({ to: "/conectar-banco" })
-                  : undefined;
               return (
                 <button
                   key={label}
-                  onClick={onClick}
+                  onClick={() => navigate({ to })}
                   className="flex w-full items-center gap-3 px-4 py-3.5 text-left"
                 >
                   <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent text-accent-foreground">
@@ -133,7 +128,7 @@ function Mais() {
         <p className="text-center text-[11.5px] text-muted-foreground">
           Organização financeira que aprende com você.
         </p>
-        <p className="text-[10.5px] text-muted-foreground/70">Versão 1.0 · Protótipo visual</p>
+        <p className="text-[10.5px] text-muted-foreground/70">Versão {vm.appVersion}</p>
       </div>
     </PhoneShell>
   );

@@ -1,34 +1,56 @@
+import { useTheme } from "@/lib/theme";
+
+/**
+ * Canonical Ritmo V1 brand assets (see docs/DECISIONS.md DEC-125 and
+ * `apps/ritmo/public/brand/README.md`) — raster PNGs derived directly from
+ * the Founder-approved brand board. No original vector master exists, so
+ * these are plain `<img>` renders: no CSS recoloring/filtering, no redrawn
+ * geometry. The correct light/dark file is selected by theme; there is no
+ * single asset that works for both.
+ */
+const SYMBOL_SRC = {
+  light: "/brand/ritmo-symbol-light.png",
+  dark: "/brand/ritmo-symbol-dark.png",
+} as const;
+
+const LOGO_SRC = {
+  light: "/brand/ritmo-logo-light.png",
+  dark: "/brand/ritmo-logo-dark.png",
+} as const;
+
+/**
+ * The symbol alone. Used decoratively, always next to visible "Ritmo" text
+ * or brand-context copy elsewhere on screen (Home header, Mais footer,
+ * assistant chat avatar) — `alt=""`/`aria-hidden` so it never creates
+ * redundant screen-reader noise.
+ */
 export function RitmoMark({ className = "h-8 w-8" }: { className?: string }) {
+  const { theme } = useTheme();
   return (
-    <svg viewBox="0 0 64 64" className={className} aria-hidden="true">
-      <defs>
-        <linearGradient id="ritmo-a" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stopColor="var(--primary)" />
-          <stop offset="100%" stopColor="var(--primary)" stopOpacity="0.75" />
-        </linearGradient>
-        <linearGradient id="ritmo-b" x1="1" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="var(--coral)" />
-          <stop offset="100%" stopColor="var(--coral)" stopOpacity="0.85" />
-        </linearGradient>
-      </defs>
-      <path
-        d="M32 8c-13.3 0-24 10.7-24 24s10.7 24 24 24c5.5 0 10-4.5 10-10s-4.5-10-10-10a4 4 0 0 1 0-8c5.5 0 10-4.5 10-10S37.5 8 32 8Z"
-        fill="url(#ritmo-a)"
-      />
-      <path
-        d="M32 56c13.3 0 24-10.7 24-24S45.3 8 32 8c-5.5 0-10 4.5-10 10s4.5 10 10 10a4 4 0 0 1 0 8c-5.5 0-10 4.5-10 10s4.5 10 10 10Z"
-        fill="url(#ritmo-b)"
-        opacity="0.92"
-      />
-    </svg>
+    <img
+      src={SYMBOL_SRC[theme]}
+      alt=""
+      aria-hidden="true"
+      className={`object-contain ${className}`}
+    />
   );
 }
 
+/**
+ * The full symbol + "Ritmo" wordmark + tagline lockup, as one flattened
+ * canonical image (the brand board's own logo composition, not something
+ * built from separate elements). Only meant for a "strong brand presence"
+ * moment with real room to breathe (Auth screens, Mais/About) — the
+ * tagline baked into this image becomes illegible noise below roughly
+ * h-20; `h-24` is the smallest size this component renders at by default
+ * for exactly that reason. Never use this for a compact/header context —
+ * see `RitmoMark` + a plain text label instead (e.g. Home's header).
+ * `alt="Ritmo"` since there's no separate text node next to it for
+ * assistive tech to read.
+ */
 export function RitmoWordmark({ className = "" }: { className?: string }) {
+  const { theme } = useTheme();
   return (
-    <div className={`flex items-center gap-2 ${className}`}>
-      <RitmoMark className="h-7 w-7" />
-      <span className="font-display text-xl font-extrabold tracking-tight">Ritmo</span>
-    </div>
+    <img src={LOGO_SRC[theme]} alt="Ritmo" className={`h-24 w-auto object-contain ${className}`} />
   );
 }

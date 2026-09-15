@@ -1,5 +1,5 @@
 import type { Id } from "@money-copilot/shared";
-import type { Recommendation } from "@money-copilot/financial-engine";
+import type { CategoryRule, Recommendation } from "@money-copilot/financial-engine";
 import {
   buildFinancialSnapshot,
   buildFinancialPositionFromAccounts,
@@ -247,6 +247,20 @@ export async function getFixedExpensesForProfile(
 export async function getCategoryRuleCount(db: Database): Promise<number> {
   const { categoryRules } = await repo.loadRules(db);
   return categoryRules.length;
+}
+
+/**
+ * The full list of deterministic categorization rules — global, not
+ * per-profile (same underlying data as `getCategoryRuleCount`). Powers the
+ * "Categorias e regras" detail screen (Mais → Conexões): read-only, since
+ * there is no per-profile rule-authoring UI yet — this honestly shows what
+ * exists rather than pretending to be an editor. Sorted by descending
+ * priority, matching the deterministic evaluation order `categorize` itself
+ * uses (see `packages/financial-engine/src/domain/category.ts`).
+ */
+export async function getCategoryRulesList(db: Database): Promise<readonly CategoryRule[]> {
+  const { categoryRules } = await repo.loadRules(db);
+  return categoryRules.slice().sort((a, b) => b.priority - a.priority);
 }
 
 export async function getRecurringCandidates(

@@ -109,6 +109,10 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
         rel: "stylesheet",
         href: "https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Inter:wght@400;500;600;700&display=swap",
       },
+      // Brand correction (DEC-125): the canonical V1 light symbol —
+      // browsers prefer this over the legacy .ico below, which predates
+      // the approved brand board and isn't derived from the actual symbol.
+      { rel: "icon", href: "/brand/ritmo-symbol-light.png", type: "image/png" },
       { rel: "icon", href: "/favicon.ico", type: "image/x-icon" },
     ],
   }),

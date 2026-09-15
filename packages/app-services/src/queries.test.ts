@@ -13,6 +13,7 @@ import {
   getUncategorizedTransactions,
   getFixedExpensesForProfile,
   getCategoryRuleCount,
+  getCategoryRulesList,
 } from "./queries";
 import { syncConnection } from "./sync";
 import { resetProviderRegistry } from "./provider-registry";
@@ -109,6 +110,17 @@ describe("getCategoryRuleCount", () => {
   it("matches the real global rule set, not a hardcoded number", async () => {
     const db = await freshSeededDb();
     expect(await getCategoryRuleCount(db)).toBe(fixtureCategoryRules.length);
+  });
+});
+
+describe("getCategoryRulesList", () => {
+  it("returns the same count as getCategoryRuleCount, sorted by descending priority", async () => {
+    const db = await freshSeededDb();
+    const rules = await getCategoryRulesList(db);
+    expect(rules.length).toBe(fixtureCategoryRules.length);
+    for (let i = 1; i < rules.length; i++) {
+      expect(rules[i - 1]!.priority).toBeGreaterThanOrEqual(rules[i]!.priority);
+    }
   });
 });
 

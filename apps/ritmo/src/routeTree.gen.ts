@@ -15,12 +15,19 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as RecuperarSenhaRouteImport } from './routes/recuperar-senha'
 import { Route as SessaoExpiradaRouteImport } from './routes/sessao-expirada'
 import { Route as ProtectedIndexRouteImport } from './routes/_protected/index'
+import { Route as ProtectedAjudaRouteImport } from './routes/_protected/ajuda'
 import { Route as ProtectedAssistenteRouteImport } from './routes/_protected/assistente'
+import { Route as ProtectedCategoriasRouteImport } from './routes/_protected/categorias'
 import { Route as ProtectedConectarBancoRouteImport } from './routes/_protected/conectar-banco'
 import { Route as ProtectedInsightsRouteImport } from './routes/_protected/insights'
 import { Route as ProtectedMaisRouteImport } from './routes/_protected/mais'
+import { Route as ProtectedNotificacoesRouteImport } from './routes/_protected/notificacoes'
 import { Route as ProtectedOnboardingRouteImport } from './routes/_protected/onboarding'
+import { Route as ProtectedPerfilRouteImport } from './routes/_protected/perfil'
 import { Route as ProtectedPlanejamentoRouteImport } from './routes/_protected/planejamento'
+import { Route as ProtectedPlanejamentoIaRouteImport } from './routes/_protected/planejamento-ia'
+import { Route as ProtectedPlanejamentoNovoRouteImport } from './routes/_protected/planejamento-novo'
+import { Route as ProtectedPrivacidadeRouteImport } from './routes/_protected/privacidade'
 import { Route as ProtectedTransacoesRouteImport } from './routes/_protected/transacoes'
 import { Route as ApiDevSeedRouteImport } from './routes/api/dev-seed'
 import { Route as ApiPreflightRouteImport } from './routes/api/preflight'
@@ -58,9 +65,19 @@ const ProtectedIndexRoute = ProtectedIndexRouteImport.update({
   path: '/',
   getParentRoute: () => ProtectedRoute,
 } as any)
+const ProtectedAjudaRoute = ProtectedAjudaRouteImport.update({
+  id: '/ajuda',
+  path: '/ajuda',
+  getParentRoute: () => ProtectedRoute,
+} as any)
 const ProtectedAssistenteRoute = ProtectedAssistenteRouteImport.update({
   id: '/assistente',
   path: '/assistente',
+  getParentRoute: () => ProtectedRoute,
+} as any)
+const ProtectedCategoriasRoute = ProtectedCategoriasRouteImport.update({
+  id: '/categorias',
+  path: '/categorias',
   getParentRoute: () => ProtectedRoute,
 } as any)
 const ProtectedConectarBancoRoute = ProtectedConectarBancoRouteImport.update({
@@ -78,14 +95,40 @@ const ProtectedMaisRoute = ProtectedMaisRouteImport.update({
   path: '/mais',
   getParentRoute: () => ProtectedRoute,
 } as any)
+const ProtectedNotificacoesRoute = ProtectedNotificacoesRouteImport.update({
+  id: '/notificacoes',
+  path: '/notificacoes',
+  getParentRoute: () => ProtectedRoute,
+} as any)
 const ProtectedOnboardingRoute = ProtectedOnboardingRouteImport.update({
   id: '/onboarding',
   path: '/onboarding',
   getParentRoute: () => ProtectedRoute,
 } as any)
+const ProtectedPerfilRoute = ProtectedPerfilRouteImport.update({
+  id: '/perfil',
+  path: '/perfil',
+  getParentRoute: () => ProtectedRoute,
+} as any)
 const ProtectedPlanejamentoRoute = ProtectedPlanejamentoRouteImport.update({
   id: '/planejamento',
   path: '/planejamento',
+  getParentRoute: () => ProtectedRoute,
+} as any)
+const ProtectedPlanejamentoIaRoute = ProtectedPlanejamentoIaRouteImport.update({
+  id: '/planejamento-ia',
+  path: '/planejamento-ia',
+  getParentRoute: () => ProtectedRoute,
+} as any)
+const ProtectedPlanejamentoNovoRoute =
+  ProtectedPlanejamentoNovoRouteImport.update({
+    id: '/planejamento-novo',
+    path: '/planejamento-novo',
+    getParentRoute: () => ProtectedRoute,
+  } as any)
+const ProtectedPrivacidadeRoute = ProtectedPrivacidadeRouteImport.update({
+  id: '/privacidade',
+  path: '/privacidade',
   getParentRoute: () => ProtectedRoute,
 } as any)
 const ProtectedTransacoesRoute = ProtectedTransacoesRouteImport.update({
@@ -130,12 +173,19 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/recuperar-senha': typeof RecuperarSenhaRoute
   '/sessao-expirada': typeof SessaoExpiradaRoute
+  '/ajuda': typeof ProtectedAjudaRoute
   '/assistente': typeof ProtectedAssistenteRoute
+  '/categorias': typeof ProtectedCategoriasRoute
   '/conectar-banco': typeof ProtectedConectarBancoRoute
   '/insights': typeof ProtectedInsightsRoute
   '/mais': typeof ProtectedMaisRoute
+  '/notificacoes': typeof ProtectedNotificacoesRoute
   '/onboarding': typeof ProtectedOnboardingRoute
+  '/perfil': typeof ProtectedPerfilRoute
   '/planejamento': typeof ProtectedPlanejamentoRoute
+  '/planejamento-ia': typeof ProtectedPlanejamentoIaRoute
+  '/planejamento-novo': typeof ProtectedPlanejamentoNovoRoute
+  '/privacidade': typeof ProtectedPrivacidadeRoute
   '/transacoes': typeof ProtectedTransacoesRoute
   '/api/dev-seed': typeof ApiDevSeedRoute
   '/api/preflight': typeof ApiPreflightRoute
@@ -149,12 +199,19 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/recuperar-senha': typeof RecuperarSenhaRoute
   '/sessao-expirada': typeof SessaoExpiradaRoute
+  '/ajuda': typeof ProtectedAjudaRoute
   '/assistente': typeof ProtectedAssistenteRoute
+  '/categorias': typeof ProtectedCategoriasRoute
   '/conectar-banco': typeof ProtectedConectarBancoRoute
   '/insights': typeof ProtectedInsightsRoute
   '/mais': typeof ProtectedMaisRoute
+  '/notificacoes': typeof ProtectedNotificacoesRoute
   '/onboarding': typeof ProtectedOnboardingRoute
+  '/perfil': typeof ProtectedPerfilRoute
   '/planejamento': typeof ProtectedPlanejamentoRoute
+  '/planejamento-ia': typeof ProtectedPlanejamentoIaRoute
+  '/planejamento-novo': typeof ProtectedPlanejamentoNovoRoute
+  '/privacidade': typeof ProtectedPrivacidadeRoute
   '/transacoes': typeof ProtectedTransacoesRoute
   '/api/dev-seed': typeof ApiDevSeedRoute
   '/api/preflight': typeof ApiPreflightRoute
@@ -171,12 +228,19 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/recuperar-senha': typeof RecuperarSenhaRoute
   '/sessao-expirada': typeof SessaoExpiradaRoute
+  '/_protected/ajuda': typeof ProtectedAjudaRoute
   '/_protected/assistente': typeof ProtectedAssistenteRoute
+  '/_protected/categorias': typeof ProtectedCategoriasRoute
   '/_protected/conectar-banco': typeof ProtectedConectarBancoRoute
   '/_protected/insights': typeof ProtectedInsightsRoute
   '/_protected/mais': typeof ProtectedMaisRoute
+  '/_protected/notificacoes': typeof ProtectedNotificacoesRoute
   '/_protected/onboarding': typeof ProtectedOnboardingRoute
+  '/_protected/perfil': typeof ProtectedPerfilRoute
   '/_protected/planejamento': typeof ProtectedPlanejamentoRoute
+  '/_protected/planejamento-ia': typeof ProtectedPlanejamentoIaRoute
+  '/_protected/planejamento-novo': typeof ProtectedPlanejamentoNovoRoute
+  '/_protected/privacidade': typeof ProtectedPrivacidadeRoute
   '/_protected/transacoes': typeof ProtectedTransacoesRoute
   '/api/dev-seed': typeof ApiDevSeedRoute
   '/api/preflight': typeof ApiPreflightRoute
@@ -194,12 +258,19 @@ export interface FileRouteTypes {
     | '/login'
     | '/recuperar-senha'
     | '/sessao-expirada'
+    | '/ajuda'
     | '/assistente'
+    | '/categorias'
     | '/conectar-banco'
     | '/insights'
     | '/mais'
+    | '/notificacoes'
     | '/onboarding'
+    | '/perfil'
     | '/planejamento'
+    | '/planejamento-ia'
+    | '/planejamento-novo'
+    | '/privacidade'
     | '/transacoes'
     | '/api/dev-seed'
     | '/api/preflight'
@@ -213,12 +284,19 @@ export interface FileRouteTypes {
     | '/login'
     | '/recuperar-senha'
     | '/sessao-expirada'
+    | '/ajuda'
     | '/assistente'
+    | '/categorias'
     | '/conectar-banco'
     | '/insights'
     | '/mais'
+    | '/notificacoes'
     | '/onboarding'
+    | '/perfil'
     | '/planejamento'
+    | '/planejamento-ia'
+    | '/planejamento-novo'
+    | '/privacidade'
     | '/transacoes'
     | '/api/dev-seed'
     | '/api/preflight'
@@ -234,12 +312,19 @@ export interface FileRouteTypes {
     | '/login'
     | '/recuperar-senha'
     | '/sessao-expirada'
+    | '/_protected/ajuda'
     | '/_protected/assistente'
+    | '/_protected/categorias'
     | '/_protected/conectar-banco'
     | '/_protected/insights'
     | '/_protected/mais'
+    | '/_protected/notificacoes'
     | '/_protected/onboarding'
+    | '/_protected/perfil'
     | '/_protected/planejamento'
+    | '/_protected/planejamento-ia'
+    | '/_protected/planejamento-novo'
+    | '/_protected/privacidade'
     | '/_protected/transacoes'
     | '/api/dev-seed'
     | '/api/preflight'
@@ -308,11 +393,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProtectedIndexRouteImport
       parentRoute: typeof ProtectedRoute
     }
+    '/_protected/ajuda': {
+      id: '/_protected/ajuda'
+      path: '/ajuda'
+      fullPath: '/ajuda'
+      preLoaderRoute: typeof ProtectedAjudaRouteImport
+      parentRoute: typeof ProtectedRoute
+    }
     '/_protected/assistente': {
       id: '/_protected/assistente'
       path: '/assistente'
       fullPath: '/assistente'
       preLoaderRoute: typeof ProtectedAssistenteRouteImport
+      parentRoute: typeof ProtectedRoute
+    }
+    '/_protected/categorias': {
+      id: '/_protected/categorias'
+      path: '/categorias'
+      fullPath: '/categorias'
+      preLoaderRoute: typeof ProtectedCategoriasRouteImport
       parentRoute: typeof ProtectedRoute
     }
     '/_protected/conectar-banco': {
@@ -336,6 +435,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProtectedMaisRouteImport
       parentRoute: typeof ProtectedRoute
     }
+    '/_protected/notificacoes': {
+      id: '/_protected/notificacoes'
+      path: '/notificacoes'
+      fullPath: '/notificacoes'
+      preLoaderRoute: typeof ProtectedNotificacoesRouteImport
+      parentRoute: typeof ProtectedRoute
+    }
     '/_protected/onboarding': {
       id: '/_protected/onboarding'
       path: '/onboarding'
@@ -343,11 +449,39 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProtectedOnboardingRouteImport
       parentRoute: typeof ProtectedRoute
     }
+    '/_protected/perfil': {
+      id: '/_protected/perfil'
+      path: '/perfil'
+      fullPath: '/perfil'
+      preLoaderRoute: typeof ProtectedPerfilRouteImport
+      parentRoute: typeof ProtectedRoute
+    }
     '/_protected/planejamento': {
       id: '/_protected/planejamento'
       path: '/planejamento'
       fullPath: '/planejamento'
       preLoaderRoute: typeof ProtectedPlanejamentoRouteImport
+      parentRoute: typeof ProtectedRoute
+    }
+    '/_protected/planejamento-ia': {
+      id: '/_protected/planejamento-ia'
+      path: '/planejamento-ia'
+      fullPath: '/planejamento-ia'
+      preLoaderRoute: typeof ProtectedPlanejamentoIaRouteImport
+      parentRoute: typeof ProtectedRoute
+    }
+    '/_protected/planejamento-novo': {
+      id: '/_protected/planejamento-novo'
+      path: '/planejamento-novo'
+      fullPath: '/planejamento-novo'
+      preLoaderRoute: typeof ProtectedPlanejamentoNovoRouteImport
+      parentRoute: typeof ProtectedRoute
+    }
+    '/_protected/privacidade': {
+      id: '/_protected/privacidade'
+      path: '/privacidade'
+      fullPath: '/privacidade'
+      preLoaderRoute: typeof ProtectedPrivacidadeRouteImport
       parentRoute: typeof ProtectedRoute
     }
     '/_protected/transacoes': {
@@ -403,23 +537,37 @@ declare module '@tanstack/react-router' {
 }
 
 interface ProtectedRouteChildren {
+  ProtectedAjudaRoute: typeof ProtectedAjudaRoute
   ProtectedAssistenteRoute: typeof ProtectedAssistenteRoute
+  ProtectedCategoriasRoute: typeof ProtectedCategoriasRoute
   ProtectedConectarBancoRoute: typeof ProtectedConectarBancoRoute
   ProtectedInsightsRoute: typeof ProtectedInsightsRoute
   ProtectedMaisRoute: typeof ProtectedMaisRoute
+  ProtectedNotificacoesRoute: typeof ProtectedNotificacoesRoute
   ProtectedOnboardingRoute: typeof ProtectedOnboardingRoute
+  ProtectedPerfilRoute: typeof ProtectedPerfilRoute
   ProtectedPlanejamentoRoute: typeof ProtectedPlanejamentoRoute
+  ProtectedPlanejamentoIaRoute: typeof ProtectedPlanejamentoIaRoute
+  ProtectedPlanejamentoNovoRoute: typeof ProtectedPlanejamentoNovoRoute
+  ProtectedPrivacidadeRoute: typeof ProtectedPrivacidadeRoute
   ProtectedTransacoesRoute: typeof ProtectedTransacoesRoute
   ProtectedIndexRoute: typeof ProtectedIndexRoute
 }
 
 const ProtectedRouteChildren: ProtectedRouteChildren = {
+  ProtectedAjudaRoute: ProtectedAjudaRoute,
   ProtectedAssistenteRoute: ProtectedAssistenteRoute,
+  ProtectedCategoriasRoute: ProtectedCategoriasRoute,
   ProtectedConectarBancoRoute: ProtectedConectarBancoRoute,
   ProtectedInsightsRoute: ProtectedInsightsRoute,
   ProtectedMaisRoute: ProtectedMaisRoute,
+  ProtectedNotificacoesRoute: ProtectedNotificacoesRoute,
   ProtectedOnboardingRoute: ProtectedOnboardingRoute,
+  ProtectedPerfilRoute: ProtectedPerfilRoute,
   ProtectedPlanejamentoRoute: ProtectedPlanejamentoRoute,
+  ProtectedPlanejamentoIaRoute: ProtectedPlanejamentoIaRoute,
+  ProtectedPlanejamentoNovoRoute: ProtectedPlanejamentoNovoRoute,
+  ProtectedPrivacidadeRoute: ProtectedPrivacidadeRoute,
   ProtectedTransacoesRoute: ProtectedTransacoesRoute,
   ProtectedIndexRoute: ProtectedIndexRoute,
 }
