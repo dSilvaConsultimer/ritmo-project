@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { AIError, OpenAIProvider, resolveOpenAIModel } from "@money-copilot/ai";
 import { getCurrentProfileContext } from "./profile.server";
-import { resolveAsOfDate } from "./config";
+import { ASOF_DATE } from "./config";
 import { checkRateLimit, RATE_LIMIT_POLICIES } from "./rate-limit.server";
 import { logger } from "./logger.server";
 import { createManualPlanningItemHandler } from "./planejamento-criar.server";
@@ -39,16 +39,9 @@ export type PlanningDraft = z.infer<typeof planningDraftSchema>;
 
 const TOOL_NAME = "proposePlanningDraft";
 
-/**
- * Built fresh per request (never a module-level constant) so "Hoje é..."
- * always reflects the real clock (`resolveAsOfDate`, DEC-127) rather than
- * freezing whatever date happened to be current when the server process
- * started.
- */
-function buildInstructions(asOfDate: string): string {
-  return `Você ajuda a interpretar a intenção de planejamento financeiro de um usuário do Ritmo em português (pt-BR).
+const INSTRUCTIONS = `Você ajuda a interpretar a intenção de planejamento financeiro de um usuário do Ritmo em português (pt-BR).
 
-Hoje é ${asOfDate} (data de referência do produto — use-a para resolver datas relativas como "em dezembro").
+Hoje é ${ASOF_DATE} (data de referência do produto — use-a para resolver datas relativas como "em dezembro").
 
 Sua única tarefa é chamar a ferramenta "${TOOL_NAME}" UMA vez, preenchendo:
 - kind: "event" para algo pontual (uma viagem, uma compra, juntar dinheiro até uma data); "fixed_expense" para um gasto que se repete todo mês.
@@ -60,7 +53,6 @@ Sua única tarefa é chamar a ferramenta "${TOOL_NAME}" UMA vez, preenchendo:
 - rationale: uma frase curta e honesta explicando como você interpretou o pedido.
 
 Nunca invente valores, categorias ou datas que o usuário não mencionou — use null.`;
-}
 
 export const requestPlanningDraftInput = z.object({ message: z.string().min(1).max(500) });
 export type RequestPlanningDraftInput = z.infer<typeof requestPlanningDraftInput>;
@@ -121,7 +113,7 @@ export async function requestPlanningDraftHandler(
   try {
     const result = await aiProvider.generate({
       model,
-      instructions: buildInstructions(resolveAsOfDate()),
+      instructions: INSTRUCTIONS,
       input: [{ type: "message", role: "user", content: data.message }],
       tools: [
         {

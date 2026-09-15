@@ -7,7 +7,6 @@ import {
   type FinancialEventLineItem,
   type FinancialTransaction,
   type FixedExpense,
-  type Income,
   type Money,
   type PaymentSource,
 } from "@money-copilot/financial-engine";
@@ -209,83 +208,6 @@ export async function createFixedExpense(
 
   await repo.upsertFixedExpense(db, expense, financialProfileId);
   return expense;
-}
-
-export interface CreateIncomeInput {
-  readonly label: string;
-  /** Gross monthly amount, before taxes — must come from the user's own explicit confirmation, never inferred from a transaction. */
-  readonly grossAmount: Money;
-  readonly certainty?: Certainty;
-  /** Whether this recurs monthly. An explicit declared income defaults to recurring — see `Income.recurring`'s own doc comment. */
-  readonly recurring?: boolean;
-}
-
-/**
- * Declares a confirmed recurring/expected income (Sprint 9, DEC-127) —
- * mirrors `createFixedExpense`'s shape exactly (same file, same
- * mutation-policy discipline, same `repo.upsert*` primitive). This is the
- * ONLY way an `Income` row is ever created outside of `seed.ts` fixture
- * data — in particular, `syncConnection` importing a real bank transaction
- * (even one tagged `financialEffect: "INCOME"`) never calls this. A real
- * transaction is evidence a human can be asked to confirm
- * (`getRecurringIncomeCandidates`); it is never itself a declaration.
- */
-export async function createIncome(
-  db: Database,
-  financialProfileId: string,
-  input: CreateIncomeInput,
-): Promise<Income> {
-  const income: Income = {
-    id: createId("income"),
-    label: input.label,
-    grossAmount: input.grossAmount,
-    certainty: input.certainty ?? "CONFIRMED",
-    recurring: input.recurring ?? true,
-  };
-
-  await repo.upsertIncome(db, income, financialProfileId);
-  return income;
-}
-
-export interface UpdateIncomeInput {
-  /** Obtained from a prior read (e.g. the profile's snapshot income list) — never guessed. */
-  readonly incomeId: string;
-  readonly label?: string;
-  readonly grossAmount?: Money;
-  readonly certainty?: Certainty;
-  readonly recurring?: boolean;
-}
-
-/**
- * Updates an existing declared `Income` — e.g. a raise, or correcting a
- * mistaken entry. Mirrors `updatePlannedFinancialEvent`'s exact
- * lookup-by-id-via-snapshot-input pattern (the same architectural
- * justification applies: `Income` has no dedicated single-row getter, and
- * `loadFinancialSnapshotInput` already loads every income for the
- * profile). Only the fields supplied are changed.
- */
-export async function updateIncome(
-  db: Database,
-  financialProfileId: string,
-  asOfDate: string,
-  input: UpdateIncomeInput,
-): Promise<Income> {
-  const snapshotInput = await repo.loadFinancialSnapshotInput(db, financialProfileId, asOfDate);
-  const existing = snapshotInput.income.find((i) => i.id === input.incomeId);
-  if (!existing) {
-    throw new Error(`No Income ${input.incomeId} found for profile ${financialProfileId}`);
-  }
-
-  const updated: Income = {
-    ...existing,
-    ...(input.label ? { label: input.label } : {}),
-    ...(input.grossAmount !== undefined ? { grossAmount: input.grossAmount } : {}),
-    ...(input.certainty ? { certainty: input.certainty } : {}),
-    ...(input.recurring !== undefined ? { recurring: input.recurring } : {}),
-  };
-
-  await repo.upsertIncome(db, updated, financialProfileId);
-  return updated;
 }
 
 export interface UpdatePlannedFinancialEventInput {

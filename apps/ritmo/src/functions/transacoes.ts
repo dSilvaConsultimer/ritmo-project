@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { getDb, getFixedExpensesForProfile, getTransactions } from "@money-copilot/app-services";
 import { getCurrentProfileContext } from "./profile.server";
-import { resolveAsOfDate } from "./config";
+import { ASOF_DATE } from "./config";
 
 /**
  * Raw data for the Transações screen. See `src/adapters/transacoes.ts` for
@@ -10,15 +10,14 @@ import { resolveAsOfDate } from "./config";
 export const getTransacoesData = createServerFn({ method: "GET" }).handler(async () => {
   const { financialProfileId } = await getCurrentProfileContext();
   const db = await getDb();
-  const asOfDate = resolveAsOfDate();
 
   const [fixedExpenses, transactions] = await Promise.all([
-    getFixedExpensesForProfile(db, financialProfileId, asOfDate),
-    getTransactions(db, financialProfileId, asOfDate),
+    getFixedExpensesForProfile(db, financialProfileId, ASOF_DATE),
+    getTransactions(db, financialProfileId, ASOF_DATE),
   ]);
 
   return {
-    asOfDate,
+    asOfDate: ASOF_DATE,
     fixedExpenses: fixedExpenses.map((e) => ({
       id: e.id,
       label: e.label,

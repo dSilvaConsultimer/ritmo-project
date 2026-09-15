@@ -66,8 +66,6 @@ describe("TOOL_REGISTRY", () => {
     expect(mutationNames).toEqual(
       [
         "acceptRecommendation",
-        "createFixedExpense",
-        "createIncome",
         "createPlannedFinancialEvent",
         "dismissAlert",
         "markAlertSeen",
@@ -120,25 +118,6 @@ describe("TOOL_REGISTRY", () => {
     expect(findTool("simulateExpense")?.kind).toBe("READ");
     expect(findTool("getSpendingEnvelope")?.kind).toBe("READ");
   });
-
-  it("includes every required Sprint 9 recurring-income/fixed-expense tool, correctly classified (DEC-127)", () => {
-    const names = new Set(TOOL_REGISTRY.map((t) => t.name));
-    for (const required of [
-      "getRecurringIncomeCandidates",
-      "getRecurringFixedExpenseCandidates",
-      "createIncome",
-      "createFixedExpense",
-    ]) {
-      expect(names.has(required)).toBe(true);
-    }
-    // READ tools (pattern detection) execute unconditionally; MUTATION
-    // tools are gated by hasExplicitMutationIntent — never the reverse,
-    // since a candidate must never be silently treated as confirmed.
-    expect(findTool("getRecurringIncomeCandidates")?.kind).toBe("READ");
-    expect(findTool("getRecurringFixedExpenseCandidates")?.kind).toBe("READ");
-    expect(findTool("createIncome")?.kind).toBe("MUTATION");
-    expect(findTool("createFixedExpense")?.kind).toBe("MUTATION");
-  });
 });
 
 describe("findTool", () => {
@@ -174,31 +153,5 @@ describe("tool execution against seeded data", () => {
       args,
     )) as { status: string };
     expect(result.status).toBe("HIGH_IMPACT");
-  });
-
-  it("createIncome (DEC-127) persists a real Income only via the tool's own execute — never as a side effect of the READ candidate tool", async () => {
-    const db = await freshSeededDb();
-    const readTool = findTool("getRecurringIncomeCandidates")!;
-    await readTool.execute({ db, financialProfileId: fixtureProfile.id, asOfDate: ASOF }, {});
-
-    const createTool = findTool("createIncome")!;
-    const args = createTool.schema.parse({ label: "Salário", grossAmountReais: 8500 });
-    const result = (await createTool.execute(
-      { db, financialProfileId: fixtureProfile.id, asOfDate: ASOF },
-      args,
-    )) as { grossAmount: { cents: number }; recurring: boolean };
-    expect(result.grossAmount.cents).toBe(850_000);
-    expect(result.recurring).toBe(true);
-  });
-
-  it("createFixedExpense (DEC-127) persists a real FixedExpense only via the tool's own execute", async () => {
-    const db = await freshSeededDb();
-    const tool = findTool("createFixedExpense")!;
-    const args = tool.schema.parse({ label: "Condomínio", category: "Moradia", amountReais: 800 });
-    const result = (await tool.execute(
-      { db, financialProfileId: fixtureProfile.id, asOfDate: ASOF },
-      args,
-    )) as { amount: { cents: number } };
-    expect(result.amount.cents).toBe(80_000);
   });
 });

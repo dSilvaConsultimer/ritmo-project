@@ -1,17 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { events as fixtureEvents, fixtureProfile, fromCents } from "@money-copilot/financial-engine";
-import * as repo from "@money-copilot/persistence";
 import { freshSeededDb } from "./test-helpers";
 import { getFinancialSnapshot, getSafeToSpend, getUpcomingFinancialEventsForProfile } from "./queries";
 import {
   createFixedExpense,
-  createIncome,
   createPlannedFinancialEvent,
   recordManualTransaction,
-  updateIncome,
   updatePlannedFinancialEvent,
 } from "./mutations";
-import { getFixedExpensesForProfile, getRealizedIncomeForProfile } from "./queries";
+import { getFixedExpensesForProfile } from "./queries";
 
 const ASOF = "2026-09-05";
 
@@ -249,75 +246,5 @@ describe("createFixedExpense", () => {
       dueDayOfMonth: 5,
     });
     expect(withDueDay.dueDayOfMonth).toBe(5);
-  });
-});
-
-describe("createIncome (Sprint 9, DEC-127)", () => {
-  it("persists a new declared Income, immediately visible via the snapshot's income list", async () => {
-    const db = await freshSeededDb();
-    const income = await createIncome(db, fixtureProfile.id, {
-      label: "Salário",
-      grossAmount: fromCents(850_000),
-    });
-
-    const input = await repo.loadFinancialSnapshotInput(db, fixtureProfile.id, ASOF);
-    expect(input.income.some((i) => i.id === income.id && i.grossAmount.cents === 850_000)).toBe(true);
-  });
-
-  it("defaults to CONFIRMED certainty and recurring — an explicit declaration is never treated as a one-off", async () => {
-    const db = await freshSeededDb();
-    const income = await createIncome(db, fixtureProfile.id, {
-      label: "Salário",
-      grossAmount: fromCents(850_000),
-    });
-
-    expect(income.certainty).toBe("CONFIRMED");
-    expect(income.recurring).toBe(true);
-  });
-
-  it("immediately affects Safe-to-Spend's usable income on the next read", async () => {
-    const db = await freshSeededDb();
-    const before = await getSafeToSpend(db, fixtureProfile.id, ASOF);
-
-    await createIncome(db, fixtureProfile.id, { label: "Extra income", grossAmount: fromCents(100_000) });
-
-    const after = await getSafeToSpend(db, fixtureProfile.id, ASOF);
-    expect(after.total.cents).toBe(before.total.cents + 100_000);
-  });
-
-  it("never affects realized income (a separate, real-transactions-only concept — DEC-127)", async () => {
-    const db = await freshSeededDb();
-    const before = await getRealizedIncomeForProfile(db, fixtureProfile.id, ASOF);
-
-    await createIncome(db, fixtureProfile.id, { label: "Salário", grossAmount: fromCents(850_000) });
-
-    const after = await getRealizedIncomeForProfile(db, fixtureProfile.id, ASOF);
-    expect(after.cents).toBe(before.cents);
-  });
-});
-
-describe("updateIncome (Sprint 9, DEC-127)", () => {
-  it("updates only the fields supplied, leaving everything else exactly as it was", async () => {
-    const db = await freshSeededDb();
-    const income = await createIncome(db, fixtureProfile.id, {
-      label: "Salário",
-      grossAmount: fromCents(850_000),
-    });
-
-    const updated = await updateIncome(db, fixtureProfile.id, ASOF, {
-      incomeId: income.id,
-      grossAmount: fromCents(900_000),
-    });
-
-    expect(updated.grossAmount.cents).toBe(900_000);
-    expect(updated.label).toBe("Salário");
-    expect(updated.certainty).toBe("CONFIRMED");
-  });
-
-  it("throws rather than guess when the incomeId doesn't exist for this profile", async () => {
-    const db = await freshSeededDb();
-    await expect(
-      updateIncome(db, fixtureProfile.id, ASOF, { incomeId: "income_does-not-exist", grossAmount: fromCents(1) }),
-    ).rejects.toThrow();
   });
 });

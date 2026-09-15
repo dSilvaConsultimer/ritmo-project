@@ -184,34 +184,6 @@ const getUpcomingFinancialEventsTool = tool({
   execute: (ctx) => queries.getUpcomingFinancialEventsForProfile(ctx.db, ctx.financialProfileId, ctx.asOfDate),
 });
 
-// ---------- Recurring income/commitment evidence (Sprint 9, DEC-127) ----------
-//
-// NON-NEGOTIABLE: these are READ-only pattern detectors over real
-// transactions — evidence, never a declaration. Proactively mentioning a
-// candidate to the user (e.g. "detectei um recebimento recorrente de
-// R$8.500 — é seu salário?") is encouraged; silently treating a candidate
-// as confirmed is not. Only createIncome/createFixedExpense persist
-// anything, and both are MUTATION tools gated by hasExplicitMutationIntent
-// exactly like every other mutation in this file.
-
-const getRecurringIncomeCandidatesTool = tool({
-  name: "getRecurringIncomeCandidates",
-  description:
-    "Detects patterns of repeated REAL income deposits (e.g. a recurring salary) from the user's imported transactions. This is evidence only — never treat a candidate as confirmed income yourself. If a plausible pattern exists, ask the user to confirm (e.g. 'Detectei um recebimento recorrente de R$X. Este é seu salário/renda mensal?'); only call createIncome after they explicitly agree.",
-  kind: "READ",
-  schema: emptySchema,
-  execute: (ctx) => queries.getRecurringIncomeCandidates(ctx.db, ctx.financialProfileId, ctx.asOfDate),
-});
-
-const getRecurringFixedExpenseCandidatesTool = tool({
-  name: "getRecurringFixedExpenseCandidates",
-  description:
-    "Detects patterns of repeated REAL debits (e.g. rent, a condo fee) from the user's imported transactions that might be a fixed monthly commitment. This is evidence only — never treat a candidate as a confirmed commitment yourself. If a plausible pattern exists, ask the user to confirm (e.g. 'Esse condomínio de R$X parece recorrente. Deseja considerá-lo como compromisso mensal?'); only call createFixedExpense after they explicitly agree.",
-  kind: "READ",
-  schema: emptySchema,
-  execute: (ctx) => queries.getRecurringFixedExpenseCandidates(ctx.db, ctx.financialProfileId, ctx.asOfDate),
-});
-
 const getCategoryBudgetStatusTool = tool({
   name: "getCategoryBudgetStatus",
   description: "Returns this month's spend vs. target for every category with a configured budget (e.g. Food).",
@@ -331,69 +303,6 @@ const updatePlannedFinancialEventTool = tool({
       ...(args.label ? { label: args.label } : {}),
       ...(args.startDate ? { startDate: args.startDate } : {}),
       ...(args.endDate ? { endDate: args.endDate } : {}),
-    }),
-});
-
-const createIncomeSchema = z.object({
-  label: z.string().min(1).describe("A short label for this income, e.g. 'Salário'."),
-  grossAmountReais: z
-    .number()
-    .positive()
-    .describe(
-      "The gross monthly amount the user explicitly confirmed, in BRL reais. Never invent this — it must come from the user's own words or their explicit agreement to a getRecurringIncomeCandidates result.",
-    ),
-  recurring: z
-    .boolean()
-    .describe("Whether this recurs monthly. True unless the user says otherwise.")
-    .nullable()
-    .default(null),
-});
-
-const createIncomeTool = tool({
-  name: "createIncome",
-  description:
-    "Declares a confirmed recurring/expected income (e.g. 'sim, esse é meu salário mensal'). Only call this after the user EXPLICITLY confirms — never automatically from an imported transaction, and never merely because getRecurringIncomeCandidates returned a pattern.",
-  kind: "MUTATION",
-  schema: createIncomeSchema,
-  execute: (ctx, args) =>
-    mutations.createIncome(ctx.db, ctx.financialProfileId, {
-      label: args.label,
-      grossAmount: fromReais(args.grossAmountReais),
-      ...(args.recurring !== null ? { recurring: args.recurring } : {}),
-    }),
-});
-
-const createFixedExpenseSchema = z.object({
-  label: z.string().min(1).describe("A short label for this commitment, e.g. 'Condomínio'."),
-  category: z.string().min(1).describe("A short spending category, e.g. 'Moradia'."),
-  amountReais: z
-    .number()
-    .positive()
-    .describe(
-      "The confirmed monthly amount, in BRL reais. Never invent this — it must come from the user's own words or their explicit agreement to a getRecurringFixedExpenseCandidates result.",
-    ),
-  dueDayOfMonth: z
-    .number()
-    .int()
-    .min(1)
-    .max(31)
-    .describe("Day of month it's typically due, only if the user stated one. Null otherwise — never guess.")
-    .nullable()
-    .default(null),
-});
-
-const createFixedExpenseTool = tool({
-  name: "createFixedExpense",
-  description:
-    "Declares a confirmed recurring monthly commitment (e.g. rent, a condo fee) the user explicitly agreed to treat as a fixed expense. Only call this after explicit confirmation — never automatically from an imported transaction, and never merely because getRecurringFixedExpenseCandidates returned a pattern.",
-  kind: "MUTATION",
-  schema: createFixedExpenseSchema,
-  execute: (ctx, args) =>
-    mutations.createFixedExpense(ctx.db, ctx.financialProfileId, {
-      label: args.label,
-      category: args.category,
-      amount: fromReais(args.amountReais),
-      ...(args.dueDayOfMonth !== null ? { dueDayOfMonth: args.dueDayOfMonth } : {}),
     }),
 });
 
@@ -854,15 +763,11 @@ export const TOOL_REGISTRY: readonly ToolDefinition<never, unknown>[] = [
   getDailyGuidanceTool,
   simulateExpenseTool,
   getUpcomingFinancialEventsTool,
-  getRecurringIncomeCandidatesTool,
-  getRecurringFixedExpenseCandidatesTool,
   getCategoryBudgetStatusTool,
   getRecentSpendingSummaryTool,
   recordManualTransactionTool,
   createPlannedFinancialEventTool,
   updatePlannedFinancialEventTool,
-  createIncomeTool,
-  createFixedExpenseTool,
   replanAfterExpenseTool,
   getRecommendationsTool,
   getRecommendationDetailsTool,
