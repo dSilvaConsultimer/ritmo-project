@@ -31,6 +31,9 @@ function baseData(overrides: Partial<PlanejamentoData> = {}): PlanejamentoData {
     upcomingEvents: [],
     categoryRules: [],
     pendingConfirmations: [],
+    categories: [],
+    categorySpendingPeriod: "current",
+    categoryTotals: [],
     ...overrides,
   };
 }

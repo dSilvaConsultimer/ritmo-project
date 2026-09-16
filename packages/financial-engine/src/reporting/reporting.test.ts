@@ -4,6 +4,7 @@ import { buildFinancialSnapshot } from "../snapshot/snapshot";
 import { initialUserSnapshotInput, transactions, reconciliationLinks } from "../fixtures/initial-user";
 import { UNCATEGORIZED } from "../domain/category";
 import {
+  categorySpendingTransactions,
   monthlyCategoryTotals,
   monthlyTransactionList,
   reconciliationCandidates,
@@ -72,5 +73,56 @@ describe("uncategorizedTransactions", () => {
 describe("reconciliationCandidates", () => {
   it("returns no unresolved candidates for the clean initial fixture", () => {
     expect(reconciliationCandidates(reconciliationLinks)).toHaveLength(0);
+  });
+});
+
+describe("categorySpendingTransactions (DEC-135, tests 9-14)", () => {
+  it("(test 13) a category filter returns exactly the transactions summing to that category's monthlyCategoryTotals bucket", () => {
+    const totals = monthlyCategoryTotals(transactions, reconciliationLinks, asOfDate);
+    const fastFood = totals.find((t) => t.category === "Food" && t.subcategory === "Fast Food")!;
+
+    const detail = categorySpendingTransactions(transactions, reconciliationLinks, asOfDate, "Food");
+    // "Food" alone (no subcategory distinction at the filter level) —
+    // aggregate every "Food" transaction's amount and compare to the sum of
+    // every "Food"-prefixed bucket (with-and-without-subcategory).
+    const foodBuckets = totals.filter((t) => t.category === "Food");
+    const expectedTotalCents = foodBuckets.reduce((sum, b) => sum + b.total.cents, 0);
+    const actualTotalCents = detail.reduce((sum, t) => sum + t.amount.cents, 0);
+    expect(actualTotalCents).toBe(expectedTotalCents);
+    expect(detail.some((t) => t.subcategory === fastFood.subcategory)).toBe(true);
+  });
+
+  it("(test 14) the UNCATEGORIZED sentinel filters to exactly the same set uncategorizedTransactions reports for this month", () => {
+    const detail = categorySpendingTransactions(transactions, reconciliationLinks, asOfDate, UNCATEGORIZED);
+    const uncategorized = uncategorizedTransactions(transactions, reconciliationLinks, asOfDate);
+    expect(detail.map((t) => t.id).sort()).toEqual(uncategorized.map((t) => t.id).sort());
+  });
+
+  it("(test 10, 11, 12) never includes a TRANSFER, CARD_PAYMENT, or INVESTMENT transaction even if one happened to share a category string", () => {
+    const withNonConsumption = [
+      ...transactions,
+      {
+        ...transactions[0]!,
+        id: "tx-transfer-test" as (typeof transactions)[0]["id"],
+        financialEffect: "TRANSFER" as const,
+        category: "Food",
+      },
+      {
+        ...transactions[0]!,
+        id: "tx-cardpayment-test" as (typeof transactions)[0]["id"],
+        financialEffect: "CARD_PAYMENT" as const,
+        category: "Food",
+      },
+      {
+        ...transactions[0]!,
+        id: "tx-investment-test" as (typeof transactions)[0]["id"],
+        financialEffect: "INVESTMENT" as const,
+        category: "Food",
+      },
+    ];
+    const detail = categorySpendingTransactions(withNonConsumption, reconciliationLinks, asOfDate, "Food");
+    expect(detail.some((t) => t.id === "tx-transfer-test")).toBe(false);
+    expect(detail.some((t) => t.id === "tx-cardpayment-test")).toBe(false);
+    expect(detail.some((t) => t.id === "tx-investment-test")).toBe(false);
   });
 });

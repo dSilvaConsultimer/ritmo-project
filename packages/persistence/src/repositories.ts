@@ -12,6 +12,7 @@ import type {
   ProtectedPreference,
   ReconciliationLink,
   VariableBudget,
+  Category,
   CategoryRule,
   MerchantNormalizationRule,
   FinancialTransaction,
@@ -492,6 +493,74 @@ export async function deleteCategoryRule(db: Database, id: string): Promise<void
 
 export async function deleteMerchantRule(db: Database, id: string): Promise<void> {
   await db.delete(schema.merchantNormalizationRules).where(eq(schema.merchantNormalizationRules.id, id));
+}
+
+// ---------- Category (DEC-135) ----------
+
+/** Id-keyed upsert — used only for global BASE categories (`seed`/bootstrap's stable fixture ids). Never use this for a personal category — see `upsertPersonalCategory`. */
+export async function upsertCategory(db: Database, category: Category): Promise<void> {
+  const row = mappers.categoryToRow(category);
+  await db.insert(schema.categories).values(row).onConflictDoUpdate({ target: schema.categories.id, set: row });
+}
+
+/**
+ * Conflict-safe upsert for a PERSONAL category, keyed on its natural
+ * identity `(financialProfileId, name)` — mirrors
+ * `upsertPersonalCategoryRule` (DEC-133/134) exactly. `category.financialProfileId`
+ * MUST be set. `targetWhere` matches the partial unique index's own
+ * predicate — required for Postgres to infer which index this upsert means.
+ */
+export async function upsertPersonalCategory(db: Database, category: Category): Promise<Category> {
+  if (category.financialProfileId === undefined) {
+    throw new Error("upsertPersonalCategory requires category.financialProfileId — use upsertCategory for base categories");
+  }
+  const row = mappers.categoryToRow(category);
+  const { id: _id, ...refreshableFields } = row;
+  const [saved] = await db
+    .insert(schema.categories)
+    .values(row)
+    .onConflictDoUpdate({
+      target: [schema.categories.financialProfileId, schema.categories.name],
+      targetWhere: sql`${schema.categories.financialProfileId} IS NOT NULL`,
+      set: refreshableFields,
+    })
+    .returning();
+  return mappers.rowToCategory(saved!);
+}
+
+export async function getCategoryById(db: Database, id: string): Promise<Category | undefined> {
+  const [row] = await db.select().from(schema.categories).where(eq(schema.categories.id, id));
+  return row ? mappers.rowToCategory(row) : undefined;
+}
+
+/**
+ * Every category VISIBLE to this profile — every BASE category
+ * (`financial_profile_id IS NULL`) plus this profile's own PERSONAL ones.
+ * Never another profile's personal categories. Mirrors `loadRules`'s own
+ * visibility rule exactly.
+ */
+export async function listCategoriesForProfile(db: Database, financialProfileId: string): Promise<Category[]> {
+  const rows = await db
+    .select()
+    .from(schema.categories)
+    .where(or(isNull(schema.categories.financialProfileId), eq(schema.categories.financialProfileId, financialProfileId)));
+  return rows.map(mappers.rowToCategory);
+}
+
+/** Every global BASE category (`financial_profile_id IS NULL`) — never any profile's personal ones. */
+export async function listBaseCategories(db: Database): Promise<Category[]> {
+  const rows = await db.select().from(schema.categories).where(isNull(schema.categories.financialProfileId));
+  return rows.map(mappers.rowToCategory);
+}
+
+/**
+ * DEC-135: every `CategoryRule` regardless of ownership — global AND every
+ * profile's personal ones. Migration-only use (`backfillCategoryRuleCategoryIds`);
+ * every ordinary read path stays scoped through `loadRules` instead.
+ */
+export async function listAllCategoryRules(db: Database): Promise<CategoryRule[]> {
+  const rows = await db.select().from(schema.categoryRules);
+  return rows.map(mappers.rowToCategoryRule);
 }
 
 // ---------- RecurringExpenseCandidate (DEC-132) ----------

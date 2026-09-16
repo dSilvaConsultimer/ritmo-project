@@ -1,8 +1,15 @@
 import type { Id } from "@money-copilot/shared";
 import type { CategoryRule } from "../domain/category";
+import {
+  baseCategoryTransporte,
+  baseCategoryAssinaturas,
+  baseCategoryDelivery,
+  baseCategoryAcademia,
+  baseCategoryCombustivel,
+} from "./base-categories";
 
 /**
- * DEC-134: the REAL global `SYSTEM_DEFAULT` baseline — deliberately
+ * DEC-134/135: the REAL global `SYSTEM_DEFAULT` baseline — deliberately
  * separate from `rules.ts`'s `categoryRules`, which are Sprint 1/2 fixture
  * data discovered from the FOUNDER's own real transaction history
  * (`fixtures/transactions.ts`'s own comments confirm several of those
@@ -39,13 +46,19 @@ import type { CategoryRule } from "../domain/category";
  * Priority 100 — same tier as `rules.ts`'s fixture rules; a personal
  * override always wins over this tier regardless of the number (see
  * `categorize`'s own precedence doc comment, DEC-133/134).
+ *
+ * DEC-135: `categoryId` now points at the exact canonical `baseCategories`
+ * row with the matching name — `category` (the string) is kept in sync,
+ * never independently invented, so `categorize`'s existing string-based
+ * return value is completely unaffected.
  */
 export const systemDefaultCategoryRules: readonly CategoryRule[] = [
   {
     id: "category-rule_system-default-uber" as Id<"category-rule">,
     matchType: "CONTAINS_DESCRIPTION",
     pattern: "UBER",
-    category: "Transporte",
+    category: baseCategoryTransporte.name,
+    categoryId: baseCategoryTransporte.id,
     priority: 100,
     origin: "SYSTEM_DEFAULT",
   },
@@ -53,7 +66,8 @@ export const systemDefaultCategoryRules: readonly CategoryRule[] = [
     id: "category-rule_system-default-netflix" as Id<"category-rule">,
     matchType: "CONTAINS_DESCRIPTION",
     pattern: "NETFLIX",
-    category: "Assinaturas",
+    category: baseCategoryAssinaturas.name,
+    categoryId: baseCategoryAssinaturas.id,
     priority: 100,
     origin: "SYSTEM_DEFAULT",
   },
@@ -61,7 +75,8 @@ export const systemDefaultCategoryRules: readonly CategoryRule[] = [
     id: "category-rule_system-default-spotify" as Id<"category-rule">,
     matchType: "CONTAINS_DESCRIPTION",
     pattern: "SPOTIFY",
-    category: "Assinaturas",
+    category: baseCategoryAssinaturas.name,
+    categoryId: baseCategoryAssinaturas.id,
     priority: 100,
     origin: "SYSTEM_DEFAULT",
   },
@@ -69,7 +84,8 @@ export const systemDefaultCategoryRules: readonly CategoryRule[] = [
     id: "category-rule_system-default-ifood" as Id<"category-rule">,
     matchType: "CONTAINS_DESCRIPTION",
     pattern: "IFOOD",
-    category: "Delivery",
+    category: baseCategoryDelivery.name,
+    categoryId: baseCategoryDelivery.id,
     priority: 100,
     origin: "SYSTEM_DEFAULT",
   },
@@ -77,7 +93,8 @@ export const systemDefaultCategoryRules: readonly CategoryRule[] = [
     id: "category-rule_system-default-smartfit" as Id<"category-rule">,
     matchType: "CONTAINS_DESCRIPTION",
     pattern: "SMART FIT",
-    category: "Academia",
+    category: baseCategoryAcademia.name,
+    categoryId: baseCategoryAcademia.id,
     priority: 100,
     origin: "SYSTEM_DEFAULT",
   },
@@ -88,7 +105,8 @@ export const systemDefaultCategoryRules: readonly CategoryRule[] = [
     id: "category-rule_system-default-ipiranga" as Id<"category-rule">,
     matchType: "CONTAINS_DESCRIPTION",
     pattern: "IPIRANGA",
-    category: "Combustível",
+    category: baseCategoryCombustivel.name,
+    categoryId: baseCategoryCombustivel.id,
     priority: 100,
     origin: "SYSTEM_DEFAULT",
   },
@@ -96,7 +114,8 @@ export const systemDefaultCategoryRules: readonly CategoryRule[] = [
     id: "category-rule_system-default-shell" as Id<"category-rule">,
     matchType: "CONTAINS_DESCRIPTION",
     pattern: "SHELL",
-    category: "Combustível",
+    category: baseCategoryCombustivel.name,
+    categoryId: baseCategoryCombustivel.id,
     priority: 100,
     origin: "SYSTEM_DEFAULT",
   },

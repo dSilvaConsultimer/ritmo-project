@@ -1,5 +1,6 @@
 import type { Id } from "@money-copilot/shared";
 import type {
+  Category,
   CategoryRule,
   Recommendation,
   RecommendationType,
@@ -10,6 +11,7 @@ import {
   buildFinancialSnapshot,
   buildFinancialPositionFromAccounts,
   breakdownEvent,
+  categorySpendingTransactions,
   compareLifestyles,
   detectRecurringCandidates,
   getCategoryBudgetStatus,
@@ -351,6 +353,35 @@ export async function getCategoryTotals(
 ): Promise<readonly CategoryTotal[]> {
   const input = await repo.loadFinancialSnapshotInput(db, financialProfileId, asOfDate);
   return monthlyCategoryTotals(input.transactions, input.reconciliationLinks, asOfDate);
+}
+
+/**
+ * DEC-135: Planning's "Gastos por categoria" drill-down — the real
+ * transactions behind one category's total for the given period, using the
+ * EXACT SAME filtering `getCategoryTotals`/`monthlyCategoryTotals` applies
+ * (never a separate/looser query), so the list always sums to the total
+ * shown alongside it. `category` accepts the literal `UNCATEGORIZED`
+ * sentinel for the "uncategorized" filter option.
+ */
+export async function getCategorySpendingDetail(
+  db: Database,
+  financialProfileId: string,
+  asOfDate: string,
+  category: string,
+): Promise<readonly FinancialTransaction[]> {
+  const input = await repo.loadFinancialSnapshotInput(db, financialProfileId, asOfDate);
+  return categorySpendingTransactions(input.transactions, input.reconciliationLinks, asOfDate, category);
+}
+
+/**
+ * DEC-135: every category VISIBLE to this profile (base + personal) — the
+ * source list for the CategoryPicker, wherever it's used.
+ */
+export async function getCategoriesForProfile(
+  db: Database,
+  financialProfileId: string,
+): Promise<readonly Category[]> {
+  return repo.listCategoriesForProfile(db, financialProfileId);
 }
 
 export async function getUncategorizedTransactions(

@@ -3,9 +3,24 @@ import type { FinancialTransaction } from "./transaction";
 
 export const UNCATEGORIZED = "UNCATEGORIZED" as const;
 
+/**
+ * DEC-135: the canonical category identity — previously a completely dead
+ * type/table (zero reads or writes anywhere in this codebase). Revived
+ * rather than replaced: same shape, ownership semantics now mirror
+ * `CategoryRule`'s own DEC-133 model exactly.
+ * - `financialProfileId` absent: a BASE category, available to every
+ *   profile (e.g. "Transporte," "Assinaturas").
+ * - `financialProfileId` present: a PERSONAL category, created by and
+ *   visible only to that profile (e.g. Douglas's "Trabalho").
+ * `name` is the single source of truth a `CategoryRule`/`FinancialTransaction`
+ * ultimately displays — see `CategoryRule.categoryId`'s own doc comment for
+ * why transactions/rules still store the resolved name string rather than
+ * a foreign key, and what that scoping decision does and doesn't cover.
+ */
 export interface Category {
   readonly id: Id<"category">;
   readonly name: string;
+  readonly financialProfileId?: Id<"financial-profile">;
 }
 
 export type CategoryRuleMatchType =
@@ -55,11 +70,28 @@ export interface CategoryRule {
   readonly id: Id<"category-rule">;
   readonly matchType: CategoryRuleMatchType;
   readonly pattern: string;
+  /**
+   * DEC-135: kept as the resolved category NAME (denormalized from
+   * `categoryId` at write time) — `categorize`'s matcher and every existing
+   * snapshot/reporting consumer of `CategorizationResult.category` continue
+   * to work completely unchanged; this was a deliberate scope decision (see
+   * DEC-135's own writeup) rather than converting the matcher/reporting
+   * pipeline to resolve category names on every read.
+   */
   readonly category: string;
   readonly subcategory?: string;
   readonly priority: number;
   readonly origin: CategoryRuleOrigin;
   readonly financialProfileId?: Id<"financial-profile">;
+  /**
+   * DEC-135: the canonical `Category` this rule resolves to. Optional
+   * because it never existed before this decision — every SYSTEM_DEFAULT/
+   * fixture rule that predates it has no `categoryId` yet (see DEC-135's
+   * conservative migration report for exactly which ones were safely
+   * backfilled and which were left unresolved). Every rule created through
+   * `mutations.createCategoryRule` going forward always sets it.
+   */
+  readonly categoryId?: Id<"category">;
 }
 
 /**
@@ -110,6 +142,13 @@ export interface CategorizationResult {
   readonly category: string;
   readonly subcategory?: string;
   readonly matchedRuleId?: Id<"category-rule">;
+  /** DEC-135: the canonical category id, when the matched rule has one — see `CategoryRule.categoryId`. */
+  readonly categoryId?: Id<"category">;
+}
+
+/** DEC-135: true for a global BASE category (available to every profile). */
+export function isBaseCategory(category: Category): boolean {
+  return category.financialProfileId === undefined;
 }
 
 function bestMatch(
@@ -147,5 +186,6 @@ export function categorize(
     category: match.category,
     ...(match.subcategory !== undefined ? { subcategory: match.subcategory } : {}),
     matchedRuleId: match.id,
+    ...(match.categoryId !== undefined ? { categoryId: match.categoryId } : {}),
   };
 }

@@ -409,10 +409,32 @@ export const merchantNormalizationRules = pgTable("merchant_normalization_rules"
   priority: integer("priority").notNull(),
 });
 
-export const categories = pgTable("categories", {
-  id: text("id").primaryKey(),
-  name: text("name").notNull().unique(),
-});
+/**
+ * DEC-135: revived from completely dead code (zero reads/writes anywhere
+ * before this) — the canonical category identity. Ownership mirrors
+ * `category_rules`'s own DEC-133/134 model exactly: `financial_profile_id`
+ * absent means a global BASE category (every profile sees it);
+ * present means a PERSONAL category scoped to exactly that profile. Same
+ * two-partial-unique-index strategy as `category_rules` (DEC-134) — a
+ * plain `unique(financial_profile_id, name)` would not protect the base
+ * tier, since Postgres treats every NULL as distinct.
+ */
+export const categories = pgTable(
+  "categories",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    financialProfileId: text("financial_profile_id").references(() => financialProfiles.id),
+  },
+  (table) => [
+    uniqueIndex("categories_personal_name_unique")
+      .on(table.financialProfileId, table.name)
+      .where(sql`${table.financialProfileId} IS NOT NULL`),
+    uniqueIndex("categories_base_name_unique")
+      .on(table.name)
+      .where(sql`${table.financialProfileId} IS NULL`),
+  ],
+);
 
 /**
  * DEC-133/134: `financial_profile_id` is nullable — null means a GLOBAL
@@ -449,6 +471,13 @@ export const categoryRules = pgTable(
     // matching every rule that existed before user-authored rules were possible.
     origin: text("origin").$type<CategoryRuleOrigin>(),
     financialProfileId: text("financial_profile_id").references(() => financialProfiles.id),
+    // DEC-135: the canonical Category this rule resolves to — nullable
+    // because it never existed before this decision (every pre-existing
+    // rule predates it; see DEC-135's migration report for exactly which
+    // ones were safely backfilled). `category` (the string) remains the
+    // source of truth `categorize`'s matcher reads — this is purely an
+    // additional, denormalized-from link for the new canonical UI/filtering.
+    categoryId: text("category_id").references(() => categories.id),
   },
   (table) => [
     uniqueIndex("category_rules_personal_identity_unique")

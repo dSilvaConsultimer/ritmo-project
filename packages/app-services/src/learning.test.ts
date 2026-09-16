@@ -7,6 +7,7 @@ import {
   categorizeTransaction,
   confirmRecurringFixedExpenseCandidate,
   confirmRecurringIncomeCandidate,
+  createCategory,
   createCategoryRule,
   deleteCategoryRule,
   recordManualTransaction,
@@ -20,6 +21,15 @@ import {
 import { freshSeededDb, seedSecondProfile } from "./test-helpers";
 
 const ASOF = "2026-09-05";
+
+async function categoryIdFor(
+  db: Awaited<ReturnType<typeof freshSeededDb>>,
+  financialProfileId: string,
+  name: string,
+): Promise<string> {
+  const category = await createCategory(db, financialProfileId, { name });
+  return category.id;
+}
 
 async function checkingSource(db: Awaited<ReturnType<typeof freshSeededDb>>): Promise<PaymentSource> {
   const source: PaymentSource = {
@@ -90,7 +100,7 @@ describe("categorizeTransaction (tests 2, 3, 4, 11, 12)", () => {
 
     const result = await categorizeTransaction(db, fixtureProfile.id, {
       transactionId: tx.id,
-      category: "Combustível",
+      categoryId: await categoryIdFor(db, fixtureProfile.id, "Combustível"),
       alwaysForMerchant: false,
     });
 
@@ -107,7 +117,7 @@ describe("categorizeTransaction (tests 2, 3, 4, 11, 12)", () => {
 
     const result = await categorizeTransaction(db, fixtureProfile.id, {
       transactionId: tx.id,
-      category: "Combustível",
+      categoryId: await categoryIdFor(db, fixtureProfile.id, "Combustível"),
       alwaysForMerchant: true,
     });
 
@@ -126,7 +136,7 @@ describe("categorizeTransaction (tests 2, 3, 4, 11, 12)", () => {
     const tx = await insertTransaction(db, source, { category: "UNCATEGORIZED" });
     await categorizeTransaction(db, fixtureProfile.id, {
       transactionId: tx.id,
-      category: "Combustível",
+      categoryId: await categoryIdFor(db, fixtureProfile.id, "Combustível"),
       alwaysForMerchant: true,
     });
 
@@ -160,7 +170,7 @@ describe("categorizeTransaction (tests 2, 3, 4, 11, 12)", () => {
 
     const result = await categorizeTransaction(db, fixtureProfile.id, {
       transactionId: tx3.id,
-      category: "Combustível",
+      categoryId: await categoryIdFor(db, fixtureProfile.id, "Combustível"),
       alwaysForMerchant: true,
     });
 
@@ -189,7 +199,7 @@ describe("categorizeTransaction (tests 2, 3, 4, 11, 12)", () => {
 
     await categorizeTransaction(db, fixtureProfile.id, {
       transactionId: target.id,
-      category: "Combustível",
+      categoryId: await categoryIdFor(db, fixtureProfile.id, "Combustível"),
       alwaysForMerchant: true,
     });
 
@@ -215,7 +225,7 @@ describe("categorizeTransaction (tests 2, 3, 4, 11, 12)", () => {
 
     await categorizeTransaction(db, fixtureProfile.id, {
       transactionId: target.id,
-      category: "Trabalho",
+      categoryId: await categoryIdFor(db, fixtureProfile.id, "Trabalho"),
       alwaysForMerchant: true,
     });
 
@@ -244,7 +254,7 @@ describe("categorizeTransaction (tests 2, 3, 4, 11, 12)", () => {
     const tx = await insertTransaction(db, source, { category: "UNCATEGORIZED" });
     await categorizeTransaction(db, fixtureProfile.id, {
       transactionId: tx.id,
-      category: "Trabalho",
+      categoryId: await categoryIdFor(db, fixtureProfile.id, "Trabalho"),
       alwaysForMerchant: true,
     });
 
@@ -288,7 +298,7 @@ describe("categorizeTransaction (tests 2, 3, 4, 11, 12)", () => {
 
     const result = await categorizeTransaction(db, fixtureProfile.id, {
       transactionId: transfer.id,
-      category: "Transferências",
+      categoryId: await categoryIdFor(db, fixtureProfile.id, "Transferências"),
       alwaysForMerchant: true,
     });
     expect(result.transaction.category).toBe("Transferências");
@@ -308,7 +318,7 @@ describe("categorizeTransaction (tests 2, 3, 4, 11, 12)", () => {
 
     const result = await categorizeTransaction(db, fixtureProfile.id, {
       transactionId: billPayment.id,
-      category: "Fatura do cartão",
+      categoryId: await categoryIdFor(db, fixtureProfile.id, "Fatura do cartão"),
     });
     expect(result.transaction.category).toBe("Fatura do cartão");
     expect(result.transaction.financialEffect).toBe("CARD_PAYMENT");
@@ -475,7 +485,7 @@ describe("createCategoryRule (test 9: manual creation uses the same canonical do
     const rule = await createCategoryRule(db, fixtureProfile.id, {
       matchType: "CONTAINS_MERCHANT",
       pattern: "UBER",
-      category: "Transporte",
+      categoryId: await categoryIdFor(db, fixtureProfile.id, "Transporte"),
       origin: "USER_DECLARED",
     });
 
@@ -537,8 +547,9 @@ describe("DEC-134: new-user categorization uses the real global SYSTEM_DEFAULT b
 
   it("a brand-new profile with NO personal rules gets obvious merchants auto-categorized by the real global baseline, and an ambiguous PIX stays pending", async () => {
     const db = await freshSeededDb();
-    // The exact function `app-services`' `initializeDb()` calls on every
-    // real boot (including production) — see DEC-134.
+    // The exact functions `app-services`' `initializeDb()` calls on every
+    // real boot (including production) — see DEC-134/135.
+    await repo.bootstrapBaseCategories(db);
     await repo.bootstrapSystemDefaultCategoryRules(db);
     const newProfileId = await seedSecondProfile(db, "New user, DEC-134");
     const source: PaymentSource = { id: createId("payment-source"), label: "Conta Nova", type: "DEBIT" };
@@ -583,6 +594,7 @@ describe("DEC-134: new-user categorization uses the real global SYSTEM_DEFAULT b
 
   it("a personal UBER override wins for that profile; a different profile with no override still gets the system default", async () => {
     const db = await freshSeededDb();
+    await repo.bootstrapBaseCategories(db);
     await repo.bootstrapSystemDefaultCategoryRules(db);
     const profileWithOverride = await seedSecondProfile(db, "Douglas");
     const profileWithoutOverride = await seedSecondProfile(db, "Someone else");
@@ -590,7 +602,7 @@ describe("DEC-134: new-user categorization uses the real global SYSTEM_DEFAULT b
     await createCategoryRule(db, profileWithOverride, {
       matchType: "CONTAINS_DESCRIPTION",
       pattern: "UBER",
-      category: "Trabalho",
+      categoryId: await categoryIdFor(db, profileWithOverride, "Trabalho"),
     });
 
     const sourceA: PaymentSource = { id: createId("payment-source"), label: "Conta", type: "DEBIT" };

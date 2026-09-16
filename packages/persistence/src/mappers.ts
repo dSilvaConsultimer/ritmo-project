@@ -16,6 +16,7 @@ import type {
   LifestyleDelta,
   FinancialPosition,
   MerchantNormalizationRule,
+  Category,
   CategoryRule,
   ProviderConnection,
   SyncRun,
@@ -582,6 +583,7 @@ export function categoryRuleToRow(r: CategoryRule): typeof schema.categoryRules.
     priority: r.priority,
     origin: r.origin,
     financialProfileId: r.financialProfileId ?? null,
+    categoryId: r.categoryId ?? null,
   };
 }
 
@@ -597,6 +599,28 @@ export function rowToCategoryRule(row: CategoryRuleRow): CategoryRule {
     // was, in fact, a bundled system default — never guessed as anything else.
     origin: row.origin ?? "SYSTEM_DEFAULT",
     // DEC-133: null means global — never map it to an empty-string id.
+    ...(row.financialProfileId ? { financialProfileId: row.financialProfileId as Id<"financial-profile"> } : {}),
+    // DEC-135: null means this rule predates the canonical Category link.
+    ...(row.categoryId ? { categoryId: row.categoryId as Id<"category"> } : {}),
+  };
+}
+
+// ---------- Category (DEC-135) ----------
+
+type CategoryRow = typeof schema.categories.$inferSelect;
+
+export function categoryToRow(c: Category): typeof schema.categories.$inferInsert {
+  return {
+    id: c.id,
+    name: c.name,
+    financialProfileId: c.financialProfileId ?? null,
+  };
+}
+
+export function rowToCategory(row: CategoryRow): Category {
+  return {
+    id: row.id as Id<"category">,
+    name: row.name,
     ...(row.financialProfileId ? { financialProfileId: row.financialProfileId as Id<"financial-profile"> } : {}),
   };
 }

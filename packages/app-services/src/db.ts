@@ -1,4 +1,5 @@
 import {
+  bootstrapBaseCategories,
   bootstrapSystemDefaultCategoryRules,
   createDatabase,
   createPostgresDatabase,
@@ -89,6 +90,9 @@ async function initializeDb(): Promise<Database> {
     // id-keyed `ON CONFLICT DO UPDATE` against a handful of stable ids,
     // never DDL, so this carries none of the migration race risk the
     // comment above describes.
+    // DEC-135: base categories MUST bootstrap before the category rules
+    // that reference them (category_rules.category_id -> categories.id).
+    await bootstrapBaseCategories(db);
     await bootstrapSystemDefaultCategoryRules(db);
     return db;
   }
@@ -99,6 +103,7 @@ async function initializeDb(): Promise<Database> {
   if (shouldSeedDatabase(environment)) {
     await seed(db); // idempotent — safe to run on every process start.
   }
+  await bootstrapBaseCategories(db);
   await bootstrapSystemDefaultCategoryRules(db);
   return db;
 }

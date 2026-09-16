@@ -8,10 +8,13 @@ import {
   confirmRecurringExpenseInput,
   confirmRecurringIncomeHandler,
   confirmRecurringIncomeInput,
+  createCategoryHandler,
+  createCategoryInput,
   createCategoryRuleHandler,
   createCategoryRuleInput,
   deleteCategoryRuleHandler,
   deleteCategoryRuleInput,
+  getCategoriesHandler,
   rejectCandidateHandler,
   rejectCandidateInput,
   rejectRecommendationHandler,
@@ -43,6 +46,14 @@ export const rejectCandidateAction = createServerFn({ method: "POST" })
 export const createCategoryRuleAction = createServerFn({ method: "POST" })
   .validator(createCategoryRuleInput)
   .handler(({ data }) => createCategoryRuleHandler(data));
+
+export const getCategoriesAction = createServerFn({ method: "GET" }).handler(() =>
+  getCategoriesHandler(),
+);
+
+export const createCategoryAction = createServerFn({ method: "POST" })
+  .validator(createCategoryInput)
+  .handler(({ data }) => createCategoryHandler(data));
 
 export const deleteCategoryRuleAction = createServerFn({ method: "POST" })
   .validator(deleteCategoryRuleInput)

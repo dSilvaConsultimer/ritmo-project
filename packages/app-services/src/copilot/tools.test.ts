@@ -72,6 +72,7 @@ describe("TOOL_REGISTRY", () => {
         "categorizeTransaction",
         "confirmRecurringFixedExpenseCandidate",
         "confirmRecurringIncomeCandidate",
+        "createCategory",
         "createCategoryRule",
         "createFixedExpense",
         "createIncome",
@@ -254,14 +255,23 @@ describe("tool execution against seeded data", () => {
     expect(result.direction).toBe("DEBIT");
   });
 
-  it("(DEC-132, test 10) createCategoryRule and categorizeTransaction's 'always' path both create a rule usable by categorize() — the same canonical domain the AI and the UI share", async () => {
+  it("(DEC-135, test 10) createCategory and createCategoryRule both use the same canonical domain the AI and the UI share", async () => {
     const db = await freshSeededDb();
+    const createCategoryTool = findTool("createCategory")!;
+    const categoryArgs = createCategoryTool.schema.parse({ name: "Transporte" });
+    const category = (await createCategoryTool.execute(
+      { db, financialProfileId: fixtureProfile.id, asOfDate: ASOF },
+      categoryArgs,
+    )) as { id: string };
+
     const tool = findTool("createCategoryRule")!;
-    const args = tool.schema.parse({ matchType: "CONTAINS_MERCHANT", pattern: "UBER", category: "Transporte" });
+    const args = tool.schema.parse({ matchType: "CONTAINS_MERCHANT", pattern: "UBER", categoryId: category.id });
     const result = (await tool.execute({ db, financialProfileId: fixtureProfile.id, asOfDate: ASOF }, args)) as {
       origin: string;
+      categoryId?: string;
     };
     expect(result.origin).toBe("USER_DECLARED");
+    expect(result.categoryId).toBe(category.id);
   });
 
   it("(DEC-132, test 10) confirmRecurringFixedExpenseCandidate creates a FixedExpense with USER_CONFIRMED_HISTORY provenance via the SAME mutation the UI uses", async () => {

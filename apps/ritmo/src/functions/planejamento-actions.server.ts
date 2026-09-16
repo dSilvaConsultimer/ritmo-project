@@ -4,8 +4,10 @@ import {
   categorizeTransaction,
   confirmRecurringFixedExpenseCandidate,
   confirmRecurringIncomeCandidate,
+  createCategory,
   createCategoryRule,
   deleteCategoryRule,
+  getCategoriesForProfile,
   getDb,
   rejectRecommendation,
   rejectRecurringCandidate,
@@ -32,7 +34,7 @@ function normalizeActionError(error: unknown): ActionError {
 
 export const categorizeTransactionInput = z.object({
   transactionId: z.string().min(1),
-  category: z.string().min(1),
+  categoryId: z.string().min(1),
   subcategory: z.string().min(1).optional(),
   alwaysForMerchant: z.boolean().optional(),
 });
@@ -49,7 +51,7 @@ export async function categorizeTransactionHandler(
   try {
     const result = await categorizeTransaction(db, financialProfileId, {
       transactionId: data.transactionId,
-      category: data.category,
+      categoryId: data.categoryId,
       ...(data.subcategory !== undefined ? { subcategory: data.subcategory } : {}),
       ...(data.alwaysForMerchant !== undefined
         ? { alwaysForMerchant: data.alwaysForMerchant }
@@ -140,7 +142,7 @@ export const createCategoryRuleInput = z.object({
     "REGEX_DESCRIPTION",
   ]),
   pattern: z.string().min(1),
-  category: z.string().min(1),
+  categoryId: z.string().min(1),
   subcategory: z.string().min(1).optional(),
 });
 export type CreateCategoryRuleInput = z.infer<typeof createCategoryRuleInput>;
@@ -154,10 +156,56 @@ export async function createCategoryRuleHandler(
     await createCategoryRule(db, financialProfileId, {
       matchType: data.matchType,
       pattern: data.pattern,
-      category: data.category,
+      categoryId: data.categoryId,
       ...(data.subcategory !== undefined ? { subcategory: data.subcategory } : {}),
     });
     return { ok: true };
+  } catch (error) {
+    return { ok: false, error: normalizeActionError(error) };
+  }
+}
+
+export const getCategoriesInput = z.object({});
+export type GetCategoriesInput = z.infer<typeof getCategoriesInput>;
+
+/** The CategoryPicker's data source — every category visible to this profile (base + personal). */
+export async function getCategoriesHandler(): Promise<
+  | {
+      readonly ok: true;
+      readonly categories: readonly { id: string; name: string; isBase: boolean }[];
+    }
+  | { readonly ok: false; readonly error: ActionError }
+> {
+  const { financialProfileId } = await getCurrentProfileContext();
+  const db = await getDb();
+  try {
+    const categories = await getCategoriesForProfile(db, financialProfileId);
+    return {
+      ok: true,
+      categories: categories
+        .map((c) => ({ id: c.id, name: c.name, isBase: c.financialProfileId === undefined }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    };
+  } catch (error) {
+    return { ok: false, error: normalizeActionError(error) };
+  }
+}
+
+export const createCategoryInput = z.object({ name: z.string().min(1) });
+export type CreateCategoryInput = z.infer<typeof createCategoryInput>;
+
+/** The CategoryPicker's "+ Criar nova categoria" action — always a PERSONAL category, immediately usable. */
+export async function createCategoryHandler(
+  data: CreateCategoryInput,
+): Promise<
+  | { readonly ok: true; readonly category: { id: string; name: string } }
+  | { readonly ok: false; readonly error: ActionError }
+> {
+  const { financialProfileId } = await getCurrentProfileContext();
+  const db = await getDb();
+  try {
+    const category = await createCategory(db, financialProfileId, { name: data.name });
+    return { ok: true, category: { id: category.id, name: category.name } };
   } catch (error) {
     return { ok: false, error: normalizeActionError(error) };
   }

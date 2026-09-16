@@ -15,6 +15,7 @@ import {
   merchantNormalizationRules,
   categoryRules,
   systemDefaultCategoryRules,
+  baseCategories,
 } from "@money-copilot/financial-engine";
 import type { Database } from "./db";
 import { createDatabase } from "./db";
@@ -112,6 +113,18 @@ export async function seed(db: Database): Promise<void> {
 export async function bootstrapSystemDefaultCategoryRules(db: Database): Promise<void> {
   for (const rule of systemDefaultCategoryRules) {
     await repo.upsertCategoryRule(db, rule);
+  }
+}
+
+/**
+ * DEC-135: the canonical BASE category taxonomy — same independence and
+ * idempotency rationale as `bootstrapSystemDefaultCategoryRules` (stable
+ * hand-written ids, id-keyed `ON CONFLICT DO UPDATE`, must run in every
+ * environment including production, never gated behind `shouldSeedDatabase`).
+ */
+export async function bootstrapBaseCategories(db: Database): Promise<void> {
+  for (const category of baseCategories) {
+    await repo.upsertCategory(db, category);
   }
 }
 

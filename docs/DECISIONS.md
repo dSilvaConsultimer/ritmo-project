@@ -4438,3 +4438,101 @@ different profile with no override still gets "Transporte").
 exercising an invalid origin/ownership combination failed the instant the CHECK constraint was added —
 direct, live proof the constraint works, not just a written assertion. Full monorepo
 typecheck/lint/test/build all pass. Not pushed.
+
+### DEC-135
+
+**Date:** 2026-09-15
+**Context:** Category selection required free-text typing everywhere (pending confirmation, transaction
+correction, rule creation), and `category`/`CategoryRule.category` were arbitrary strings with no
+canonical identity — no selection, filtering, grouping, or stable rule-to-category relationship was
+possible. Planning also had no spending-by-category view at all, despite being the one place a user
+should be able to answer "Quanto eu gastei com Transporte este mês?" without asking the AI.
+**Decision:**
+1. **Canonical `Category` model selected: the existing dead `Category`/`categories` type/table,
+   revived** — never a second taxonomy. Same shape (`id`, `name`), extended with the exact ownership
+   pattern DEC-133 already established for `CategoryRule`: `financialProfileId` absent = global BASE
+   category (every profile sees it); present = PERSONAL category scoped to exactly that profile.
+2. **DB uniqueness mirrors DEC-134's fix exactly**, applied here from day one (never the broken plain-
+   unique-constraint mistake): two partial unique indexes — `categories_base_name_unique` on `(name)
+   WHERE financial_profile_id IS NULL`, `categories_personal_name_unique` on `(financial_profile_id,
+   name) WHERE financial_profile_id IS NOT NULL`. A conflict-safe `repo.upsertPersonalCategory`
+   (matching `targetWhere` clause, same technique as `upsertPersonalCategoryRule`) means creating the
+   same personal category name twice updates in place rather than duplicating.
+3. **V1 base category list (16):** Alimentação, Delivery, Transporte, Combustível, Moradia, Saúde,
+   Academia, Assinaturas, Lazer, Compras, Educação, Contas, Tarifas e Impostos, Renda, Investimentos,
+   Outros — reconciled against DEC-134's already-live rule categories (Transporte/Assinaturas/Delivery/
+   Academia/Combustível reused verbatim, never renamed, so linking existing rules to a canonical id is
+   an exact match). Two small deliberate normalizations from the request's own illustrative examples,
+   reported rather than applied silently: "Restaurantes / Delivery" -> "Delivery" (matches the already-
+   live string instead of fragmenting the same concept into two labels); "Tarifas / Impostos" -> "Tarifas
+   e Impostos" (no literal slash in a stored/displayed name). New `bootstrapBaseCategories(db)`,
+   independent of `seed()`, wired into `initializeDb()` UNCONDITIONALLY (before
+   `bootstrapSystemDefaultCategoryRules`, which now references these categories by id via FK) — same
+   idempotent, production-safe pattern as DEC-134's rule bootstrap.
+4. **`CategoryRule.categoryId?: Id<"category">`** — additive, optional (every SYSTEM_DEFAULT/fixture
+   rule predating this has none yet). `category` (the string) is kept as the source of truth
+   `categorize`'s matcher and every existing snapshot/reporting consumer already reads — deliberately
+   NOT converted to a resolved-on-every-read foreign key, to avoid touching the matcher/reporting
+   pipeline at all ("do not redesign matcher behavior"). `mutations.createCategoryRule` now takes
+   `categoryId` (never a free string) and denormalizes the category's `name` into `category` at write
+   time; its `origin` parameter type structurally excludes `SYSTEM_DEFAULT`, so no code path can create
+   a global rule. Precedence (personal > system default > pending confirmation) is completely
+   unchanged.
+5. **`FinancialTransaction.category` intentionally remains a string, not a `categoryId` FK** — an
+   explicit, reported scope decision. Every write to it (via `categorizeTransaction`, retroactive
+   reclassification, the CategoryPicker) is now GUARANTEED to come from the canonical registry (never
+   arbitrary typed text), which is what "stable identity" needed to mean for the picker/filtering use
+   cases — converting the whole transaction/snapshot/reporting pipeline to a `categoryId` FK was judged
+   out of proportion to this request and is not done here.
+6. **One reusable `CategoryPicker` component** (`apps/ritmo/src/components/ritmo/CategoryPicker.tsx`),
+   used in all four places the request named: pending "what was this?" classification
+   (`UncategorizedCard`), transaction correction (the same card, and Planning's category drill-down),
+   rule creation (`AddRuleForm`), and recurring-candidate confirmation (`RecurringCandidateCard`'s
+   expense category). Searchable (text filter), base categories sorted before personal, "+ Criar nova
+   categoria" is the only path to free text (immediately creates a PERSONAL category via
+   `mutations.createCategory` and selects it), current value preselects when editing. No screen
+   implements its own separate selector.
+7. **AI copilot converges on the same domain**: new `getCategories`/`createCategory` tools; existing
+   `categorizeTransaction`/`createCategoryRule` tools now require `categoryId` (never a free-text
+   category), with tool descriptions instructing the model to call `getCategories` first — never invent
+   or guess a category id.
+8. **Existing free-text category migration**: new `backfillCategoryRuleCategoryIds(db)`
+   (`app-services/src/sync.ts`), mirroring the established one-time-idempotent-backfill pattern
+   (`reclassifyMisclassifiedCardPayments`). Conservative by explicit requirement — links a rule to a
+   category ONLY on an exact (case/whitespace-insensitive) name match within that rule's own visible
+   scope (global rules against base categories only; personal rules against that same profile's own
+   categories only — never cross-profile, never global-to-personal). Everything else is reported in
+   `unresolvedCategoryNames`, never guessed — verified live: the Sprint 1/2 fixture's English category
+   strings ("Food," "Transportation," "Entertainment," "Shopping") never match any Portuguese base name
+   and come back unresolved exactly as expected. Idempotent (a second run relinks nothing). Not yet run
+   against real staging data — no access; the function and its report format are ready to hand off, per
+   this session's established pattern for one-time backfills.
+9. **"Gastos por categoria" is `monthlyCategoryTotals`, already exactly correct — reused, not
+   rebuilt.** It already excluded TRANSFER/CARD_PAYMENT/DEBT_PAYMENT/INVESTMENT/INCOME (only CONSUMPTION/
+   FEE count, REFUND nets against them) before this decision; nothing in the exclusion rule changed. New
+   `categorySpendingTransactions` (same file, same filtering) added for the drill-down list, so a
+   category's total and its transaction list can never disagree. New `queries.getCategorySpendingDetail`/
+   `getCategoriesForProfile` app-services wrappers.
+10. **Category and period filters**: a plain category `<select>` (all/uncategorized/each visible
+    category — reusing the SAME `categories` list source the picker uses, per the request) and a
+    period toggle (current/previous month) that re-fetches totals via a dedicated
+    `getCategoryTotalsAction` without reloading the rest of Planning. "Previous month" is computed as
+    any date within the prior calendar month (every date function here only ever compares year+month),
+    not a new engine concept.
+11. **Transaction drill-down + correction**: clicking a category row lazily fetches its transactions
+    (`getCategorySpendingDetailAction`) and shows each with a "Corrigir categoria" action reusing the
+    exact same `CategoryPicker` + "Só esta / Todas, passadas e futuras" flow DEC-133 already
+    established — no second correction UX.
+12. **Planning restructured into the requested six sections** (A. Resumo, B. Gastos por categoria,
+    C. Próximos compromissos, D. Receitas previstas, E. Ritmo precisa confirmar, F. Regras e categorias)
+    — "Ritmo precisa confirmar" moved from the top to its requested position; no branding/color/
+    navigation change; "Eventos planejados" (not one of the six) kept at the end since it wasn't asked
+    to be removed.
+**Tests added:** `category.test.ts` (categorize surfaces `categoryId`; `isBaseCategory`);
+`reporting.test.ts` (`categorySpendingTransactions` — matches the total, UNCATEGORIZED filter, TRANSFER/
+CARD_PAYMENT/INVESTMENT exclusion even when sharing a category string); `learning-repository.test.ts`
+(new Category CRUD/ownership describe block — 9 tests matching the requested list exactly);
+`category-spending.test.ts` (new file — spending-by-category tests 9-17, and 4 backfill-migration tests
+including the idempotency and cross-scope-isolation cases); `learning.test.ts`/`tools.test.ts` updated
+for the `categoryId`-based mutation signatures. Full monorepo typecheck/lint/test/build all pass
+(1,000+ tests). Not pushed. No changes to Safe-to-Spend/liquidity math.

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import { createId, type Id } from "@money-copilot/shared";
 import { categorize, fromCents } from "@money-copilot/financial-engine";
-import type { CategoryRule, RecurringExpenseCandidate } from "@money-copilot/financial-engine";
+import type { Category, CategoryRule, RecurringExpenseCandidate } from "@money-copilot/financial-engine";
 import { createDatabase } from "./db";
 import { runMigrations } from "./migrate";
 import * as repo from "./repositories";
@@ -330,5 +330,137 @@ describe("RecurringExpenseCandidate persistence — conflict-safe upsert (DEC-13
 
     expect(await repo.listRecurringCandidatesForProfile(db, profileId, "INCOME")).toHaveLength(1);
     expect(await repo.listRecurringCandidatesForProfile(db, profileId, "FIXED_EXPENSE")).toHaveLength(1);
+  });
+});
+
+describe("Category — canonical entity, base vs personal ownership (DEC-135)", () => {
+  it("(test 1) listCategoriesForProfile returns base categories with no personal categories present", async () => {
+    const db = await freshDb();
+    const profileId = await seedProfile(db);
+    const base: Category = { id: createId("category"), name: "Transporte" };
+    await repo.upsertCategory(db, base);
+
+    const visible = await repo.listCategoriesForProfile(db, profileId);
+    expect(visible.some((c) => c.id === base.id)).toBe(true);
+  });
+
+  it("(test 2) a personal category is included for its owner", async () => {
+    const db = await freshDb();
+    const profileId = await seedProfile(db);
+    const personal = await repo.upsertPersonalCategory(db, {
+      id: createId("category"),
+      name: "Trabalho",
+      financialProfileId: profileId as Id<"financial-profile">,
+    });
+
+    const visible = await repo.listCategoriesForProfile(db, profileId);
+    expect(visible.some((c) => c.id === personal.id)).toBe(true);
+  });
+
+  it("(test 3) another profile cannot see a different profile's personal category", async () => {
+    const db = await freshDb();
+    const profileA = await seedProfile(db);
+    const profileB = await seedProfile(db);
+    const personalForA = await repo.upsertPersonalCategory(db, {
+      id: createId("category"),
+      name: "Trabalho",
+      financialProfileId: profileA as Id<"financial-profile">,
+    });
+
+    const visibleToB = await repo.listCategoriesForProfile(db, profileB);
+    expect(visibleToB.some((c) => c.id === personalForA.id)).toBe(false);
+  });
+
+  it("(test 4) creating a custom category returns it with a real, immediately-usable id", async () => {
+    const db = await freshDb();
+    const profileId = await seedProfile(db);
+    const created = await repo.upsertPersonalCategory(db, {
+      id: createId("category"),
+      name: "Trabalho",
+      financialProfileId: profileId as Id<"financial-profile">,
+    });
+    expect(created.id).toBeTruthy();
+    const found = await repo.getCategoryById(db, created.id);
+    expect(found?.name).toBe("Trabalho");
+  });
+
+  it("(test 5) a duplicate personal category name for the same profile updates in place rather than duplicating", async () => {
+    const db = await freshDb();
+    const profileId = await seedProfile(db);
+    const first = await repo.upsertPersonalCategory(db, {
+      id: createId("category"),
+      name: "Trabalho",
+      financialProfileId: profileId as Id<"financial-profile">,
+    });
+    const second = await repo.upsertPersonalCategory(db, {
+      id: createId("category"),
+      name: "Trabalho",
+      financialProfileId: profileId as Id<"financial-profile">,
+    });
+
+    expect(second.id).toBe(first.id);
+    const visible = await repo.listCategoriesForProfile(db, profileId);
+    expect(visible.filter((c) => c.name === "Trabalho")).toHaveLength(1);
+  });
+
+  it("two different profiles may each have their own personal category with the identical name", async () => {
+    const db = await freshDb();
+    const profileA = await seedProfile(db);
+    const profileB = await seedProfile(db);
+
+    await expect(
+      repo.upsertPersonalCategory(db, {
+        id: createId("category"),
+        name: "Trabalho",
+        financialProfileId: profileA as Id<"financial-profile">,
+      }),
+    ).resolves.toBeDefined();
+    await expect(
+      repo.upsertPersonalCategory(db, {
+        id: createId("category"),
+        name: "Trabalho",
+        financialProfileId: profileB as Id<"financial-profile">,
+      }),
+    ).resolves.toBeDefined();
+  });
+
+  it("two identical base categories cannot both exist — the DB rejects the second", async () => {
+    const db = await freshDb();
+    await db.execute(sql`insert into categories (id, name) values ('cat-transporte-1', 'Transporte')`);
+    await expect(
+      db.execute(sql`insert into categories (id, name) values ('cat-transporte-2', 'Transporte')`),
+    ).rejects.toThrow();
+  });
+
+  it("refuses to upsert a category with no financialProfileId as a personal category", async () => {
+    const db = await freshDb();
+    await expect(
+      repo.upsertPersonalCategory(db, { id: createId("category"), name: "Transporte" }),
+    ).rejects.toThrow();
+  });
+
+  it("(test 6) a CategoryRule stores and resolves its canonical categoryId", async () => {
+    const db = await freshDb();
+    const profileId = await seedProfile(db);
+    const category = await repo.upsertPersonalCategory(db, {
+      id: createId("category"),
+      name: "Trabalho",
+      financialProfileId: profileId as Id<"financial-profile">,
+    });
+    const rule = await repo.upsertPersonalCategoryRule(db, {
+      id: createId("category-rule"),
+      matchType: "CONTAINS_MERCHANT",
+      pattern: "UBER",
+      category: category.name,
+      categoryId: category.id,
+      priority: 200,
+      origin: "USER_DECLARED",
+      financialProfileId: profileId as Id<"financial-profile">,
+    });
+
+    const { categoryRules } = await repo.loadRules(db, profileId);
+    const found = categoryRules.find((r) => r.id === rule.id);
+    expect(found?.categoryId).toBe(category.id);
+    expect(found?.category).toBe("Trabalho");
   });
 });

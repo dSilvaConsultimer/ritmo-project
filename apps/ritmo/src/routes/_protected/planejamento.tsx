@@ -15,7 +15,14 @@ import { PhoneShell, ScreenHeader } from "@/components/ritmo/PhoneShell";
 import { ThemeToggle } from "@/components/ritmo/ThemeToggle";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { getPlanejamentoData } from "@/functions/planejamento";
+import { CategoryPicker, type CategoryOption } from "@/components/ritmo/CategoryPicker";
+import {
+  getCategorySpendingDetailAction,
+  getCategoryTotalsAction,
+  getPlanejamentoData,
+  type SpendingPeriod,
+} from "@/functions/planejamento";
+import { brl } from "@/adapters/format";
 import {
   toPlanejamentoViewModel,
   type PendingConfirmationView,
@@ -48,7 +55,7 @@ export const Route = createFileRoute("/_protected/planejamento")({
       },
     ],
   }),
-  loader: () => getPlanejamentoData(),
+  loader: () => getPlanejamentoData({ data: { period: null } }),
   component: Planejamento,
 });
 
@@ -57,6 +64,9 @@ function Planejamento() {
   const vm = toPlanejamentoViewModel(data);
   const router = useRouter();
   const refresh = () => router.invalidate();
+  const [categories, setCategories] = useState<CategoryOption[]>(data.categories);
+  const handleCategoryCreated = (category: CategoryOption) =>
+    setCategories((prev) => (prev.some((c) => c.id === category.id) ? prev : [...prev, category]));
 
   return (
     <PhoneShell>
@@ -79,17 +89,7 @@ function Planejamento() {
         </Link>
       </div>
 
-      {vm.pendingConfirmations.length > 0 && (
-        <section className="mb-5">
-          <h2 className="mb-3 font-display text-[17px] font-bold">Ritmo precisa confirmar</h2>
-          <div className="flex flex-col gap-3">
-            {vm.pendingConfirmations.map((item) => (
-              <PendingConfirmationCard key={pendingKey(item)} item={item} onResolved={refresh} />
-            ))}
-          </div>
-        </section>
-      )}
-
+      {/* A. Resumo */}
       <section className="surface p-5">
         <p className="text-[12.5px] text-muted-foreground">Disponível até o fim do mês</p>
         <p className="num mt-1 text-[36px] font-extrabold leading-none">{vm.availableLabel}</p>
@@ -129,8 +129,20 @@ function Planejamento() {
         </div>
       </section>
 
+      {/* B. Gastos por categoria */}
       <section className="mt-7">
-        <h2 className="mb-3 font-display text-[17px] font-bold">Linha do mês</h2>
+        <h2 className="mb-3 font-display text-[17px] font-bold">Gastos por categoria</h2>
+        <CategorySpendingSection
+          categories={categories}
+          initial={data.categoryTotals}
+          initialPeriod={data.categorySpendingPeriod}
+          onCategoryCreated={handleCategoryCreated}
+        />
+      </section>
+
+      {/* C. Próximos compromissos */}
+      <section className="mt-7">
+        <h2 className="mb-3 font-display text-[17px] font-bold">Próximos compromissos</h2>
         <div className="surface p-5">
           {vm.timeline.length === 0 ? (
             <p className="text-[13px] text-muted-foreground">
@@ -151,10 +163,7 @@ function Planejamento() {
             </ol>
           )}
         </div>
-      </section>
-
-      <section className="mt-7">
-        <h2 className="mb-3 font-display text-[17px] font-bold">Compromissos recorrentes</h2>
+        <h3 className="mb-3 mt-5 font-display text-[14px] font-bold">Compromissos recorrentes</h3>
         {vm.recorrentes.length === 0 ? (
           <p className="text-[13px] text-muted-foreground">
             Nenhum compromisso fixo cadastrado ainda.
@@ -177,6 +186,7 @@ function Planejamento() {
         )}
       </section>
 
+      {/* D. Receitas previstas */}
       <section className="mt-7">
         <h2 className="mb-3 font-display text-[17px] font-bold">Receitas previstas</h2>
         {vm.incomeItems.length === 0 ? (
@@ -203,6 +213,25 @@ function Planejamento() {
         )}
       </section>
 
+      {/* E. Ritmo precisa confirmar */}
+      {vm.pendingConfirmations.length > 0 && (
+        <section className="mt-7">
+          <h2 className="mb-3 font-display text-[17px] font-bold">Ritmo precisa confirmar</h2>
+          <div className="flex flex-col gap-3">
+            {vm.pendingConfirmations.map((item) => (
+              <PendingConfirmationCard
+                key={pendingKey(item)}
+                item={item}
+                categories={categories}
+                onCategoryCreated={handleCategoryCreated}
+                onResolved={refresh}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* F. Regras e categorias */}
       <section className="mt-7">
         <h2 className="mb-3 font-display text-[17px] font-bold">Regras e categorias</h2>
         <p className="mb-3 text-[12.5px] text-muted-foreground">
@@ -219,7 +248,11 @@ function Planejamento() {
             ))}
           </div>
         )}
-        <AddRuleForm onCreated={refresh} />
+        <AddRuleForm
+          categories={categories}
+          onCategoryCreated={handleCategoryCreated}
+          onCreated={refresh}
+        />
       </section>
 
       <section className="mt-7 mb-2">
@@ -314,6 +347,287 @@ function TimelineItem({
   );
 }
 
+interface CategoryTotalRow {
+  readonly category: string;
+  readonly subcategory: string | null;
+  readonly totalCents: number;
+  readonly transactionCount: number;
+}
+
+interface DrilldownTransaction {
+  readonly id: string;
+  readonly date: string;
+  readonly description: string;
+  readonly amountCents: number;
+  readonly direction: string;
+}
+
+/**
+ * DEC-135: "Gastos por categoria" — real CONSUMPTION/FEE/REFUND
+ * transactions only (never TRANSFER/CARD_PAYMENT/INVESTMENT — see
+ * `monthlyCategoryTotals`'s own doc comment), with a period toggle and a
+ * category filter answering "Quanto eu gastei com Transporte este mês?"
+ * without asking the AI. Subcategory buckets are rolled up into one total
+ * per top-level category for this view — the drill-down still shows every
+ * individual transaction.
+ */
+function CategorySpendingSection({
+  categories,
+  initial,
+  initialPeriod,
+  onCategoryCreated,
+}: {
+  categories: readonly CategoryOption[];
+  initial: readonly CategoryTotalRow[];
+  initialPeriod: SpendingPeriod;
+  onCategoryCreated: (category: CategoryOption) => void;
+}) {
+  const [period, setPeriod] = useState<SpendingPeriod>(initialPeriod);
+  const [totals, setTotals] = useState<readonly CategoryTotalRow[]>(initial);
+  const [filter, setFilter] = useState("__all__");
+  const [isLoading, setIsLoading] = useState(false);
+  const [expandedCategory, setExpandedCategory] = useState<string | null>(null);
+
+  async function handlePeriodChange(next: SpendingPeriod) {
+    if (next === period) return;
+    setPeriod(next);
+    setExpandedCategory(null);
+    setIsLoading(true);
+    const result = await getCategoryTotalsAction({ data: { period: next } });
+    setIsLoading(false);
+    setTotals(result);
+  }
+
+  const rolledUp = new Map<string, { totalCents: number; transactionCount: number }>();
+  for (const t of totals) {
+    const existing = rolledUp.get(t.category) ?? { totalCents: 0, transactionCount: 0 };
+    rolledUp.set(t.category, {
+      totalCents: existing.totalCents + t.totalCents,
+      transactionCount: existing.transactionCount + t.transactionCount,
+    });
+  }
+  const rows = [...rolledUp.entries()]
+    .map(([category, v]) => ({ category, ...v }))
+    .sort((a, b) => b.totalCents - a.totalCents);
+  const visibleRows = filter === "__all__" ? rows : rows.filter((r) => r.category === filter);
+  const grandTotalCents = rows.reduce((sum, r) => sum + r.totalCents, 0);
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex gap-2">
+        <Button
+          size="sm"
+          variant={period === "current" ? "default" : "outline"}
+          className="flex-1"
+          onClick={() => void handlePeriodChange("current")}
+        >
+          Este mês
+        </Button>
+        <Button
+          size="sm"
+          variant={period === "previous" ? "default" : "outline"}
+          className="flex-1"
+          onClick={() => void handlePeriodChange("previous")}
+        >
+          Mês passado
+        </Button>
+      </div>
+
+      <select
+        value={filter}
+        onChange={(e) => {
+          setFilter(e.target.value);
+          setExpandedCategory(null);
+        }}
+        className="rounded-xl border border-border bg-card px-3 py-2.5 text-[13.5px]"
+      >
+        <option value="__all__">Todas as categorias</option>
+        <option value="UNCATEGORIZED">Sem categoria</option>
+        {categories.map((c) => (
+          <option key={c.id} value={c.name}>
+            {c.name}
+          </option>
+        ))}
+      </select>
+
+      {isLoading ? (
+        <p className="text-[13px] text-muted-foreground">Carregando…</p>
+      ) : rows.length === 0 ? (
+        <p className="text-[13px] text-muted-foreground">Nenhum gasto registrado neste período.</p>
+      ) : (
+        <div className="surface divide-y divide-border overflow-hidden">
+          {filter === "__all__" && (
+            <div className="flex items-center justify-between bg-accent/40 px-4 py-3">
+              <p className="text-[13px] font-semibold">Total do período</p>
+              <p className="num text-[14px] font-bold">{brl(grandTotalCents)}</p>
+            </div>
+          )}
+          {visibleRows.map((row) => (
+            <CategorySpendingRow
+              key={row.category}
+              category={row.category}
+              totalCents={row.totalCents}
+              transactionCount={row.transactionCount}
+              period={period}
+              expanded={expandedCategory === row.category}
+              onToggle={() =>
+                setExpandedCategory(expandedCategory === row.category ? null : row.category)
+              }
+              categories={categories}
+              onCategoryCreated={onCategoryCreated}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CategorySpendingRow({
+  category,
+  totalCents,
+  transactionCount,
+  period,
+  expanded,
+  onToggle,
+  categories,
+  onCategoryCreated,
+}: {
+  category: string;
+  totalCents: number;
+  transactionCount: number;
+  period: SpendingPeriod;
+  expanded: boolean;
+  onToggle: () => void;
+  categories: readonly CategoryOption[];
+  onCategoryCreated: (category: CategoryOption) => void;
+}) {
+  const [transactions, setTransactions] = useState<readonly DrilldownTransaction[] | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+
+  async function handleToggle() {
+    onToggle();
+    if (transactions === null) {
+      setIsLoading(true);
+      const result = await getCategorySpendingDetailAction({ data: { period, category } });
+      setIsLoading(false);
+      setTransactions(result);
+    }
+  }
+
+  const displayLabel = category === "UNCATEGORIZED" ? "Sem categoria" : category;
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => void handleToggle()}
+        className="flex w-full items-center gap-3 px-4 py-3.5 text-left"
+      >
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent text-accent-foreground">
+          <Tag className="h-4 w-4" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-[14px] font-semibold">{displayLabel}</p>
+          <p className="text-[12px] text-muted-foreground">{transactionCount} movimentação(ões)</p>
+        </div>
+        <p className="num shrink-0 text-[14px] font-bold">{brl(totalCents)}</p>
+      </button>
+      {expanded && (
+        <div className="border-t border-border bg-muted/30 px-4 py-3">
+          {isLoading ? (
+            <p className="text-[12px] text-muted-foreground">Carregando…</p>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {transactions?.map((t) => (
+                <DrilldownTransactionRow
+                  key={t.id}
+                  transaction={t}
+                  categories={categories}
+                  onCategoryCreated={onCategoryCreated}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DrilldownTransactionRow({
+  transaction,
+  categories,
+  onCategoryCreated,
+}: {
+  transaction: DrilldownTransaction;
+  categories: readonly CategoryOption[];
+  onCategoryCreated: (category: CategoryOption) => void;
+}) {
+  const [isCorrecting, setIsCorrecting] = useState(false);
+  const [categoryId, setCategoryId] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [done, setDone] = useState(false);
+
+  async function handleSave(alwaysForMerchant: boolean) {
+    if (!categoryId) return;
+    setIsSaving(true);
+    await categorizeTransactionAction({
+      data: { transactionId: transaction.id, categoryId, alwaysForMerchant },
+    });
+    setIsSaving(false);
+    setDone(true);
+  }
+
+  return (
+    <div className="flex flex-col gap-1.5 rounded-lg bg-card p-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <p className="min-w-0 truncate text-[13px]">{transaction.description}</p>
+        <p className="num shrink-0 text-[13px] font-semibold">{brl(transaction.amountCents)}</p>
+      </div>
+      {done ? (
+        <p className="text-[11.5px] text-[var(--success)]">Categoria atualizada.</p>
+      ) : isCorrecting ? (
+        <div className="flex flex-col gap-2">
+          <CategoryPicker
+            categories={categories}
+            value={categoryId}
+            onSelect={(c) => setCategoryId(c.id)}
+            onCategoryCreated={onCategoryCreated}
+          />
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              className="flex-1"
+              disabled={isSaving || !categoryId}
+              onClick={() => void handleSave(false)}
+            >
+              Só esta
+            </Button>
+            <Button
+              size="sm"
+              className="flex-1"
+              disabled={isSaving || !categoryId}
+              onClick={() => void handleSave(true)}
+            >
+              Todas
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setIsCorrecting(true)}
+          className="self-start text-[11.5px] font-semibold text-primary"
+        >
+          Corrigir categoria
+        </button>
+      )}
+    </div>
+  );
+}
+
 function pendingKey(item: PendingConfirmationView): string {
   switch (item.kind) {
     case "UNCATEGORIZED_TRANSACTION":
@@ -361,18 +675,26 @@ function RuleRow({ rule, onDeleted }: { rule: PlanejamentoRuleItem; onDeleted: (
   );
 }
 
-function AddRuleForm({ onCreated }: { onCreated: () => void }) {
+function AddRuleForm({
+  categories,
+  onCategoryCreated,
+  onCreated,
+}: {
+  categories: readonly CategoryOption[];
+  onCategoryCreated: (category: CategoryOption) => void;
+  onCreated: () => void;
+}) {
   const [pattern, setPattern] = useState("");
-  const [category, setCategory] = useState("");
+  const [categoryId, setCategoryId] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function handleSubmit() {
-    if (!pattern.trim() || !category.trim()) return;
+    if (!pattern.trim() || !categoryId) return;
     setIsSaving(true);
     setError(null);
     const result = await createCategoryRuleAction({
-      data: { matchType: "CONTAINS_MERCHANT", pattern: pattern.trim(), category: category.trim() },
+      data: { matchType: "CONTAINS_MERCHANT", pattern: pattern.trim(), categoryId },
     });
     setIsSaving(false);
     if (!result.ok) {
@@ -380,32 +702,26 @@ function AddRuleForm({ onCreated }: { onCreated: () => void }) {
       return;
     }
     setPattern("");
-    setCategory("");
+    setCategoryId(null);
     onCreated();
   }
 
   return (
     <div className="surface flex flex-col gap-2 p-4">
       <p className="text-[12.5px] font-semibold">Nova regra</p>
-      <div className="flex gap-2">
-        <Input
-          value={pattern}
-          onChange={(e) => setPattern(e.target.value)}
-          placeholder="Ex.: UBER"
-          className="flex-1"
-        />
-        <Input
-          value={category}
-          onChange={(e) => setCategory(e.target.value)}
-          placeholder="Ex.: Transporte"
-          className="flex-1"
-        />
-      </div>
+      <Input value={pattern} onChange={(e) => setPattern(e.target.value)} placeholder="Ex.: UBER" />
+      <CategoryPicker
+        categories={categories}
+        value={categoryId}
+        onSelect={(c) => setCategoryId(c.id)}
+        onCategoryCreated={onCategoryCreated}
+        placeholder="Categoria da regra"
+      />
       {error && <p className="text-[12px] text-destructive">{error}</p>}
       <Button
         size="sm"
         onClick={() => void handleSubmit()}
-        disabled={isSaving || !pattern.trim() || !category.trim()}
+        disabled={isSaving || !pattern.trim() || !categoryId}
       >
         Adicionar
       </Button>
@@ -415,16 +731,34 @@ function AddRuleForm({ onCreated }: { onCreated: () => void }) {
 
 function PendingConfirmationCard({
   item,
+  categories,
+  onCategoryCreated,
   onResolved,
 }: {
   item: PendingConfirmationView;
+  categories: readonly CategoryOption[];
+  onCategoryCreated: (category: CategoryOption) => void;
   onResolved: () => void;
 }) {
   if (item.kind === "UNCATEGORIZED_TRANSACTION") {
-    return <UncategorizedCard item={item} onResolved={onResolved} />;
+    return (
+      <UncategorizedCard
+        item={item}
+        categories={categories}
+        onCategoryCreated={onCategoryCreated}
+        onResolved={onResolved}
+      />
+    );
   }
   if (item.kind === "RECURRING_INCOME_CANDIDATE" || item.kind === "RECURRING_EXPENSE_CANDIDATE") {
-    return <RecurringCandidateCard item={item} onResolved={onResolved} />;
+    return (
+      <RecurringCandidateCard
+        item={item}
+        categories={categories}
+        onCategoryCreated={onCategoryCreated}
+        onResolved={onResolved}
+      />
+    );
   }
   return <RecommendationCard item={item} onResolved={onResolved} />;
 }
@@ -461,22 +795,27 @@ function PendingCardShell({
 
 function UncategorizedCard({
   item,
+  categories,
+  onCategoryCreated,
   onResolved,
 }: {
   item: Extract<PendingConfirmationView, { kind: "UNCATEGORIZED_TRANSACTION" }>;
+  categories: readonly CategoryOption[];
+  onCategoryCreated: (category: CategoryOption) => void;
   onResolved: () => void;
 }) {
-  const [category, setCategory] = useState("");
+  const [categoryId, setCategoryId] = useState<string | null>(null);
+  const [categoryName, setCategoryName] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
   async function handleSave(alwaysForMerchant: boolean) {
-    if (!category.trim()) return;
+    if (!categoryId) return;
     setIsSaving(true);
     setError(null);
     const result = await categorizeTransactionAction({
-      data: { transactionId: item.transactionId, category: category.trim(), alwaysForMerchant },
+      data: { transactionId: item.transactionId, categoryId, alwaysForMerchant },
     });
     setIsSaving(false);
     if (!result.ok) {
@@ -504,14 +843,19 @@ function UncategorizedCard({
         <p className="text-[12.5px] text-[var(--success)]">{successMessage}</p>
       ) : (
         <div className="flex flex-col gap-2">
-          <Input
-            value={category}
-            onChange={(e) => setCategory(e.target.value)}
+          <CategoryPicker
+            categories={categories}
+            value={categoryId}
+            onSelect={(c) => {
+              setCategoryId(c.id);
+              setCategoryName(c.name);
+            }}
+            onCategoryCreated={onCategoryCreated}
             placeholder="Qual categoria?"
           />
           {error && <p className="text-[12px] text-destructive">{error}</p>}
           <p className="text-[12px] text-muted-foreground">
-            Usar "{category.trim() || "..."}" só nesta movimentação ou em todas da {item.title}?
+            Usar "{categoryName ?? "..."}" só nesta movimentação ou em todas da {item.title}?
           </p>
           <div className="flex gap-2">
             <Button
@@ -519,7 +863,7 @@ function UncategorizedCard({
               variant="outline"
               className="flex-1"
               onClick={() => void handleSave(false)}
-              disabled={isSaving || !category.trim()}
+              disabled={isSaving || !categoryId}
             >
               Só esta
             </Button>
@@ -527,7 +871,7 @@ function UncategorizedCard({
               size="sm"
               className="flex-1"
               onClick={() => void handleSave(true)}
-              disabled={isSaving || !category.trim()}
+              disabled={isSaving || !categoryId}
             >
               Todas, passadas e futuras
             </Button>
@@ -540,22 +884,27 @@ function UncategorizedCard({
 
 function RecurringCandidateCard({
   item,
+  categories,
+  onCategoryCreated,
   onResolved,
 }: {
   item: Extract<
     PendingConfirmationView,
     { kind: "RECURRING_INCOME_CANDIDATE" | "RECURRING_EXPENSE_CANDIDATE" }
   >;
+  categories: readonly CategoryOption[];
+  onCategoryCreated: (category: CategoryOption) => void;
   onResolved: () => void;
 }) {
   const isIncome = item.kind === "RECURRING_INCOME_CANDIDATE";
   const [label, setLabel] = useState(item.title);
-  const [category, setCategory] = useState("");
+  const [categoryId, setCategoryId] = useState<string | null>(null);
+  const [categoryName, setCategoryName] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function handleConfirm() {
-    if (!label.trim() || (!isIncome && !category.trim())) return;
+    if (!label.trim() || (!isIncome && (!categoryId || !categoryName))) return;
     setIsSaving(true);
     setError(null);
     const result = isIncome
@@ -563,7 +912,7 @@ function RecurringCandidateCard({
           data: { candidateId: item.candidateId, label: label.trim() },
         })
       : await confirmRecurringExpenseAction({
-          data: { candidateId: item.candidateId, label: label.trim(), category: category.trim() },
+          data: { candidateId: item.candidateId, label: label.trim(), category: categoryName! },
         });
     setIsSaving(false);
     if (!result.ok) {
@@ -597,9 +946,14 @@ function RecurringCandidateCard({
       <div className="flex flex-col gap-2">
         <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Nome" />
         {!isIncome && (
-          <Input
-            value={category}
-            onChange={(e) => setCategory(e.target.value)}
+          <CategoryPicker
+            categories={categories}
+            value={categoryId}
+            onSelect={(c) => {
+              setCategoryId(c.id);
+              setCategoryName(c.name);
+            }}
+            onCategoryCreated={onCategoryCreated}
             placeholder="Categoria"
           />
         )}
@@ -609,7 +963,7 @@ function RecurringCandidateCard({
             size="sm"
             className="flex-1"
             onClick={() => void handleConfirm()}
-            disabled={isSaving || !label.trim() || (!isIncome && !category.trim())}
+            disabled={isSaving || !label.trim() || (!isIncome && !categoryId)}
           >
             Confirmar
           </Button>

@@ -450,9 +450,34 @@ const categoryMatchTypeEnum = z.enum([
   "REGEX_DESCRIPTION",
 ]);
 
+const getCategoriesTool = tool({
+  name: "getCategories",
+  description:
+    "Every category available to this profile — base categories every user has (e.g. 'Transporte', 'Assinaturas') plus this profile's own personal ones. ALWAYS call this before categorizeTransaction/createCategoryRule to find the right categoryId — never invent one, and never pass a free-text category name to those tools.",
+  kind: "READ",
+  schema: z.object({}),
+  execute: (ctx) => queries.getCategoriesForProfile(ctx.db, ctx.financialProfileId),
+});
+
+const createCategorySchema = z.object({
+  name: z.string().min(1).describe("The new personal category's name, e.g. 'Trabalho'."),
+});
+
+const createCategoryTool = tool({
+  name: "createCategory",
+  description:
+    "Creates a new PERSONAL category for this profile only — call this ONLY when getCategories shows no existing category fits (never duplicates an existing base or personal category). Returns the new category's id, immediately usable by categorizeTransaction/createCategoryRule.",
+  kind: "MUTATION",
+  schema: createCategorySchema,
+  execute: (ctx, args) => mutations.createCategory(ctx.db, ctx.financialProfileId, { name: args.name }),
+});
+
 const categorizeTransactionSchema = z.object({
   transactionId: z.string().min(1).describe("Obtained from a prior getPendingConfirmations/getRecentSpendingSummary read — never guessed."),
-  category: z.string().min(1).describe("The spending category the user chose, e.g. 'Combustível'."),
+  categoryId: z
+    .string()
+    .min(1)
+    .describe("The chosen category's id, from a prior getCategories read (or createCategory if none fit) — never a free-text category name."),
   subcategory: z.string().describe("Optional finer-grained subcategory.").nullable().default(null),
   alwaysForMerchant: z
     .boolean()
@@ -466,13 +491,13 @@ const categorizeTransactionSchema = z.object({
 const categorizeTransactionTool = tool({
   name: "categorizeTransaction",
   description:
-    "Answers a pending 'what was this transaction?' question, or corrects a transaction's category. Never changes what kind of money movement it was (a transfer/card payment/investment stays that way) — only its spending category.",
+    "Answers a pending 'what was this transaction?' question, or corrects a transaction's category. Never changes what kind of money movement it was (a transfer/card payment/investment stays that way) — only its spending category. Requires a categoryId from getCategories/createCategory — never invent a category name directly.",
   kind: "MUTATION",
   schema: categorizeTransactionSchema,
   execute: (ctx, args) =>
     mutations.categorizeTransaction(ctx.db, ctx.financialProfileId, {
       transactionId: args.transactionId,
-      category: args.category,
+      categoryId: args.categoryId,
       ...(args.subcategory ? { subcategory: args.subcategory } : {}),
       ...(args.alwaysForMerchant !== null ? { alwaysForMerchant: args.alwaysForMerchant } : {}),
     }),
@@ -483,21 +508,24 @@ const createCategoryRuleSchema = z.object({
     "How to match: CONTAINS_MERCHANT is the usual choice for a merchant name (e.g. 'UBER'). Use CONTAINS_DESCRIPTION when there's no clean merchant name.",
   ),
   pattern: z.string().min(1).describe("The merchant name or description fragment to match, e.g. 'UBER'."),
-  category: z.string().min(1).describe("The spending category to assign, e.g. 'Transporte'."),
+  categoryId: z
+    .string()
+    .min(1)
+    .describe("The category to assign, from a prior getCategories read (or createCategory if none fit) — never a free-text category name."),
   subcategory: z.string().describe("Optional finer-grained subcategory.").nullable().default(null),
 });
 
 const createCategoryRuleTool = tool({
   name: "createCategoryRule",
   description:
-    "Creates a standing categorization rule directly (e.g. 'sempre que aparecer UBER, classifique como Transporte'), without it being tied to correcting one specific transaction. Only call this on the user's explicit instruction.",
+    "Creates a standing categorization rule directly (e.g. 'sempre que aparecer UBER, classifique como Transporte'), without it being tied to correcting one specific transaction. Only call this on the user's explicit instruction. Requires a categoryId from getCategories/createCategory.",
   kind: "MUTATION",
   schema: createCategoryRuleSchema,
   execute: (ctx, args) =>
     mutations.createCategoryRule(ctx.db, ctx.financialProfileId, {
       matchType: args.matchType,
       pattern: args.pattern,
-      category: args.category,
+      categoryId: args.categoryId,
       ...(args.subcategory ? { subcategory: args.subcategory } : {}),
       origin: "USER_DECLARED",
     }),
@@ -1049,6 +1077,8 @@ export const TOOL_REGISTRY: readonly ToolDefinition<never, unknown>[] = [
   updatePlannedFinancialEventTool,
   createIncomeTool,
   createFixedExpenseTool,
+  getCategoriesTool,
+  createCategoryTool,
   categorizeTransactionTool,
   createCategoryRuleTool,
   confirmRecurringIncomeCandidateTool,

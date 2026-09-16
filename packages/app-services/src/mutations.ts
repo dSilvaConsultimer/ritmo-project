@@ -4,6 +4,7 @@ import {
   defaultDirectionForManualEntry,
   normalizeMerchant,
   ruleMatchesTransaction,
+  type Category,
   type CategoryRule,
   type CategoryRuleMatchType,
   type CategoryRuleOrigin,
@@ -428,10 +429,55 @@ export async function updatePlannedFinancialEvent(
  */
 const USER_RULE_PRIORITY = 200;
 
+/**
+ * DEC-135: resolves a `categoryId` to a real `Category` this profile may
+ * actually use — a global BASE category, or a PERSONAL one it owns.
+ * Throws (never silently falls back) for a missing id or another profile's
+ * personal category — the same "never leak whether another user's
+ * resource exists" posture `assertOwnedByProfile` uses elsewhere.
+ */
+async function requireVisibleCategory(
+  db: Database,
+  financialProfileId: string,
+  categoryId: string,
+): Promise<Category> {
+  const category = await repo.getCategoryById(db, categoryId);
+  if (!category || (category.financialProfileId !== undefined && category.financialProfileId !== financialProfileId)) {
+    throw new ResourceNotFoundError(`category ${categoryId}`);
+  }
+  return category;
+}
+
+export interface CreateCategoryInput {
+  readonly name: string;
+}
+
+/**
+ * DEC-135: always creates/updates a PERSONAL category scoped to this
+ * profile — never the global base taxonomy ("users do not edit the global
+ * default; when the desired category doesn't exist, they create a personal
+ * one"). Conflict-safe on `(financialProfileId, name)` — creating the same
+ * name twice for one profile updates in place rather than duplicating,
+ * mirroring `createCategoryRule`'s own "create or update" contract.
+ */
+export async function createCategory(
+  db: Database,
+  financialProfileId: string,
+  input: CreateCategoryInput,
+): Promise<Category> {
+  const category: Category = {
+    id: createId("category"),
+    name: input.name.trim(),
+    financialProfileId: financialProfileId as Id<"financial-profile">,
+  };
+  return repo.upsertPersonalCategory(db, category);
+}
+
 export interface CreateCategoryRuleInput {
   readonly matchType: CategoryRuleMatchType;
   readonly pattern: string;
-  readonly category: string;
+  /** DEC-135: the canonical category this rule resolves to — never a free-text string; see `requireVisibleCategory`. */
+  readonly categoryId: string;
   readonly subcategory?: string;
   readonly priority?: number;
   /** Always a personal-override origin — see `createCategoryRule`'s own doc comment for why `SYSTEM_DEFAULT` can never be passed here. */
@@ -439,7 +485,7 @@ export interface CreateCategoryRuleInput {
 }
 
 /**
- * DEC-133: creates or UPDATES a PERSONAL (profile-scoped) categorization
+ * DEC-133/135: creates or UPDATES a PERSONAL (profile-scoped) categorization
  * rule — Planning's "Regras e categorias" manual creation, the AI
  * copilot's equivalent tool, and `categorizeTransaction`'s "all past and
  * future" path all funnel through this ONE function, so there is exactly
@@ -449,18 +495,22 @@ export interface CreateCategoryRuleInput {
  * personal override" (DEC-133). Uses `repo.upsertPersonalCategoryRule`'s
  * conflict-safe upsert on `(financialProfileId, matchType, pattern)` — a
  * second correction for the same merchant UPDATES the existing personal
- * rule rather than creating a duplicate.
+ * rule rather than creating a duplicate. `category` (the string) is
+ * resolved from the canonical `categoryId`, never independently supplied —
+ * see DEC-135.
  */
 export async function createCategoryRule(
   db: Database,
   financialProfileId: string,
   input: CreateCategoryRuleInput,
 ): Promise<CategoryRule> {
+  const category = await requireVisibleCategory(db, financialProfileId, input.categoryId);
   const rule: CategoryRule = {
     id: createId("category-rule"),
     matchType: input.matchType,
     pattern: input.pattern,
-    category: input.category,
+    category: category.name,
+    categoryId: category.id,
     ...(input.subcategory !== undefined ? { subcategory: input.subcategory } : {}),
     priority: input.priority ?? USER_RULE_PRIORITY,
     origin: input.origin ?? "USER_DECLARED",
@@ -487,7 +537,8 @@ export async function deleteCategoryRule(db: Database, financialProfileId: strin
 
 export interface CategorizeTransactionInput {
   readonly transactionId: string;
-  readonly category: string;
+  /** DEC-135: the canonical category chosen from the CategoryPicker — never free text; see `requireVisibleCategory`. */
+  readonly categoryId: string;
   readonly subcategory?: string;
   /**
    * When true, ALSO creates/updates a durable PERSONAL `CategoryRule`
@@ -540,10 +591,11 @@ export async function categorizeTransaction(
     financialProfileId,
     `transaction ${input.transactionId}`,
   );
+  const category = await requireVisibleCategory(db, financialProfileId, input.categoryId);
 
   const updatedTransaction: FinancialTransaction = {
     ...transaction,
-    category: input.category,
+    category: category.name,
     ...(input.subcategory !== undefined ? { subcategory: input.subcategory } : {}),
   };
   await repo.upsertTransaction(db, updatedTransaction);
@@ -560,7 +612,7 @@ export async function categorizeTransaction(
   const createdRule = await createCategoryRule(db, financialProfileId, {
     matchType,
     pattern,
-    category: input.category,
+    categoryId: category.id,
     ...(input.subcategory !== undefined ? { subcategory: input.subcategory } : {}),
   });
 
@@ -571,7 +623,7 @@ export async function categorizeTransaction(
   for (const t of matchingHistorical) {
     await repo.upsertTransaction(db, {
       ...t,
-      category: input.category,
+      category: category.name,
       ...(input.subcategory !== undefined ? { subcategory: input.subcategory } : {}),
     });
   }

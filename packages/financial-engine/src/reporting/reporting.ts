@@ -84,6 +84,31 @@ export function monthlyCategoryTotals(
   }));
 }
 
+/**
+ * DEC-135: the actual transactions behind one bucket of
+ * `monthlyCategoryTotals` — same filtering (same month, not reversed, not a
+ * reconciled duplicate, CONSUMPTION/FEE/REFUND only), so a drill-down list
+ * always sums to the total shown alongside it. `category` accepts the
+ * literal `UNCATEGORIZED` sentinel to drill into what's still unclassified
+ * — see `uncategorizedTransactions` for the analogous "still pending"
+ * concept (that one is not month-scoped the same way; kept separate on
+ * purpose, see that function's own callers).
+ */
+export function categorySpendingTransactions(
+  transactions: readonly FinancialTransaction[],
+  reconciliationLinks: readonly ReconciliationLink[],
+  asOfDate: string,
+  category: string,
+): readonly FinancialTransaction[] {
+  const relevant = relevantForConsumption(transactions, reconciliationLinks, asOfDate).filter(
+    (t) => isConsumptionLike(t.financialEffect) || t.financialEffect === "REFUND",
+  );
+  return relevant
+    .filter((t) => (t.category ?? UNCATEGORIZED) === category)
+    .slice()
+    .sort((a, b) => b.date.localeCompare(a.date));
+}
+
 /** Transactions still awaiting categorization this month. */
 export function uncategorizedTransactions(
   transactions: readonly FinancialTransaction[],

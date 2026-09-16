@@ -714,3 +714,77 @@ export async function reclassifyMisclassifiedCardPayments(
     reclassifiedTransactionIds: candidates.map((t) => t.id),
   };
 }
+
+export interface CategoryRuleBackfillResult {
+  readonly linkedRuleIds: readonly string[];
+  readonly unresolvedCategoryNames: readonly string[];
+}
+
+/**
+ * DEC-135: one-time, safe, idempotent backfill linking every EXISTING
+ * `CategoryRule` (created before the canonical `Category` entity existed)
+ * to its canonical `categoryId`, wherever that can be done SAFELY.
+ *
+ * Conservative by design (explicit product requirement — "do NOT
+ * automatically merge ambiguous categories merely because their names look
+ * similar"): a rule is only ever linked when its `category` string is an
+ * EXACT match (case/whitespace-insensitive only, never fuzzy) against a
+ * category this rule's own scope can already see —
+ * - a GLOBAL (`SYSTEM_DEFAULT`) rule is only ever matched against a BASE
+ *   category (never a personal one, which would leak profile-specific
+ *   knowledge into a global default);
+ * - a PERSONAL rule is matched against that SAME profile's own visible
+ *   categories (base + its own personal ones) — never another profile's.
+ *
+ * Everything else is left completely untouched and reported back in
+ * `unresolvedCategoryNames` rather than guessed at — e.g. the Sprint 1/2
+ * fixture's English category strings ("Food," "Transportation") never
+ * match any Portuguese base category name, and are correctly left
+ * unresolved rather than silently mapped.
+ *
+ * Idempotent: only rules with no `categoryId` yet are considered, so a
+ * second run relinks nothing (`linkedRuleIds: []`) and reports the exact
+ * same unresolved set.
+ */
+export async function backfillCategoryRuleCategoryIds(db: Database): Promise<CategoryRuleBackfillResult> {
+  const allRules = await repo.listAllCategoryRules(db);
+  const baseCategories = await repo.listBaseCategories(db);
+  const baseByName = new Map(baseCategories.map((c) => [c.name.trim().toLowerCase(), c]));
+  const personalCategoriesByProfile = new Map<string, typeof baseCategories>();
+
+  const linkedRuleIds: string[] = [];
+  const unresolvedCategoryNames = new Set<string>();
+
+  for (const rule of allRules) {
+    if (rule.categoryId !== undefined) continue;
+    const key = rule.category.trim().toLowerCase();
+    let match = baseByName.get(key);
+
+    if (!match && rule.financialProfileId !== undefined) {
+      const profileId = rule.financialProfileId;
+      let personal = personalCategoriesByProfile.get(profileId);
+      if (!personal) {
+        personal = (await repo.listCategoriesForProfile(db, profileId)).filter(
+          (c) => c.financialProfileId === profileId,
+        );
+        personalCategoriesByProfile.set(profileId, personal);
+      }
+      match = personal.find((c) => c.name.trim().toLowerCase() === key);
+    }
+
+    if (!match) {
+      unresolvedCategoryNames.add(rule.category);
+      continue;
+    }
+
+    const updated = { ...rule, categoryId: match.id };
+    if (rule.financialProfileId !== undefined) {
+      await repo.upsertPersonalCategoryRule(db, updated);
+    } else {
+      await repo.upsertCategoryRule(db, updated);
+    }
+    linkedRuleIds.push(rule.id);
+  }
+
+  return { linkedRuleIds, unresolvedCategoryNames: [...unresolvedCategoryNames] };
+}

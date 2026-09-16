@@ -3,7 +3,7 @@ import { createId } from "@money-copilot/shared";
 import * as M from "../money/index";
 import { categoryRules } from "../fixtures/rules";
 import type { FinancialTransaction, PaymentSource } from "./transaction";
-import { categorize, UNCATEGORIZED, type CategoryRule } from "./category";
+import { categorize, isBaseCategory, UNCATEGORIZED, type Category, type CategoryRule } from "./category";
 
 const nubank: PaymentSource = { id: createId("payment-source"), label: "Nubank", type: "CREDIT_CARD" };
 
@@ -209,5 +209,38 @@ describe("categorize — DEC-133 personal-rule-vs-system-default precedence", ()
     };
     const t = tx({ financialProfileId: profileA, normalizedMerchant: "UBER" });
     expect(categorize(t, [systemDefault, unrelatedPersonalRule]).category).toBe("Transporte");
+  });
+
+  it("(DEC-135) surfaces the matched rule's canonical categoryId, when it has one", () => {
+    const ruleWithCategoryId: CategoryRule = {
+      ...systemDefault,
+      id: createId("category-rule"),
+      categoryId: createId("category"),
+    };
+    const t = tx({ financialProfileId: profileA, normalizedMerchant: "UBER" });
+    const result = categorize(t, [ruleWithCategoryId]);
+    expect(result.categoryId).toBe(ruleWithCategoryId.categoryId);
+  });
+
+  it("(DEC-135) omits categoryId entirely for a legacy rule that predates it", () => {
+    const t = tx({ financialProfileId: profileA, normalizedMerchant: "UBER" });
+    const result = categorize(t, [systemDefault]);
+    expect(result.categoryId).toBeUndefined();
+  });
+});
+
+describe("isBaseCategory (DEC-135)", () => {
+  it("is true for a category with no financialProfileId", () => {
+    const base: Category = { id: createId("category"), name: "Transporte" };
+    expect(isBaseCategory(base)).toBe(true);
+  });
+
+  it("is false for a category scoped to a profile", () => {
+    const personal: Category = {
+      id: createId("category"),
+      name: "Trabalho",
+      financialProfileId: createId("financial-profile"),
+    };
+    expect(isBaseCategory(personal)).toBe(false);
   });
 });
