@@ -8,6 +8,7 @@ import {
   confirmRecurringFixedExpenseCandidate,
   confirmRecurringIncomeCandidate,
   createCategoryRule,
+  deleteCategoryRule,
   recordManualTransaction,
   rejectRecurringCandidate,
 } from "./mutations";
@@ -95,7 +96,7 @@ describe("categorizeTransaction (tests 2, 3, 4, 11, 12)", () => {
 
     expect(result.transaction.category).toBe("Combustível");
     expect(result.createdRule).toBeUndefined();
-    const { categoryRules } = await repo.loadRules(db);
+    const { categoryRules } = await repo.loadRules(db, fixtureProfile.id);
     expect(categoryRules.some((r) => r.pattern === "POSTO CAMPINAS")).toBe(false);
   });
 
@@ -113,7 +114,9 @@ describe("categorizeTransaction (tests 2, 3, 4, 11, 12)", () => {
     expect(result.createdRule?.origin).toBe("USER_DECLARED");
     expect(result.createdRule?.matchType).toBe("CONTAINS_MERCHANT");
     expect(result.createdRule?.pattern).toBe("POSTO CAMPINAS");
-    const { categoryRules } = await repo.loadRules(db);
+    // DEC-133: the created rule is a PERSONAL override, scoped to this profile.
+    expect(result.createdRule?.financialProfileId).toBe(fixtureProfile.id);
+    const { categoryRules } = await repo.loadRules(db, fixtureProfile.id);
     expect(categoryRules.some((r) => r.id === result.createdRule?.id)).toBe(true);
   });
 
@@ -127,13 +130,148 @@ describe("categorizeTransaction (tests 2, 3, 4, 11, 12)", () => {
       alwaysForMerchant: true,
     });
 
-    const { categoryRules } = await repo.loadRules(db);
+    const { categoryRules } = await repo.loadRules(db, fixtureProfile.id);
     const nextTransaction = await insertTransaction(db, source, {
       id: createId("transaction"),
       category: null,
     });
     const result = categorize(nextTransaction, categoryRules);
     expect(result.category).toBe("Combustível");
+  });
+
+  it("(DEC-133, test 7) 'all past and future' retroactively reclassifies matching historical transactions for this profile", async () => {
+    const db = await freshSeededDb();
+    const source = await checkingSource(db);
+    const tx1 = await insertTransaction(db, source, {
+      id: createId("transaction"),
+      date: "2026-08-01",
+      category: "UNCATEGORIZED",
+    });
+    const tx2 = await insertTransaction(db, source, {
+      id: createId("transaction"),
+      date: "2026-08-15",
+      category: "UNCATEGORIZED",
+    });
+    const tx3 = await insertTransaction(db, source, {
+      id: createId("transaction"),
+      date: "2026-09-01",
+      category: "UNCATEGORIZED",
+    });
+
+    const result = await categorizeTransaction(db, fixtureProfile.id, {
+      transactionId: tx3.id,
+      category: "Combustível",
+      alwaysForMerchant: true,
+    });
+
+    expect(result.retroactivelyReclassifiedCount).toBe(2);
+    const [reclassified1, reclassified2] = await Promise.all([
+      repo.getTransactionById(db, tx1.id),
+      repo.getTransactionById(db, tx2.id),
+    ]);
+    expect(reclassified1?.category).toBe("Combustível");
+    expect(reclassified2?.category).toBe("Combustível");
+  });
+
+  it("(DEC-133, test 8) unrelated historical transactions (different merchant) are never touched by a retroactive reclassification", async () => {
+    const db = await freshSeededDb();
+    const source = await checkingSource(db);
+    const unrelated = await insertTransaction(db, source, {
+      id: createId("transaction"),
+      date: "2026-08-01",
+      normalizedMerchant: "IFOOD",
+      rawMerchant: "IFOOD",
+      rawDescription: "IFOOD BR",
+      normalizedDescription: "IFOOD BR",
+      category: "Food",
+    });
+    const target = await insertTransaction(db, source, { category: "UNCATEGORIZED" });
+
+    await categorizeTransaction(db, fixtureProfile.id, {
+      transactionId: target.id,
+      category: "Combustível",
+      alwaysForMerchant: true,
+    });
+
+    const stillUnrelated = await repo.getTransactionById(db, unrelated.id);
+    expect(stillUnrelated?.category).toBe("Food");
+  });
+
+  it("(DEC-133, test 10) a retroactive category change never alters financialEffect or amount — only category-derived analytics change", async () => {
+    const db = await freshSeededDb();
+    const source = await checkingSource(db);
+    const historical = await insertTransaction(db, source, {
+      id: createId("transaction"),
+      date: "2026-08-01",
+      category: "UNCATEGORIZED",
+      financialEffect: "CONSUMPTION",
+      amount: fromReais(50),
+    });
+    const target = await insertTransaction(db, source, {
+      category: "UNCATEGORIZED",
+      financialEffect: "CONSUMPTION",
+      amount: fromReais(50),
+    });
+
+    await categorizeTransaction(db, fixtureProfile.id, {
+      transactionId: target.id,
+      category: "Trabalho",
+      alwaysForMerchant: true,
+    });
+
+    const reclassified = await repo.getTransactionById(db, historical.id);
+    expect(reclassified?.category).toBe("Trabalho");
+    expect(reclassified?.financialEffect).toBe("CONSUMPTION");
+    expect(reclassified?.amount.cents).toBe(fromReais(50).cents);
+  });
+
+  it("(DEC-133, test 11) SYSTEM_DEFAULT rules remain immutable through the categorization flow — a personal override never overwrites the global default", async () => {
+    const db = await freshSeededDb();
+    // Seed a real global SYSTEM_DEFAULT rule directly — `createCategoryRule`
+    // (the mutation every UI/AI flow goes through) can NEVER create one;
+    // its `origin` type deliberately excludes SYSTEM_DEFAULT.
+    const globalRule = {
+      id: createId("category-rule"),
+      matchType: "CONTAINS_MERCHANT" as const,
+      pattern: "POSTO CAMPINAS",
+      category: "Transporte",
+      priority: 100,
+      origin: "SYSTEM_DEFAULT" as const,
+    };
+    await repo.upsertCategoryRule(db, globalRule);
+
+    const source = await checkingSource(db);
+    const tx = await insertTransaction(db, source, { category: "UNCATEGORIZED" });
+    await categorizeTransaction(db, fixtureProfile.id, {
+      transactionId: tx.id,
+      category: "Trabalho",
+      alwaysForMerchant: true,
+    });
+
+    const stillGlobal = await repo.getCategoryRuleById(db, globalRule.id);
+    expect(stillGlobal?.origin).toBe("SYSTEM_DEFAULT");
+    expect(stillGlobal?.category).toBe("Transporte");
+    expect(stillGlobal?.financialProfileId).toBeUndefined();
+
+    // Attempting to delete it (e.g. a confused UI call) must be a no-op.
+    await deleteCategoryRule(db, fixtureProfile.id, globalRule.id);
+    const afterDeleteAttempt = await repo.getCategoryRuleById(db, globalRule.id);
+    expect(afterDeleteAttempt).toBeDefined();
+  });
+
+  it("(DEC-133, test 12) a transaction matching a system default is categorized automatically and never appears as a pending question", async () => {
+    const db = await freshSeededDb();
+    const transaction = await recordManualTransaction(db, fixtureProfile.id, {
+      amount: fromReais(45),
+      merchantOrDescription: "IFOOD BR",
+      date: ASOF,
+    });
+    expect(transaction.category).not.toBe("UNCATEGORIZED");
+
+    const pending = await getPendingConfirmations(db, fixtureProfile.id, ASOF);
+    expect(pending.some((p) => p.kind === "UNCATEGORIZED_TRANSACTION" && p.transactionId === transaction.id)).toBe(
+      false,
+    );
   });
 
   it("test 11: a TRANSFER can be given a display category without ever becoming CONSUMPTION", async () => {
@@ -334,14 +472,14 @@ describe("recurring candidates -> pending confirmations -> planning knowledge (t
 describe("createCategoryRule (test 9: manual creation uses the same canonical domain)", () => {
   it("a manually-created rule is immediately usable by categorize()", async () => {
     const db = await freshSeededDb();
-    const rule = await createCategoryRule(db, {
+    const rule = await createCategoryRule(db, fixtureProfile.id, {
       matchType: "CONTAINS_MERCHANT",
       pattern: "UBER",
       category: "Transporte",
       origin: "USER_DECLARED",
     });
 
-    const { categoryRules } = await repo.loadRules(db);
+    const { categoryRules } = await repo.loadRules(db, fixtureProfile.id);
     expect(categoryRules.some((r) => r.id === rule.id)).toBe(true);
 
     const source: PaymentSource = { id: createId("payment-source"), label: "Nubank", type: "CREDIT_CARD" };

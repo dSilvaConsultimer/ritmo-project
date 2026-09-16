@@ -3,6 +3,7 @@ import {
   categorize,
   defaultDirectionForManualEntry,
   normalizeMerchant,
+  ruleMatchesTransaction,
   type CategoryRule,
   type CategoryRuleMatchType,
   type CategoryRuleOrigin,
@@ -105,7 +106,7 @@ export async function recordManualTransaction(
   financialProfileId: string,
   input: RecordManualTransactionInput,
 ): Promise<FinancialTransaction> {
-  const { categoryRules, merchantRules } = await repo.loadRules(db);
+  const { categoryRules, merchantRules } = await repo.loadRules(db, financialProfileId);
   const paymentSource = await resolveManualPaymentSource(db, financialProfileId, input.paymentSourceLabel);
   const normalizedMerchant = normalizeMerchant(input.merchantOrDescription, merchantRules);
   const financialEffect = input.financialEffect ?? "CONSUMPTION";
@@ -433,17 +434,28 @@ export interface CreateCategoryRuleInput {
   readonly category: string;
   readonly subcategory?: string;
   readonly priority?: number;
-  readonly origin?: CategoryRuleOrigin;
+  /** Always a personal-override origin — see `createCategoryRule`'s own doc comment for why `SYSTEM_DEFAULT` can never be passed here. */
+  readonly origin?: Exclude<CategoryRuleOrigin, "SYSTEM_DEFAULT">;
 }
 
 /**
- * Directly creates a categorization rule (Planning's "Regras e categorias"
- * manual creation, and the AI copilot's equivalent tool) — the SAME
- * `repo.upsertCategoryRule` primitive `categorizeTransaction`'s
- * "always" path below uses, so there is exactly one rule-creation code
- * path regardless of how the rule was authored.
+ * DEC-133: creates or UPDATES a PERSONAL (profile-scoped) categorization
+ * rule — Planning's "Regras e categorias" manual creation, the AI
+ * copilot's equivalent tool, and `categorizeTransaction`'s "all past and
+ * future" path all funnel through this ONE function, so there is exactly
+ * one rule-creation/update code path regardless of how the rule was
+ * authored. Can NEVER create/touch a global `SYSTEM_DEFAULT` rule — "users
+ * do not edit the global default itself; if they disagree, they create a
+ * personal override" (DEC-133). Uses `repo.upsertPersonalCategoryRule`'s
+ * conflict-safe upsert on `(financialProfileId, matchType, pattern)` — a
+ * second correction for the same merchant UPDATES the existing personal
+ * rule rather than creating a duplicate.
  */
-export async function createCategoryRule(db: Database, input: CreateCategoryRuleInput): Promise<CategoryRule> {
+export async function createCategoryRule(
+  db: Database,
+  financialProfileId: string,
+  input: CreateCategoryRuleInput,
+): Promise<CategoryRule> {
   const rule: CategoryRule = {
     id: createId("category-rule"),
     matchType: input.matchType,
@@ -452,13 +464,24 @@ export async function createCategoryRule(db: Database, input: CreateCategoryRule
     ...(input.subcategory !== undefined ? { subcategory: input.subcategory } : {}),
     priority: input.priority ?? USER_RULE_PRIORITY,
     origin: input.origin ?? "USER_DECLARED",
+    financialProfileId: financialProfileId as Id<"financial-profile">,
   };
-  await repo.upsertCategoryRule(db, rule);
-  return rule;
+  return repo.upsertPersonalCategoryRule(db, rule);
 }
 
-/** Rules are global (not per-profile) — see `repo.loadRules`'s own comment — so this takes no `financialProfileId`, matching that existing architecture. */
-export async function deleteCategoryRule(db: Database, id: string): Promise<void> {
+/**
+ * DEC-133: deletes a rule ONLY when it is a personal rule OWNED by this
+ * profile — never a global `SYSTEM_DEFAULT` (immutable through every user
+ * flow) and never another profile's personal rule. Silently no-ops for
+ * anything else, matching `assertOwnedByProfile`'s "never leak whether
+ * another user's resource exists" posture rather than throwing a
+ * distinguishable error.
+ */
+export async function deleteCategoryRule(db: Database, financialProfileId: string, id: string): Promise<void> {
+  const rule = await repo.getCategoryRuleById(db, id);
+  if (!rule || rule.origin === "SYSTEM_DEFAULT" || rule.financialProfileId !== financialProfileId) {
+    return;
+  }
   await repo.deleteCategoryRule(db, id);
 }
 
@@ -467,11 +490,11 @@ export interface CategorizeTransactionInput {
   readonly category: string;
   readonly subcategory?: string;
   /**
-   * When true, ALSO creates a durable `CategoryRule` (origin
-   * `USER_DECLARED`) so a future matching transaction is categorized
-   * automatically — the "Quer que eu classifique X como Y da próxima vez?"
-   * flow. Defaults to false: a one-time correction changes only this
-   * transaction and never silently creates a permanent rule.
+   * When true, ALSO creates/updates a durable PERSONAL `CategoryRule`
+   * (origin `USER_DECLARED`) so every matching transaction — past AND
+   * future — uses it automatically ("Todas, passadas e futuras" in the UI).
+   * Defaults to false ("Só esta"): a one-time correction changes only this
+   * transaction and never creates a rule or touches any other transaction.
    */
   readonly alwaysForMerchant?: boolean;
 }
@@ -479,17 +502,33 @@ export interface CategorizeTransactionInput {
 export interface CategorizeTransactionResult {
   readonly transaction: FinancialTransaction;
   readonly createdRule?: CategoryRule;
+  /**
+   * How many OTHER historical transactions for this profile were
+   * reclassified to the new category because they matched the same rule —
+   * always 0 when `alwaysForMerchant` is false/omitted.
+   */
+  readonly retroactivelyReclassifiedCount: number;
 }
 
 /**
  * Resolves a pending "what was this?" classification question
  * (`queries.getPendingConfirmations`'s `UNCATEGORIZED_TRANSACTION` items) —
  * or any other manual re-categorization. Deliberately touches ONLY
- * `category`/`subcategory`, never `financialEffect` — a TRANSFER,
- * CARD_PAYMENT, INVESTMENT, or INVESTMENT_REDEMPTION transaction can be
- * given a display category without ever being reinterpreted as ordinary
- * consumption (DEC-132 safety rule: financial effect is decided before, and
- * independently of, category).
+ * `category`/`subcategory`, never `financialEffect` or `amount` — a
+ * TRANSFER, CARD_PAYMENT, INVESTMENT, or INVESTMENT_REDEMPTION transaction
+ * can be given a display category without ever being reinterpreted as
+ * ordinary consumption or a different financial truth (DEC-132/133 safety
+ * rule: financial effect is decided before, and independently of,
+ * category — a retroactive category change is never a retroactive
+ * financial-effect change).
+ *
+ * DEC-133 "all past and future": when `alwaysForMerchant` is true, this
+ * ALSO retroactively reclassifies every OTHER historical transaction for
+ * THIS profile that the new personal rule matches — using
+ * `ruleMatchesTransaction`, the EXACT SAME matcher `categorize` itself
+ * uses (never a separate substring heuristic), scoped to this profile's
+ * own transactions only (`repo.loadFinancialSnapshotInput` is already
+ * profile-scoped — never touches another user's data).
  */
 export async function categorizeTransaction(
   db: Database,
@@ -510,7 +549,7 @@ export async function categorizeTransaction(
   await repo.upsertTransaction(db, updatedTransaction);
 
   if (!input.alwaysForMerchant) {
-    return { transaction: updatedTransaction };
+    return { transaction: updatedTransaction, retroactivelyReclassifiedCount: 0 };
   }
 
   const matchType: CategoryRuleMatchType = transaction.normalizedMerchant
@@ -518,14 +557,30 @@ export async function categorizeTransaction(
     : "CONTAINS_DESCRIPTION";
   const pattern =
     transaction.normalizedMerchant ?? (transaction.normalizedDescription || transaction.rawDescription);
-  const createdRule = await createCategoryRule(db, {
+  const createdRule = await createCategoryRule(db, financialProfileId, {
     matchType,
     pattern,
     category: input.category,
     ...(input.subcategory !== undefined ? { subcategory: input.subcategory } : {}),
   });
 
-  return { transaction: updatedTransaction, createdRule };
+  const { transactions } = await repo.loadFinancialSnapshotInput(db, financialProfileId, nowIso().slice(0, 10));
+  const matchingHistorical = transactions.filter(
+    (t) => t.id !== updatedTransaction.id && ruleMatchesTransaction(createdRule, t),
+  );
+  for (const t of matchingHistorical) {
+    await repo.upsertTransaction(db, {
+      ...t,
+      category: input.category,
+      ...(input.subcategory !== undefined ? { subcategory: input.subcategory } : {}),
+    });
+  }
+
+  return {
+    transaction: updatedTransaction,
+    createdRule,
+    retroactivelyReclassifiedCount: matchingHistorical.length,
+  };
 }
 
 // ---------- Recurring candidate confirmation (DEC-132) ----------

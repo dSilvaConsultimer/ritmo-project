@@ -40,11 +40,14 @@ export type CategorizeTransactionInput = z.infer<typeof categorizeTransactionInp
 
 export async function categorizeTransactionHandler(
   data: CategorizeTransactionInput,
-): Promise<{ readonly ok: true } | { readonly ok: false; readonly error: ActionError }> {
+): Promise<
+  | { readonly ok: true; readonly retroactivelyReclassifiedCount: number }
+  | { readonly ok: false; readonly error: ActionError }
+> {
   const { financialProfileId } = await getCurrentProfileContext();
   const db = await getDb();
   try {
-    await categorizeTransaction(db, financialProfileId, {
+    const result = await categorizeTransaction(db, financialProfileId, {
       transactionId: data.transactionId,
       category: data.category,
       ...(data.subcategory !== undefined ? { subcategory: data.subcategory } : {}),
@@ -52,7 +55,7 @@ export async function categorizeTransactionHandler(
         ? { alwaysForMerchant: data.alwaysForMerchant }
         : {}),
     });
-    return { ok: true };
+    return { ok: true, retroactivelyReclassifiedCount: result.retroactivelyReclassifiedCount };
   } catch (error) {
     return { ok: false, error: normalizeActionError(error) };
   }
@@ -145,10 +148,10 @@ export type CreateCategoryRuleInput = z.infer<typeof createCategoryRuleInput>;
 export async function createCategoryRuleHandler(
   data: CreateCategoryRuleInput,
 ): Promise<{ readonly ok: true } | { readonly ok: false; readonly error: ActionError }> {
-  await getCurrentProfileContext();
+  const { financialProfileId } = await getCurrentProfileContext();
   const db = await getDb();
   try {
-    await createCategoryRule(db, {
+    await createCategoryRule(db, financialProfileId, {
       matchType: data.matchType,
       pattern: data.pattern,
       category: data.category,
@@ -166,10 +169,10 @@ export type DeleteCategoryRuleInput = z.infer<typeof deleteCategoryRuleInput>;
 export async function deleteCategoryRuleHandler(
   data: DeleteCategoryRuleInput,
 ): Promise<{ readonly ok: true } | { readonly ok: false; readonly error: ActionError }> {
-  await getCurrentProfileContext();
+  const { financialProfileId } = await getCurrentProfileContext();
   const db = await getDb();
   try {
-    await deleteCategoryRule(db, data.ruleId);
+    await deleteCategoryRule(db, financialProfileId, data.ruleId);
     return { ok: true };
   } catch (error) {
     return { ok: false, error: normalizeActionError(error) };

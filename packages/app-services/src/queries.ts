@@ -483,26 +483,33 @@ export async function getIncomesForProfile(
 }
 
 /**
- * Sprint 8 (Ritmo UI): how many deterministic categorization rules exist —
- * global, not per-profile (see `repo.loadRules`). Powers the "Mais" screen's
- * "Categorias e regras" row honestly instead of a hardcoded count.
+ * Sprint 8 (Ritmo UI), DEC-133: how many deterministic categorization rules
+ * are VISIBLE to this profile — the global `SYSTEM_DEFAULT` baseline plus
+ * this profile's own personal overrides (see `repo.loadRules`). Powers the
+ * "Mais" screen's "Categorias e regras" row honestly instead of a
+ * hardcoded count.
  */
-export async function getCategoryRuleCount(db: Database): Promise<number> {
-  const { categoryRules } = await repo.loadRules(db);
+export async function getCategoryRuleCount(db: Database, financialProfileId: string): Promise<number> {
+  const { categoryRules } = await repo.loadRules(db, financialProfileId);
   return categoryRules.length;
 }
 
 /**
- * The full list of deterministic categorization rules — global, not
- * per-profile (same underlying data as `getCategoryRuleCount`). Powers the
- * "Categorias e regras" detail screen (Mais → Conexões): read-only, since
- * there is no per-profile rule-authoring UI yet — this honestly shows what
- * exists rather than pretending to be an editor. Sorted by descending
- * priority, matching the deterministic evaluation order `categorize` itself
- * uses (see `packages/financial-engine/src/domain/category.ts`).
+ * DEC-133: the full list of categorization rules visible to this profile —
+ * global `SYSTEM_DEFAULT` rules plus this profile's own personal overrides,
+ * never another profile's. Powers Planning's "Regras e categorias" section:
+ * view + create + delete (personal rules only — a `SYSTEM_DEFAULT` row is
+ * never editable/deletable through this list, see
+ * `mutations.deleteCategoryRule`). Sorted by descending priority, matching
+ * the tie-breaking order WITHIN each precedence tier `categorize` itself
+ * uses (see `packages/financial-engine/src/domain/category.ts`) — personal
+ * vs. global ordering itself is a UI concern, not encoded in this sort.
  */
-export async function getCategoryRulesList(db: Database): Promise<readonly CategoryRule[]> {
-  const { categoryRules } = await repo.loadRules(db);
+export async function getCategoryRulesList(
+  db: Database,
+  financialProfileId: string,
+): Promise<readonly CategoryRule[]> {
+  const { categoryRules } = await repo.loadRules(db, financialProfileId);
   return categoryRules.slice().sort((a, b) => b.priority - a.priority);
 }
 

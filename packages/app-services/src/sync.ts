@@ -323,7 +323,7 @@ export async function syncConnection(
     };
 
     const accounts = await provider.listAccounts(connection.externalConnectionId);
-    const { categoryRules, merchantRules } = await repo.loadRules(db);
+    const { categoryRules, merchantRules } = await repo.loadRules(db, financialProfileId);
 
     for (const account of accounts) {
       try {
@@ -522,7 +522,7 @@ export async function refetchTransactionsByExternalId(
   const externalTransactions = await provider.listTransactions(externalAccountId, {
     externalTransactionIds,
   });
-  const { categoryRules, merchantRules } = await repo.loadRules(db);
+  const { categoryRules, merchantRules } = await repo.loadRules(db, financialProfileId);
   const metrics: MutableMetrics = { ...EMPTY_SYNC_RUN_METRICS };
   await importTransactionBatch(
     db,

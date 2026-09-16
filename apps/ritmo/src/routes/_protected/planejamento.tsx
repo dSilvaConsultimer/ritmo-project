@@ -15,7 +15,6 @@ import { PhoneShell, ScreenHeader } from "@/components/ritmo/PhoneShell";
 import { ThemeToggle } from "@/components/ritmo/ThemeToggle";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Checkbox } from "@/components/ui/checkbox";
 import { getPlanejamentoData } from "@/functions/planejamento";
 import {
   toPlanejamentoViewModel,
@@ -468,24 +467,27 @@ function UncategorizedCard({
   onResolved: () => void;
 }) {
   const [category, setCategory] = useState("");
-  const [always, setAlways] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
-  async function handleSave() {
+  async function handleSave(alwaysForMerchant: boolean) {
     if (!category.trim()) return;
     setIsSaving(true);
     setError(null);
     const result = await categorizeTransactionAction({
-      data: {
-        transactionId: item.transactionId,
-        category: category.trim(),
-        alwaysForMerchant: always,
-      },
+      data: { transactionId: item.transactionId, category: category.trim(), alwaysForMerchant },
     });
     setIsSaving(false);
     if (!result.ok) {
       setError(result.error.message);
+      return;
+    }
+    if (alwaysForMerchant && result.retroactivelyReclassifiedCount > 0) {
+      setSuccessMessage(
+        `Combinado. ${result.retroactivelyReclassifiedCount} movimentação(ões) antiga(s) da ${item.title} também foram reclassificadas.`,
+      );
+      setTimeout(onResolved, 1800);
       return;
     }
     onResolved();
@@ -498,21 +500,40 @@ function UncategorizedCard({
       subtitle={item.subtitle}
       amountLabel={item.amountLabel}
     >
-      <div className="flex flex-col gap-2">
-        <Input
-          value={category}
-          onChange={(e) => setCategory(e.target.value)}
-          placeholder="Qual categoria?"
-        />
-        <label className="flex items-center gap-2 text-[12.5px] text-muted-foreground">
-          <Checkbox checked={always} onCheckedChange={(c) => setAlways(c === true)} />
-          Sempre classificar assim
-        </label>
-        {error && <p className="text-[12px] text-destructive">{error}</p>}
-        <Button size="sm" onClick={() => void handleSave()} disabled={isSaving || !category.trim()}>
-          Salvar
-        </Button>
-      </div>
+      {successMessage ? (
+        <p className="text-[12.5px] text-[var(--success)]">{successMessage}</p>
+      ) : (
+        <div className="flex flex-col gap-2">
+          <Input
+            value={category}
+            onChange={(e) => setCategory(e.target.value)}
+            placeholder="Qual categoria?"
+          />
+          {error && <p className="text-[12px] text-destructive">{error}</p>}
+          <p className="text-[12px] text-muted-foreground">
+            Usar "{category.trim() || "..."}" só nesta movimentação ou em todas da {item.title}?
+          </p>
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              className="flex-1"
+              onClick={() => void handleSave(false)}
+              disabled={isSaving || !category.trim()}
+            >
+              Só esta
+            </Button>
+            <Button
+              size="sm"
+              className="flex-1"
+              onClick={() => void handleSave(true)}
+              disabled={isSaving || !category.trim()}
+            >
+              Todas, passadas e futuras
+            </Button>
+          </div>
+        </div>
+      )}
     </PendingCardShell>
   );
 }

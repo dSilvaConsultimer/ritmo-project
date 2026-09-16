@@ -35,7 +35,7 @@ export const getPlanejamentoData = createServerFn({ method: "GET" }).handler(asy
       getFixedExpensesForProfile(db, financialProfileId, asOfDate),
       getIncomesForProfile(db, financialProfileId, asOfDate),
       getUpcomingFinancialEventsForProfile(db, financialProfileId, asOfDate),
-      getCategoryRulesList(db),
+      getCategoryRulesList(db, financialProfileId),
       getPendingConfirmations(db, financialProfileId, asOfDate),
     ]);
 

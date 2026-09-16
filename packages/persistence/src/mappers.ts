@@ -581,6 +581,7 @@ export function categoryRuleToRow(r: CategoryRule): typeof schema.categoryRules.
     subcategory: r.subcategory ?? null,
     priority: r.priority,
     origin: r.origin,
+    financialProfileId: r.financialProfileId ?? null,
   };
 }
 
@@ -595,6 +596,8 @@ export function rowToCategoryRule(row: CategoryRuleRow): CategoryRule {
     // DEC-132: every rule that existed before provenance tracking was added
     // was, in fact, a bundled system default — never guessed as anything else.
     origin: row.origin ?? "SYSTEM_DEFAULT",
+    // DEC-133: null means global — never map it to an empty-string id.
+    ...(row.financialProfileId ? { financialProfileId: row.financialProfileId as Id<"financial-profile"> } : {}),
   };
 }
 

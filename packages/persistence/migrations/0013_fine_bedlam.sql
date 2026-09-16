@@ -1,0 +1,3 @@
+ALTER TABLE "category_rules" ADD COLUMN "financial_profile_id" text;--> statement-breakpoint
+ALTER TABLE "category_rules" ADD CONSTRAINT "category_rules_financial_profile_id_financial_profiles_id_fk" FOREIGN KEY ("financial_profile_id") REFERENCES "public"."financial_profiles"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "category_rules" ADD CONSTRAINT "category_rules_financial_profile_id_match_type_pattern_unique" UNIQUE("financial_profile_id","match_type","pattern");

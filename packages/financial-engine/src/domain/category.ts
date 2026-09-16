@@ -36,9 +36,20 @@ export type CategoryRuleOrigin =
 
 /**
  * A deterministic categorization rule — no LLM, no guessing. Rules are
- * evaluated by descending `priority`; the first match wins. A transaction
+ * evaluated by descending `priority` WITHIN their scope tier, but a
+ * profile-scoped (personal) rule always wins over a global one regardless
+ * of priority number — see `categorize`'s own doc comment. A transaction
  * matching no rule stays `UNCATEGORIZED` rather than being force-fit into a
  * guessed category (RULE: "do not guess aggressively").
+ *
+ * DEC-133: `financialProfileId` is the ownership boundary — absent
+ * (`undefined`) means a GLOBAL `SYSTEM_DEFAULT` rule (the baseline
+ * knowledge every profile gets automatically, e.g. "UBER -> Transporte");
+ * present means a PERSONAL override scoped to exactly that profile
+ * (`USER_DECLARED`/`HISTORY_INFERRED`/`USER_CONFIRMED_HISTORY`). Only
+ * `SYSTEM_DEFAULT` may ever be global — every other origin MUST carry a
+ * `financialProfileId`. This is the same invariant DEC-131 established for
+ * `PaymentSource` identity, applied here to rule ownership instead.
  */
 export interface CategoryRule {
   readonly id: Id<"category-rule">;
@@ -48,6 +59,7 @@ export interface CategoryRule {
   readonly subcategory?: string;
   readonly priority: number;
   readonly origin: CategoryRuleOrigin;
+  readonly financialProfileId?: Id<"financial-profile">;
 }
 
 /**
@@ -68,7 +80,14 @@ function safeRegexTest(pattern: string, subject: string): boolean {
   }
 }
 
-function ruleMatches(rule: CategoryRule, t: FinancialTransaction): boolean {
+/**
+ * Exported (DEC-133) so retroactive reclassification
+ * (`mutations.categorizeTransaction`'s "all past and future" path) can find
+ * every historical transaction a rule applies to using the EXACT SAME
+ * matcher `categorize` itself uses — never a separate/looser substring
+ * heuristic.
+ */
+export function ruleMatchesTransaction(rule: CategoryRule, t: FinancialTransaction): boolean {
   const merchant = (t.normalizedMerchant ?? "").toUpperCase();
   const description = (t.normalizedDescription || t.rawDescription).toUpperCase();
   const pattern = rule.pattern.toUpperCase();
@@ -93,23 +112,40 @@ export interface CategorizationResult {
   readonly matchedRuleId?: Id<"category-rule">;
 }
 
+function bestMatch(
+  transaction: FinancialTransaction,
+  rules: readonly CategoryRule[],
+): CategoryRule | undefined {
+  const sorted = [...rules].sort((a, b) => b.priority - a.priority);
+  return sorted.find((rule) => ruleMatchesTransaction(rule, transaction));
+}
+
 /**
- * Categorizes a transaction deterministically against a prioritized rule
- * set. Falls back to `UNCATEGORIZED` when nothing matches.
+ * Categorizes a transaction deterministically. DEC-133 precedence: a
+ * PERSONAL rule (`rule.financialProfileId === transaction.financialProfileId`)
+ * always wins over a GLOBAL `SYSTEM_DEFAULT` one
+ * (`rule.financialProfileId === undefined`), regardless of `priority` —
+ * priority only breaks ties WITHIN each tier. A rule belonging to a
+ * DIFFERENT profile is never even considered (never leaks another user's
+ * override or gets accidentally applied to someone else's transaction).
+ * Falls back to `UNCATEGORIZED` when nothing in either tier matches — never
+ * force-fit into a guessed category (RULE: "do not guess aggressively").
  */
 export function categorize(
   transaction: FinancialTransaction,
   rules: readonly CategoryRule[],
 ): CategorizationResult {
-  const sorted = [...rules].sort((a, b) => b.priority - a.priority);
-  for (const rule of sorted) {
-    if (ruleMatches(rule, transaction)) {
-      return {
-        category: rule.category,
-        ...(rule.subcategory !== undefined ? { subcategory: rule.subcategory } : {}),
-        matchedRuleId: rule.id,
-      };
-    }
-  }
-  return { category: UNCATEGORIZED };
+  const personalRules = rules.filter(
+    (r) => r.financialProfileId !== undefined && r.financialProfileId === transaction.financialProfileId,
+  );
+  const globalRules = rules.filter((r) => r.financialProfileId === undefined);
+
+  const match = bestMatch(transaction, personalRules) ?? bestMatch(transaction, globalRules);
+  if (!match) return { category: UNCATEGORIZED };
+
+  return {
+    category: match.category,
+    ...(match.subcategory !== undefined ? { subcategory: match.subcategory } : {}),
+    matchedRuleId: match.id,
+  };
 }

@@ -19,7 +19,7 @@ export const getMaisData = createServerFn({ method: "GET" }).handler(async () =>
 
   const [connections, categoryRuleCount, notificationPreferences] = await Promise.all([
     getConnections(db, financialProfileId),
-    getCategoryRuleCount(db),
+    getCategoryRuleCount(db, financialProfileId),
     getNotificationPreferences(db, financialProfileId),
   ]);
 

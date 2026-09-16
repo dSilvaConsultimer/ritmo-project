@@ -4294,3 +4294,65 @@ required scenarios 1-9, 11-13); `mutation-guard.test.ts` (new explicit-intent pa
 (scenario 14 — Mais resolves to Planning). Scenario 15 (no duplicated source of truth) verified
 structurally: `getCategoryRulesList` has exactly one call site (`planejamento.ts`) after `categorias.ts`
 was deleted.
+
+### DEC-133
+
+**Date:** 2026-09-15
+**Context:** Correction to DEC-132's category-rule ownership model. `CategoryRule` had no
+`financialProfileId` at all — every rule (including any future personal correction) was completely
+global, meaning one user's "UBER -> Trabalho" override would have silently applied to every other
+user's UBER transactions too. Explicit product requirement: keep a strong GLOBAL baseline
+(`SYSTEM_DEFAULT`) so no user starts with zero categorization knowledge, while making every
+user-authored rule (`USER_DECLARED`/`HISTORY_INFERRED`/`USER_CONFIRMED_HISTORY`) strictly
+profile-scoped, with personal rules always taking precedence over the global default.
+**Decision:**
+1. **`CategoryRule.financialProfileId?: Id<"financial-profile">`** — absent means global
+   `SYSTEM_DEFAULT`; present means a personal override scoped to exactly that profile. Only
+   `SYSTEM_DEFAULT` may ever be global (enforced at the type level: `mutations.createCategoryRule`'s
+   `origin` parameter type excludes `SYSTEM_DEFAULT` entirely — it is structurally impossible to create
+   a global rule through any UI/AI mutation path).
+2. **Precedence rewritten in `categorize()`** (`packages/financial-engine/src/domain/category.ts`): a
+   PERSONAL rule matching `transaction.financialProfileId` always wins over a GLOBAL rule, regardless
+   of `priority` — priority only breaks ties WITHIN each tier. A rule belonging to a *different* profile
+   is never even considered. `ruleMatchesTransaction` (renamed from the private `ruleMatches`) is now
+   exported so retroactive reclassification reuses the EXACT SAME matcher, never a separate substring
+   heuristic.
+3. **`category_rules` gained `financial_profile_id`** (nullable FK) plus a
+   `UNIQUE(financial_profile_id, match_type, pattern)` constraint (migration `0013`, purely additive —
+   no existing row had this column, so no repair step was needed, unlike DEC-131). `repo.loadRules(db,
+   financialProfileId)` now returns exactly what's visible to that profile: every global rule plus that
+   profile's own personal ones — never another profile's. A new `repo.upsertPersonalCategoryRule`
+   (DEC-131-style conflict-safe upsert on that same natural key) means correcting the same merchant
+   twice UPDATES the existing personal rule rather than creating a duplicate; `repo.upsertCategoryRule`
+   (id-keyed) is now reserved for global `SYSTEM_DEFAULT` seed rows only.
+4. **`mutations.createCategoryRule(db, financialProfileId, input)`** always creates/updates a PERSONAL
+   rule for that profile — there is no code path from any mutation that creates a global rule.
+   **`mutations.deleteCategoryRule(db, financialProfileId, id)`** silently no-ops (never throws a
+   distinguishable error) unless the rule is a personal rule owned by exactly that profile — a
+   `SYSTEM_DEFAULT` row or another profile's rule can never be deleted through this function, making
+   global defaults immutable through every user flow by construction.
+5. **Retroactive reclassification** (`mutations.categorizeTransaction`'s "Todas, passadas e futuras"
+   path): after creating/updating the personal rule, loads this profile's own full transaction history
+   (`repo.loadFinancialSnapshotInput`, already profile-scoped) and reclassifies every OTHER transaction
+   `ruleMatchesTransaction` says the new rule matches — category/subcategory only, `financialEffect` and
+   `amount` are never touched (a retroactive category change alters classification, never financial
+   truth). Returns `retroactivelyReclassifiedCount` so the UI can confirm what happened. "Só esta"
+   (`alwaysForMerchant: false`, the default) changes only the one transaction and creates no rule at
+   all, exactly as before.
+6. **"Ask only when needed" already held by construction** — `getPendingConfirmations`/
+   `getUncategorizedTransactions` only ever surface a transaction whose `category` is genuinely
+   `UNCATEGORIZED` (no rule, personal or global, matched). Nothing changed here; DEC-133 just widened
+   which rules can prevent that state.
+**Tests added:** `category.test.ts` (new precedence describe block — global-without-override,
+same-default-for-another-profile, personal-beats-global-regardless-of-priority,
+profile-A-override-never-affects-profile-B, unrelated-personal-rule-never-blocks-default);
+`learning-repository.test.ts` (new describe block — correcting the same merchant twice updates in
+place, two profiles get independent rules for the same merchant, `upsertPersonalCategoryRule` refuses
+a rule with no `financialProfileId`); `learning.test.ts` (new tests for retroactive reclassification —
+matching historical transactions reclassified, unrelated ones untouched, `financialEffect`/`amount`
+preserved, `SYSTEM_DEFAULT` immutable through both the categorization flow and a direct delete attempt,
+a system-default-matching transaction never becomes a pending question).
+**Result:** the exact Douglas/UBER example from the correction request now behaves as specified —
+Douglas gets "Trabalho," every other profile with no override still gets the system default
+"Transporte," and creating Douglas's override never touches, deletes, or shadows the global rule row
+itself.

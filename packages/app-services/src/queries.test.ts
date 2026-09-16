@@ -172,14 +172,14 @@ describe("getFixedExpensesForProfile", () => {
 describe("getCategoryRuleCount", () => {
   it("matches the real global rule set, not a hardcoded number", async () => {
     const db = await freshSeededDb();
-    expect(await getCategoryRuleCount(db)).toBe(fixtureCategoryRules.length);
+    expect(await getCategoryRuleCount(db, fixtureProfile.id)).toBe(fixtureCategoryRules.length);
   });
 });
 
 describe("getCategoryRulesList", () => {
   it("returns the same count as getCategoryRuleCount, sorted by descending priority", async () => {
     const db = await freshSeededDb();
-    const rules = await getCategoryRulesList(db);
+    const rules = await getCategoryRulesList(db, fixtureProfile.id);
     expect(rules.length).toBe(fixtureCategoryRules.length);
     for (let i = 1; i < rules.length; i++) {
       expect(rules[i - 1]!.priority).toBeGreaterThanOrEqual(rules[i]!.priority);

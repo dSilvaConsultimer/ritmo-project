@@ -413,18 +413,34 @@ export const categories = pgTable("categories", {
   name: text("name").notNull().unique(),
 });
 
-export const categoryRules = pgTable("category_rules", {
-  id: text("id").primaryKey(),
-  matchType: text("match_type").$type<CategoryRuleMatchType>().notNull(),
-  pattern: text("pattern").notNull(),
-  category: text("category").notNull(),
-  subcategory: text("subcategory"),
-  priority: integer("priority").notNull(),
-  // DEC-132: nullable at the DB level (existing rows predate this field) —
-  // `rowToCategoryRule` defaults a null `origin` to `"SYSTEM_DEFAULT"`,
-  // matching every rule that existed before user-authored rules were possible.
-  origin: text("origin").$type<CategoryRuleOrigin>(),
-});
+/**
+ * DEC-133: `financial_profile_id` is nullable — null means a GLOBAL
+ * `SYSTEM_DEFAULT` rule (every profile gets it automatically); non-null
+ * means a PERSONAL override scoped to exactly that profile. The unique
+ * constraint only ever matters for personal rules — Postgres NULL
+ * semantics mean multiple global `SYSTEM_DEFAULT` rows sharing a
+ * `(matchType, pattern)` are never constrained by it (fixtures/rules.ts is
+ * hand-curated to already avoid that) — but two rows for the SAME profile
+ * with the same (matchType, pattern) are prevented, matching
+ * `mutations.createCategoryRule`'s "create or UPDATE" contract.
+ */
+export const categoryRules = pgTable(
+  "category_rules",
+  {
+    id: text("id").primaryKey(),
+    matchType: text("match_type").$type<CategoryRuleMatchType>().notNull(),
+    pattern: text("pattern").notNull(),
+    category: text("category").notNull(),
+    subcategory: text("subcategory"),
+    priority: integer("priority").notNull(),
+    // DEC-132: nullable at the DB level (existing rows predate this field) —
+    // `rowToCategoryRule` defaults a null `origin` to `"SYSTEM_DEFAULT"`,
+    // matching every rule that existed before user-authored rules were possible.
+    origin: text("origin").$type<CategoryRuleOrigin>(),
+    financialProfileId: text("financial_profile_id").references(() => financialProfiles.id),
+  },
+  (table) => [unique().on(table.financialProfileId, table.matchType, table.pattern)],
+);
 
 /**
  * DEC-132: which pending-planning pool this candidate belongs to — an

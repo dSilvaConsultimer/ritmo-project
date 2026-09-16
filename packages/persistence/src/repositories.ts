@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, or } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, or } from "drizzle-orm";
 import type {
   FinancialEvent,
   FinancialGoal,
@@ -441,6 +441,7 @@ export async function upsertMerchantRule(db: Database, rule: MerchantNormalizati
     .onConflictDoUpdate({ target: schema.merchantNormalizationRules.id, set: row });
 }
 
+/** Id-keyed upsert — used only for global `SYSTEM_DEFAULT` rules (`seed.ts`'s stable fixture ids). Never use this for a personal rule — see `upsertPersonalCategoryRule`. */
 export async function upsertCategoryRule(db: Database, rule: CategoryRule): Promise<void> {
   const row = mappers.categoryRuleToRow(rule);
   await db
@@ -449,7 +450,37 @@ export async function upsertCategoryRule(db: Database, rule: CategoryRule): Prom
     .onConflictDoUpdate({ target: schema.categoryRules.id, set: row });
 }
 
-/** DEC-132: only ever deletes a USER-authored rule from the Planning UI — callers decide what's deletable. */
+/**
+ * DEC-133: conflict-safe upsert for a PERSONAL rule, keyed on its natural
+ * identity `(financialProfileId, matchType, pattern)` — mirrors the
+ * DEC-131 PaymentSource fix exactly, and satisfies "create or UPDATE the
+ * profile-scoped personal rule" (correcting the same merchant twice updates
+ * the existing rule rather than creating a duplicate). `rule.financialProfileId`
+ * MUST be set — this function is never valid for a global `SYSTEM_DEFAULT` rule.
+ */
+export async function upsertPersonalCategoryRule(db: Database, rule: CategoryRule): Promise<CategoryRule> {
+  if (rule.financialProfileId === undefined) {
+    throw new Error("upsertPersonalCategoryRule requires rule.financialProfileId — use upsertCategoryRule for global rules");
+  }
+  const row = mappers.categoryRuleToRow(rule);
+  const { id: _id, ...refreshableFields } = row;
+  const [saved] = await db
+    .insert(schema.categoryRules)
+    .values(row)
+    .onConflictDoUpdate({
+      target: [schema.categoryRules.financialProfileId, schema.categoryRules.matchType, schema.categoryRules.pattern],
+      set: refreshableFields,
+    })
+    .returning();
+  return mappers.rowToCategoryRule(saved!);
+}
+
+export async function getCategoryRuleById(db: Database, id: string): Promise<CategoryRule | undefined> {
+  const [row] = await db.select().from(schema.categoryRules).where(eq(schema.categoryRules.id, id));
+  return row ? mappers.rowToCategoryRule(row) : undefined;
+}
+
+/** DEC-132/133: only ever deletes a USER-authored, profile-owned rule — callers (`mutations.deleteCategoryRule`) enforce that, never this layer alone. */
 export async function deleteCategoryRule(db: Database, id: string): Promise<void> {
   await db.delete(schema.categoryRules).where(eq(schema.categoryRules.id, id));
 }
@@ -644,12 +675,29 @@ export async function loadLifestyleScenarios(
 }
 
 /** Loads merchant normalization and categorization rules (global, not per-profile). */
+/**
+ * DEC-133: `categoryRules` returns every rule VISIBLE to this profile — the
+ * global `SYSTEM_DEFAULT` set (`financial_profile_id IS NULL`) plus this
+ * profile's own personal overrides. Never another profile's personal rules
+ * — see `categorize`'s own precedence doc comment for how ties between the
+ * two tiers resolve. `merchantRules` (normalization, not categorization)
+ * remain global-only — unaffected by DEC-133, unchanged from before.
+ */
 export async function loadRules(
   db: Database,
+  financialProfileId: string,
 ): Promise<{ merchantRules: MerchantNormalizationRule[]; categoryRules: CategoryRule[] }> {
   const [merchantRuleRows, categoryRuleRows] = await Promise.all([
     db.select().from(schema.merchantNormalizationRules),
-    db.select().from(schema.categoryRules),
+    db
+      .select()
+      .from(schema.categoryRules)
+      .where(
+        or(
+          isNull(schema.categoryRules.financialProfileId),
+          eq(schema.categoryRules.financialProfileId, financialProfileId),
+        ),
+      ),
   ]);
   return {
     merchantRules: merchantRuleRows.map(mappers.rowToMerchantRule),

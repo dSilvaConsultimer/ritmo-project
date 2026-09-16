@@ -144,3 +144,70 @@ describe("categorize", () => {
     );
   });
 });
+
+describe("categorize — DEC-133 personal-rule-vs-system-default precedence", () => {
+  const profileA = createId("financial-profile");
+  const profileB = createId("financial-profile");
+
+  const systemDefault: CategoryRule = {
+    id: createId("category-rule"),
+    matchType: "CONTAINS_MERCHANT",
+    pattern: "UBER",
+    category: "Transporte",
+    priority: 100,
+    origin: "SYSTEM_DEFAULT",
+    // no financialProfileId — global.
+  };
+
+  it("(test 1) a global SYSTEM_DEFAULT rule categorizes a transaction with no user interaction", () => {
+    const t = tx({ financialProfileId: profileA, normalizedMerchant: "UBER" });
+    expect(categorize(t, [systemDefault]).category).toBe("Transporte");
+  });
+
+  it("(test 2) a different profile with no override receives the exact same system default", () => {
+    const t = tx({ financialProfileId: profileB, normalizedMerchant: "UBER" });
+    expect(categorize(t, [systemDefault]).category).toBe("Transporte");
+  });
+
+  it("(test 3) a profile-specific override beats the system default, even with a LOWER priority number", () => {
+    const personalOverride: CategoryRule = {
+      id: createId("category-rule"),
+      matchType: "CONTAINS_MERCHANT",
+      pattern: "UBER",
+      category: "Trabalho",
+      priority: 1, // deliberately lower than the system default's 100
+      origin: "USER_DECLARED",
+      financialProfileId: profileA,
+    };
+    const t = tx({ financialProfileId: profileA, normalizedMerchant: "UBER" });
+    expect(categorize(t, [systemDefault, personalOverride]).category).toBe("Trabalho");
+  });
+
+  it("(test 4) Profile A's override never affects Profile B's transactions — Profile B still gets the system default", () => {
+    const personalOverrideForA: CategoryRule = {
+      id: createId("category-rule"),
+      matchType: "CONTAINS_MERCHANT",
+      pattern: "UBER",
+      category: "Trabalho",
+      priority: 200,
+      origin: "USER_DECLARED",
+      financialProfileId: profileA,
+    };
+    const t = tx({ financialProfileId: profileB, normalizedMerchant: "UBER" });
+    expect(categorize(t, [systemDefault, personalOverrideForA]).category).toBe("Transporte");
+  });
+
+  it("a personal rule for a DIFFERENT merchant never blocks the system default for this one", () => {
+    const unrelatedPersonalRule: CategoryRule = {
+      id: createId("category-rule"),
+      matchType: "CONTAINS_MERCHANT",
+      pattern: "NETFLIX",
+      category: "Assinaturas",
+      priority: 200,
+      origin: "USER_DECLARED",
+      financialProfileId: profileA,
+    };
+    const t = tx({ financialProfileId: profileA, normalizedMerchant: "UBER" });
+    expect(categorize(t, [systemDefault, unrelatedPersonalRule]).category).toBe("Transporte");
+  });
+});

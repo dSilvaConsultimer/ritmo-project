@@ -494,7 +494,7 @@ const createCategoryRuleTool = tool({
   kind: "MUTATION",
   schema: createCategoryRuleSchema,
   execute: (ctx, args) =>
-    mutations.createCategoryRule(ctx.db, {
+    mutations.createCategoryRule(ctx.db, ctx.financialProfileId, {
       matchType: args.matchType,
       pattern: args.pattern,
       category: args.category,
