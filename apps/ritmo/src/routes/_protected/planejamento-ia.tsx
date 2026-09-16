@@ -5,6 +5,8 @@ import { PhoneShell, ScreenHeader } from "@/components/ritmo/PhoneShell";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
+import { CategoryPicker, type CategoryOption } from "@/components/ritmo/CategoryPicker";
+import { getCategoriesAction } from "@/functions/planejamento-actions";
 import {
   confirmPlanningDraft,
   requestPlanningDraft,
@@ -20,9 +22,23 @@ import {
  * creation uses. The draft stays fully editable here before saving — the
  * AI interprets intent, the user (and the real financial engine) stay in
  * control of what's actually recorded.
+ *
+ * DEC-138: the category field on the review card is the same
+ * `CategoryPicker` every other category-aware screen uses — never free
+ * text. When the AI resolved an existing category, it's preselected; when
+ * it detected an explicit "create a category" request, that's shown as a
+ * pending suggestion the user can accept (by doing nothing) or override
+ * (by picking/creating something else); when it resolved nothing at all,
+ * the picker starts empty and confirmation is blocked until the user
+ * chooses one — the AI is never allowed to invent a personal category on
+ * its own.
  */
 export const Route = createFileRoute("/_protected/planejamento-ia")({
   head: () => ({ meta: [{ title: "Criar com IA — Ritmo" }] }),
+  loader: async () => {
+    const result = await getCategoriesAction();
+    return { categories: result.ok ? result.categories : [] };
+  },
   component: PlanejamentoIA,
 });
 
@@ -30,6 +46,10 @@ type Step = "prompt" | "review";
 
 function PlanejamentoIA() {
   const navigate = useNavigate();
+  const data = Route.useLoaderData();
+  const [categories, setCategories] = useState<CategoryOption[]>([...data.categories]);
+  const handleCategoryCreated = (category: CategoryOption) =>
+    setCategories((prev) => (prev.some((c) => c.id === category.id) ? prev : [...prev, category]));
   const [step, setStep] = useState<Step>("prompt");
   const [message, setMessage] = useState("");
   const [draft, setDraft] = useState<PlanningDraft | null>(null);
@@ -116,14 +136,27 @@ function PlanejamentoIA() {
 
           {draft.kind === "fixed_expense" ? (
             <div className="flex flex-col gap-1.5">
-              <label htmlFor="draft-category" className="text-[13px] font-semibold text-foreground">
-                Categoria
-              </label>
-              <Input
-                id="draft-category"
-                value={draft.category ?? ""}
-                onChange={(e) => updateDraft({ category: e.target.value || null })}
+              <label className="text-[13px] font-semibold text-foreground">Categoria</label>
+              {draft.categoryId === null && draft.newCategoryName !== null && (
+                <p className="text-[12px] text-muted-foreground">
+                  A IA sugere criar a categoria "{draft.newCategoryName}". Deixe assim para criá-la,
+                  ou escolha outra abaixo.
+                </p>
+              )}
+              <CategoryPicker
+                categories={categories}
+                value={draft.categoryId}
+                onSelect={(c) => updateDraft({ categoryId: c.id, newCategoryName: null })}
+                onCategoryCreated={handleCategoryCreated}
+                placeholder={
+                  draft.newCategoryName === null ? "Selecionar categoria" : draft.newCategoryName
+                }
               />
+              {draft.categoryId === null && draft.newCategoryName === null && (
+                <p className="text-[12px] text-destructive">
+                  A IA não conseguiu identificar uma categoria — selecione uma para continuar.
+                </p>
+              )}
             </div>
           ) : null}
 
@@ -192,7 +225,12 @@ function PlanejamentoIA() {
           <Button
             size="lg"
             className="mt-2 rounded-full"
-            disabled={isBusy}
+            disabled={
+              isBusy ||
+              (draft.kind === "fixed_expense" &&
+                draft.categoryId === null &&
+                draft.newCategoryName === null)
+            }
             onClick={() => void handleConfirm()}
           >
             {isBusy ? "Salvando..." : "Confirmar e salvar"}

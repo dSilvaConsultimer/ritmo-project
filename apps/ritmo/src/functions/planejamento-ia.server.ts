@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { AIError, OpenAIProvider, resolveOpenAIModel } from "@money-copilot/ai";
-import { getDb, createCategory } from "@money-copilot/app-services";
+import { AIError, OpenAIProvider, resolveOpenAIModel, type AIProvider } from "@money-copilot/ai";
+import { getDb, createCategory, getCategoriesForProfile } from "@money-copilot/app-services";
 import { getCurrentProfileContext } from "./profile.server";
 import { resolveAsOfDate } from "./config";
 import { checkRateLimit, RATE_LIMIT_POLICIES } from "./rate-limit.server";
@@ -19,6 +19,20 @@ import { createManualPlanningItemHandler } from "./planejamento-criar.server";
  * actual save — the AI only ever produces a DRAFT the user must confirm;
  * it never persists anything itself. The `.server.ts` suffix signals this
  * file is server-only to Vite's import protection.
+ *
+ * DEC-138: category identity for an AI-produced draft works exactly like
+ * every other category-aware surface in the product — `categoryId` is the
+ * only thing that can ever be persisted as identity, and creating a NEW
+ * personal category requires an EXPLICIT user action. For manual creation
+ * that's the CategoryPicker's own "+ Criar nova categoria"; for the AI
+ * flow it is the user's own message explicitly asking to create one (e.g.
+ * "crie uma categoria chamada Trabalho") — never merely because the model
+ * couldn't match an existing category to an ordinary request like "pago
+ * consulta médica todo mês". See `resolveDraftCategory`'s own doc comment
+ * for the actual safety mechanism (the model's raw output is NEVER trusted
+ * blindly), and `planejamento-ia.tsx` for how an unresolved category
+ * blocks confirmation until the user picks one via the same CategoryPicker
+ * used everywhere else.
  */
 
 const planningDraftSchema = z.object({
@@ -26,8 +40,23 @@ const planningDraftSchema = z.object({
   label: z.string().min(1).max(120),
   /** Reais, never cents. `null` when the user didn't state a number — never guessed. */
   amountReais: z.number().positive().nullable().default(null),
-  /** Only meaningful for a recurring commitment. */
-  category: z.string().min(1).max(60).nullable().default(null),
+  /**
+   * DEC-138: an id from the categories ALREADY visible to this profile —
+   * never a free-text name. Only meaningful for `kind: "fixed_expense"`.
+   * Sanitized against the real visible-category list by
+   * `resolveDraftCategory` before this ever leaves `requestPlanningDraftHandler`
+   * — the model's raw claim is never trusted as-is.
+   */
+  categoryId: z.string().min(1).nullable().default(null),
+  /**
+   * DEC-138: set ONLY when the user's own message explicitly asked to
+   * create a brand-new category with this exact name (e.g. "crie uma
+   * categoria chamada Trabalho") — never merely because no existing
+   * category matched an ordinary request. Mutually exclusive with
+   * `categoryId` — `resolveDraftCategory` enforces this regardless of what
+   * the model returns.
+   */
+  newCategoryName: z.string().min(1).max(60).nullable().default(null),
   /** ISO "YYYY-MM-DD". Only meaningful for a one-off event. */
   startDate: z.string().nullable().default(null),
   endDate: z.string().nullable().default(null),
@@ -40,22 +69,69 @@ export type PlanningDraft = z.infer<typeof planningDraftSchema>;
 
 const TOOL_NAME = "proposePlanningDraft";
 
+export interface DraftCategoryResolution {
+  readonly categoryId: string | null;
+  readonly newCategoryName: string | null;
+}
+
+/**
+ * DEC-138: the actual safety mechanism — the model's raw `categoryId`/
+ * `newCategoryName` output is NEVER trusted as-is, regardless of how
+ * confident the prompt asked it to be. A `categoryId` is kept ONLY when it
+ * matches a category genuinely visible to this profile right now (base or
+ * personal); anything else (a hallucinated id, a category name used where
+ * an id was expected, an id from a different profile) is discarded — never
+ * silently converted into a category-creation request. A valid
+ * `categoryId` always wins over `newCategoryName`: this product never
+ * creates a new category and reuses an existing one in the same draft, and
+ * "the model filled both fields" is exactly the kind of confused output
+ * this function exists to make safe. `newCategoryName` survives ONLY when
+ * `categoryId` did not resolve — the caller (`confirmPlanningDraftHandler`)
+ * is the only place that may ever act on it, and only because it can only
+ * ever have been set from the user's own explicit creation request in the
+ * first place (see `buildInstructions`).
+ */
+export function resolveDraftCategory(
+  rawCategoryId: string | null,
+  rawNewCategoryName: string | null,
+  visibleCategories: readonly { readonly id: string }[],
+): DraftCategoryResolution {
+  const resolvedCategoryId =
+    rawCategoryId !== null && visibleCategories.some((c) => c.id === rawCategoryId)
+      ? rawCategoryId
+      : null;
+  return resolvedCategoryId !== null
+    ? { categoryId: resolvedCategoryId, newCategoryName: null }
+    : { categoryId: null, newCategoryName: rawNewCategoryName };
+}
+
 /**
  * Built fresh per request (never a module-level constant) so "Hoje é..."
  * always reflects the real clock (`resolveAsOfDate`, DEC-127) rather than
  * freezing whatever date happened to be current when the server process
- * started.
+ * started, and so the category list always reflects this profile's
+ * CURRENT visible categories (DEC-138) — never a stale/cached snapshot.
  */
-function buildInstructions(asOfDate: string): string {
+function buildInstructions(
+  asOfDate: string,
+  visibleCategories: readonly { readonly id: string; readonly name: string }[],
+): string {
+  const categoryList = visibleCategories
+    .map((c) => `- id: "${c.id}" — nome: "${c.name}"`)
+    .join("\n");
   return `Você ajuda a interpretar a intenção de planejamento financeiro de um usuário do Ritmo em português (pt-BR).
 
 Hoje é ${asOfDate} (data de referência do produto — use-a para resolver datas relativas como "em dezembro").
+
+Categorias JÁ EXISTENTES e visíveis para este usuário (use exatamente um destes ids ao preencher "categoryId" — NUNCA invente um id que não esteja nesta lista):
+${categoryList}
 
 Sua única tarefa é chamar a ferramenta "${TOOL_NAME}" UMA vez, preenchendo:
 - kind: "event" para algo pontual (uma viagem, uma compra, juntar dinheiro até uma data); "fixed_expense" para um gasto que se repete todo mês.
 - label: um nome curto e claro para o item.
 - amountReais: o valor em reais mencionado pelo usuário, ou null se ele não disse um valor — NUNCA invente um número.
-- category: uma categoria curta (ex.: "Moradia", "Lazer"), só quando kind for "fixed_expense" — caso contrário null.
+- categoryId: só quando kind for "fixed_expense". O id EXATO de uma categoria da lista acima, escolhido SOMENTE quando você tiver confiança razoável de que ela corresponde ao pedido (ex.: "pago consulta médica todo mês" → o id da categoria "Saúde", se ela existir na lista). Se nenhuma categoria da lista corresponder com confiança, deixe null — é sempre preferível deixar null a escolher uma categoria errada. NUNCA use um id que não esteja na lista acima, e nunca use um nome de categoria neste campo.
+- newCategoryName: preencha isso APENAS quando o usuário pedir EXPLICITAMENTE para criar uma categoria nova (frases como "crie uma categoria chamada X", "cria uma categoria nova X"). NUNCA preencha isso só porque nenhuma categoria da lista correspondeu ao pedido — nesse caso deixe categoryId e newCategoryName como null; o usuário escolherá uma categoria manualmente na tela de revisão. NUNCA preencha categoryId e newCategoryName ao mesmo tempo.
 - startDate/endDate: datas no formato "YYYY-MM-DD", só quando kind for "event" — caso contrário null.
 - dueDayOfMonth: dia do mês (1-31), só se o usuário mencionar um vencimento para um "fixed_expense" — caso contrário null.
 - rationale: uma frase curta e honesta explicando como você interpretou o pedido.
@@ -70,8 +146,17 @@ export type RequestPlanningDraftResult =
   | { readonly ok: true; readonly draft: PlanningDraft }
   | { readonly ok: false; readonly error: { readonly code: string; readonly message: string } };
 
+/**
+ * `aiProviderOverride` mirrors `runCopilotTurn`'s own `aiProvider`
+ * injection point (`orchestrator.ts`) — lets tests supply a
+ * `MockAIProvider` and exercise the REAL category-sanitization pipeline
+ * (`resolveDraftCategory`, fed with the real visible-category list) without
+ * any network call. Never set in production — `getDb`/`getCurrentProfileContext`
+ * still always resolve for real.
+ */
 export async function requestPlanningDraftHandler(
   data: RequestPlanningDraftInput,
+  aiProviderOverride?: AIProvider,
 ): Promise<RequestPlanningDraftResult> {
   const { financialProfileId } = await getCurrentProfileContext();
 
@@ -106,7 +191,7 @@ export async function requestPlanningDraftHandler(
   }
 
   const apiKey = process.env["OPENAI_API_KEY"];
-  if (!apiKey) {
+  if (!aiProviderOverride && !apiKey) {
     return {
       ok: false,
       error: {
@@ -117,12 +202,19 @@ export async function requestPlanningDraftHandler(
   }
 
   const model = resolveOpenAIModel();
-  const aiProvider = new OpenAIProvider({ apiKey, model });
+  const aiProvider = aiProviderOverride ?? new OpenAIProvider({ apiKey: apiKey!, model });
 
   try {
+    const db = await getDb();
+    // DEC-138: fetched fresh on every request — the AI must only ever be
+    // offered categories that genuinely exist right now for THIS profile
+    // (base + its own personal ones), never a stale list and never another
+    // profile's categories.
+    const visibleCategories = await getCategoriesForProfile(db, financialProfileId);
+
     const result = await aiProvider.generate({
       model,
-      instructions: buildInstructions(resolveAsOfDate()),
+      instructions: buildInstructions(resolveAsOfDate(), visibleCategories),
       input: [{ type: "message", role: "user", content: data.message }],
       tools: [
         {
@@ -158,8 +250,18 @@ export async function requestPlanningDraftHandler(
       };
     }
 
-    logger.audit("planning_draft_requested", { financialProfileId, kind: parsed.data.kind });
-    return { ok: true, draft: parsed.data };
+    // DEC-138: NEVER trust the model's raw categoryId/newCategoryName —
+    // sanitize against the real visible-category list before this draft
+    // ever reaches the client.
+    const { categoryId, newCategoryName } = resolveDraftCategory(
+      parsed.data.categoryId,
+      parsed.data.newCategoryName,
+      visibleCategories,
+    );
+    const draft: PlanningDraft = { ...parsed.data, categoryId, newCategoryName };
+
+    logger.audit("planning_draft_requested", { financialProfileId, kind: draft.kind });
+    return { ok: true, draft };
   } catch (error) {
     if (error instanceof AIError) {
       return {
@@ -185,15 +287,15 @@ export async function requestPlanningDraftHandler(
  * AI-confirmed item is indistinguishable in the database from a manually
  * created one.
  *
- * DEC-137: the AI can only ever produce a free-text category guess (it has
- * no concept of a `categoryId`) — this was the SECOND hidden path (besides
- * the manual-creation form) that could write a category string with no
- * backing canonical `Category` row. Resolved here through the exact same
- * `createCategory` mutation the CategoryPicker's own "+ Criar nova
- * categoria" uses — it returns the existing visible category on a
- * normalized-name match (e.g. the AI says "moradia," a base "Moradia"
- * already exists) or creates a real personal one, never a second/parallel
- * category concept.
+ * DEC-138: a `fixed_expense` draft must arrive with EITHER a resolved
+ * `categoryId` (an existing category the AI matched, or one the user
+ * picked/created via CategoryPicker on the review card) OR a
+ * `newCategoryName` (the user's own explicit "create a category" request)
+ * — never neither. `createCategory` is called here ONLY for
+ * `newCategoryName`, and that field can only ever have been populated from
+ * an explicit user creation request in the first place (see
+ * `buildInstructions`/`resolveDraftCategory`) — this is never reached
+ * merely because the AI couldn't match an existing category.
  */
 export const confirmPlanningDraftInput = planningDraftSchema;
 export type ConfirmPlanningDraftInput = PlanningDraft;
@@ -203,8 +305,13 @@ export async function confirmPlanningDraftHandler(
 ): Promise<
   { readonly ok: true; readonly id: string } | { readonly ok: false; readonly error: string }
 > {
-  if (data.kind === "fixed_expense" && (data.amountReais === null || data.category === null)) {
-    return { ok: false, error: "Um compromisso recorrente precisa de valor e categoria." };
+  if (data.kind === "fixed_expense") {
+    if (data.amountReais === null) {
+      return { ok: false, error: "Um compromisso recorrente precisa de um valor." };
+    }
+    if (data.categoryId === null && data.newCategoryName === null) {
+      return { ok: false, error: "Selecione uma categoria antes de confirmar." };
+    }
   }
   if (data.kind === "event" && data.startDate === null) {
     return { ok: false, error: "Um evento precisa de uma data." };
@@ -212,10 +319,16 @@ export async function confirmPlanningDraftHandler(
 
   let categoryId: string | undefined;
   if (data.kind === "fixed_expense") {
-    const { financialProfileId } = await getCurrentProfileContext();
-    const db = await getDb();
-    const category = await createCategory(db, financialProfileId, { name: data.category! });
-    categoryId = category.id;
+    if (data.categoryId !== null) {
+      categoryId = data.categoryId;
+    } else {
+      const { financialProfileId } = await getCurrentProfileContext();
+      const db = await getDb();
+      const category = await createCategory(db, financialProfileId, {
+        name: data.newCategoryName!,
+      });
+      categoryId = category.id;
+    }
   }
 
   return createManualPlanningItemHandler({
