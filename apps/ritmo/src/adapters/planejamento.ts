@@ -98,6 +98,8 @@ export interface PlanejamentoRecorrente {
 
 export interface PlanejamentoViewModel {
   readonly availableLabel: string;
+  /** "Dinheiro disponível agora" — real current usable cash, when known (DEC-137); `null` when liquidity is unknown (no connected account yet). */
+  readonly currentUsableLabel: string | null;
   readonly legend: readonly PlanejamentoLegendItem[];
   readonly incomeLabel: string;
   readonly outflowLabel: string;
@@ -123,31 +125,31 @@ function percentOf(part: number, whole: number): number {
  * whether the timeline holds many entries or none yet.
  */
 export function toPlanejamentoViewModel(data: PlanejamentoData): PlanejamentoViewModel {
-  const outflowCents =
-    data.fixedCommitmentsCents +
-    data.variableBudgetsCents +
-    data.eventsFutureConfirmedCents +
-    data.eventsFutureEstimatedCents;
   const eventsReservedCents = data.eventsFutureConfirmedCents + data.eventsFutureEstimatedCents;
+  // DEC-137: the legend bar's "whole" is real current usable cash (when
+  // known) — what's actually being carved up by these commitments —
+  // rather than declared gross income, which no longer feeds this screen
+  // at all (see `availableCents`'s own doc comment in `functions/planejamento.ts`).
+  const percentBaseCents = data.currentUsableCashCents ?? 0;
 
   const legend: PlanejamentoLegendItem[] = [
     {
       color: "brand",
       label: "Compromissos fixos",
       value: brl(data.fixedCommitmentsCents),
-      percent: percentOf(data.fixedCommitmentsCents, data.incomeGrossCents),
+      percent: percentOf(data.fixedCommitmentsCents, percentBaseCents),
     },
     {
       color: "coral",
       label: "Gastos variáveis",
       value: brl(data.variableBudgetsCents),
-      percent: percentOf(data.variableBudgetsCents, data.incomeGrossCents),
+      percent: percentOf(data.variableBudgetsCents, percentBaseCents),
     },
     {
       color: "success",
       label: "Reservado para eventos",
       value: brl(eventsReservedCents),
-      percent: percentOf(eventsReservedCents, data.incomeGrossCents),
+      percent: percentOf(eventsReservedCents, percentBaseCents),
     },
   ];
 
@@ -269,10 +271,12 @@ export function toPlanejamentoViewModel(data: PlanejamentoData): PlanejamentoVie
   });
 
   return {
-    availableLabel: brl(data.safeToSpendCents),
+    availableLabel: brl(data.availableCents),
+    currentUsableLabel:
+      data.currentUsableCashCents !== null ? brl(data.currentUsableCashCents) : null,
     legend,
-    incomeLabel: brl(data.incomeGrossCents),
-    outflowLabel: brl(outflowCents),
+    incomeLabel: brl(data.futureIncomeCents),
+    outflowLabel: brl(data.cardAndInstallmentsCents),
     timeline,
     recorrentes,
     eventCards,

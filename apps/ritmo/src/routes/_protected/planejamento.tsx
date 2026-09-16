@@ -93,6 +93,12 @@ function Planejamento() {
       <section className="surface p-5">
         <p className="text-[12.5px] text-muted-foreground">Disponível até o fim do mês</p>
         <p className="num mt-1 text-[36px] font-extrabold leading-none">{vm.availableLabel}</p>
+        {vm.currentUsableLabel && (
+          <p className="mt-1 text-[12px] text-muted-foreground">
+            Dinheiro disponível agora:{" "}
+            <span className="num font-semibold text-foreground">{vm.currentUsableLabel}</span>
+          </p>
+        )}
 
         <div className="mt-5 flex h-3 w-full overflow-hidden rounded-full bg-muted">
           {vm.legend.map((item) => (

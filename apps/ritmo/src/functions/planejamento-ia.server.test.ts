@@ -22,7 +22,12 @@ vi.mock("@tanstack/react-start/server", () => ({
 }));
 
 import { convertSetCookieToCookie } from "better-auth/test";
-import { getDb, resetDbCache, getFixedExpensesForProfile } from "@money-copilot/app-services";
+import {
+  getDb,
+  resetDbCache,
+  getFixedExpensesForProfile,
+  getCategoriesForProfile,
+} from "@money-copilot/app-services";
 import { getAuth } from "./auth.server";
 import { resetRateLimits } from "./rate-limit.server";
 import {
@@ -181,6 +186,12 @@ describe("confirmPlanningDraftHandler — no silent mutation, real persistence o
     expect(expenses.some((e) => e.label === "Gym membership" && e.amount.cents === 15_000)).toBe(
       true,
     );
+
+    // DEC-137: the AI's free-text category guess must have resolved to a
+    // REAL canonical Category row — immediately visible, like any other
+    // category creation path — never a legacy string-only side channel.
+    const categories = await getCategoriesForProfile(db, financialProfileId);
+    expect(categories.some((c) => c.name === "Health")).toBe(true);
   });
 
   it("nothing is persisted merely by requesting/holding a draft — only confirmPlanningDraftHandler ever writes", async () => {

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { AIError, OpenAIProvider, resolveOpenAIModel } from "@money-copilot/ai";
+import { getDb, createCategory } from "@money-copilot/app-services";
 import { getCurrentProfileContext } from "./profile.server";
 import { resolveAsOfDate } from "./config";
 import { checkRateLimit, RATE_LIMIT_POLICIES } from "./rate-limit.server";
@@ -183,6 +184,16 @@ export async function requestPlanningDraftHandler(
  * same validation and persistence path manual creation uses, so an
  * AI-confirmed item is indistinguishable in the database from a manually
  * created one.
+ *
+ * DEC-137: the AI can only ever produce a free-text category guess (it has
+ * no concept of a `categoryId`) — this was the SECOND hidden path (besides
+ * the manual-creation form) that could write a category string with no
+ * backing canonical `Category` row. Resolved here through the exact same
+ * `createCategory` mutation the CategoryPicker's own "+ Criar nova
+ * categoria" uses — it returns the existing visible category on a
+ * normalized-name match (e.g. the AI says "moradia," a base "Moradia"
+ * already exists) or creates a real personal one, never a second/parallel
+ * category concept.
  */
 export const confirmPlanningDraftInput = planningDraftSchema;
 export type ConfirmPlanningDraftInput = PlanningDraft;
@@ -199,11 +210,19 @@ export async function confirmPlanningDraftHandler(
     return { ok: false, error: "Um evento precisa de uma data." };
   }
 
+  let categoryId: string | undefined;
+  if (data.kind === "fixed_expense") {
+    const { financialProfileId } = await getCurrentProfileContext();
+    const db = await getDb();
+    const category = await createCategory(db, financialProfileId, { name: data.category! });
+    categoryId = category.id;
+  }
+
   return createManualPlanningItemHandler({
     kind: data.kind,
     label: data.label,
     ...(data.amountReais !== null ? { amountReais: data.amountReais } : {}),
-    ...(data.kind === "fixed_expense" ? { category: data.category! } : {}),
+    ...(categoryId !== undefined ? { categoryId } : {}),
     ...(data.kind === "event"
       ? { startDate: data.startDate!, endDate: data.endDate ?? data.startDate! }
       : {}),

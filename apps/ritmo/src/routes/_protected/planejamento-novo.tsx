@@ -4,6 +4,8 @@ import { PhoneShell, ScreenHeader } from "@/components/ritmo/PhoneShell";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { createManualPlanningItem } from "@/functions/planejamento-criar";
+import { getCategoriesAction } from "@/functions/planejamento-actions";
+import { CategoryPicker, type CategoryOption } from "@/components/ritmo/CategoryPicker";
 
 type Kind = "event" | "fixed_expense";
 
@@ -15,18 +17,32 @@ type Kind = "event" | "fixed_expense";
  * real amount + category (the domain has no "unknown recurring amount"
  * concept); an event's budget is optional — omitting it creates an honest
  * "a definir" item rather than inventing a number.
+ *
+ * DEC-137: a recurring commitment's category is chosen from the canonical
+ * `CategoryPicker` — this used to be a free-text input that could produce a
+ * category string with no backing `Category` row, invisible to every other
+ * category-aware screen. The loader preloads every category visible to
+ * this profile, exactly like Planning's own loader.
  */
 export const Route = createFileRoute("/_protected/planejamento-novo")({
   head: () => ({ meta: [{ title: "Novo item de planejamento — Ritmo" }] }),
+  loader: async () => {
+    const result = await getCategoriesAction();
+    return { categories: result.ok ? result.categories : [] };
+  },
   component: PlanejamentoNovo,
 });
 
 function PlanejamentoNovo() {
   const navigate = useNavigate();
+  const data = Route.useLoaderData();
+  const [categories, setCategories] = useState<CategoryOption[]>([...data.categories]);
+  const handleCategoryCreated = (category: CategoryOption) =>
+    setCategories((prev) => (prev.some((c) => c.id === category.id) ? prev : [...prev, category]));
   const [kind, setKind] = useState<Kind>("event");
   const [label, setLabel] = useState("");
   const [amount, setAmount] = useState("");
-  const [category, setCategory] = useState("");
+  const [categoryId, setCategoryId] = useState<string | null>(null);
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [dueDayOfMonth, setDueDayOfMonth] = useState("");
@@ -43,7 +59,7 @@ function PlanejamentoNovo() {
         kind,
         label,
         ...(amountReais !== undefined ? { amountReais } : {}),
-        ...(kind === "fixed_expense" ? { category } : {}),
+        ...(kind === "fixed_expense" && categoryId ? { categoryId } : {}),
         ...(kind === "event" ? { startDate, endDate: endDate || startDate } : {}),
         ...(kind === "fixed_expense" && dueDayOfMonth.trim()
           ? { dueDayOfMonth: Number(dueDayOfMonth) }
@@ -101,15 +117,12 @@ function PlanejamentoNovo() {
 
         {kind === "fixed_expense" ? (
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="category" className="text-[13px] font-semibold text-foreground">
-              Categoria
-            </label>
-            <Input
-              id="category"
-              required
-              value={category}
-              onChange={(e) => setCategory(e.target.value)}
-              placeholder="Moradia"
+            <label className="text-[13px] font-semibold text-foreground">Categoria</label>
+            <CategoryPicker
+              categories={categories}
+              value={categoryId}
+              onSelect={(c) => setCategoryId(c.id)}
+              onCategoryCreated={handleCategoryCreated}
             />
           </div>
         ) : null}
@@ -181,7 +194,12 @@ function PlanejamentoNovo() {
 
         {error ? <p className="text-[13px] text-destructive">{error}</p> : null}
 
-        <Button type="submit" size="lg" className="mt-2 rounded-full" disabled={isSubmitting}>
+        <Button
+          type="submit"
+          size="lg"
+          className="mt-2 rounded-full"
+          disabled={isSubmitting || (kind === "fixed_expense" && !categoryId)}
+        >
           {isSubmitting ? "Salvando..." : "Salvar"}
         </Button>
       </form>

@@ -20,12 +20,15 @@ function ruleId(raw: string): Id<"category-rule"> {
 function baseData(overrides: Partial<PlanejamentoData> = {}): PlanejamentoData {
   return {
     asOfDate: "2026-09-05",
-    safeToSpendCents: 184_200,
-    incomeGrossCents: 720_000,
+    availableCents: 184_200,
+    availableBasis: "LIQUIDITY_AWARE",
+    currentUsableCashCents: 720_000,
+    futureIncomeCents: 0,
     fixedCommitmentsCents: 330_630,
     variableBudgetsCents: 156_240,
     eventsFutureConfirmedCents: 0,
     eventsFutureEstimatedCents: 0,
+    cardAndInstallmentsCents: 0,
     fixedExpenses: [],
     incomes: [],
     upcomingEvents: [],
@@ -39,9 +42,10 @@ function baseData(overrides: Partial<PlanejamentoData> = {}): PlanejamentoData {
 }
 
 describe("toPlanejamentoViewModel", () => {
-  it("formats the available figure and the legend with percentages of gross income", () => {
+  it("(DEC-137) formats the canonical available figure and the legend as percentages of current usable cash", () => {
     const vm = toPlanejamentoViewModel(baseData());
     expect(vm.availableLabel).toBe("R$ 1.842,00");
+    expect(vm.currentUsableLabel).toBe("R$ 7.200,00");
     expect(vm.legend[0]).toEqual({
       color: "brand",
       label: "Compromissos fixos",
@@ -50,11 +54,27 @@ describe("toPlanejamentoViewModel", () => {
     });
   });
 
-  it("sums fixed + variable + event reservations into a single outflow figure", () => {
+  it("(DEC-137) shows null for current usable cash when liquidity is unknown (PLAN_BASED)", () => {
     const vm = toPlanejamentoViewModel(
-      baseData({ eventsFutureConfirmedCents: 10_000, eventsFutureEstimatedCents: 5_000 }),
+      baseData({ availableBasis: "PLAN_BASED", currentUsableCashCents: null }),
     );
-    expect(vm.outflowLabel).toBe("R$ 5.018,70"); // 3306.30 + 1562.40 + 100 + 50
+    expect(vm.currentUsableLabel).toBeNull();
+  });
+
+  it("(DEC-137) Saidas previstas reflects the canonical card/installment obligation figure, never a sum of fixed/variable/events", () => {
+    const vm = toPlanejamentoViewModel(
+      baseData({
+        eventsFutureConfirmedCents: 10_000,
+        eventsFutureEstimatedCents: 5_000,
+        cardAndInstallmentsCents: 67_080,
+      }),
+    );
+    expect(vm.outflowLabel).toBe("R$ 670,80");
+  });
+
+  it("(DEC-137) Entradas previstas reflects future not-yet-realized income, never realized income already in the balance", () => {
+    const vm = toPlanejamentoViewModel(baseData({ futureIncomeCents: 250_000 }));
+    expect(vm.incomeLabel).toBe("R$ 2.500,00");
   });
 
   it("never fabricates a timeline date — only real upcoming events appear, sorted soonest-first", () => {

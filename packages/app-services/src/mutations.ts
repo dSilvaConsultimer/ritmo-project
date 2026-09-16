@@ -431,13 +431,17 @@ export async function updatePlannedFinancialEvent(
 const USER_RULE_PRIORITY = 200;
 
 /**
- * DEC-135: resolves a `categoryId` to a real `Category` this profile may
+ * DEC-135/137: resolves a `categoryId` to a real `Category` this profile may
  * actually use — a global BASE category, or a PERSONAL one it owns.
  * Throws (never silently falls back) for a missing id or another profile's
  * personal category — the same "never leak whether another user's
- * resource exists" posture `assertOwnedByProfile` uses elsewhere.
+ * resource exists" posture `assertOwnedByProfile` uses elsewhere. Exported
+ * (DEC-137) so every OTHER mutation that lets a user attach a category to
+ * something (e.g. `planejamento-criar.server.ts`'s manual fixed-expense
+ * creation) resolves it through this SAME canonical check — never its own
+ * ad hoc lookup, and never a free-text `category` string.
  */
-async function requireVisibleCategory(
+export async function requireVisibleCategory(
   db: Database,
   financialProfileId: string,
   categoryId: string,
