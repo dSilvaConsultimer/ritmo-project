@@ -209,6 +209,147 @@ describe("getFinancialSnapshot — reconciled recurring-fixed commitments reduce
     expect(Math.abs(upcomingFixed?.amount.cents ?? 0)).toBe(45_000 + 20_733);
   });
 
+  it("(DEC-142) a recurring card charge NOT yet posted this month still reduces Disponível — a known CURRENT card balance is not proof of a FUTURE charge", async () => {
+    const db = await freshSeededDb();
+    const profileId = await seedSecondProfile(db);
+
+    const checking: PaymentSource = {
+      id: createId("payment-source"),
+      label: "Conta Corrente",
+      type: "DEBIT",
+      subtype: "CHECKING_ACCOUNT",
+      provider: "pluggy",
+      externalAccountId: "acc-checking-dec142",
+      balance: actual(fromReais(28_059.56)),
+      availableBalance: actual(fromReais(28_059.56)),
+    };
+    const card: PaymentSource = {
+      id: createId("payment-source"),
+      label: "Cartão",
+      type: "CREDIT_CARD",
+      subtype: "CREDIT_CARD",
+      provider: "pluggy",
+      externalAccountId: "acc-card-dec142",
+      balance: actual(fromReais(670.8)),
+    };
+    await repo.upsertPaymentSource(db, checking, profileId);
+    await repo.upsertPaymentSource(db, card, profileId);
+
+    const rows: FinancialTransaction[] = [
+      // Rent — already paid this month (checking).
+      tx(profileId, checking, { normalizedMerchant: "ALUGUEL", date: "2026-06-01", amount: fromReais(1500) }),
+      tx(profileId, checking, { normalizedMerchant: "ALUGUEL", date: "2026-07-01", amount: fromReais(1500) }),
+      tx(profileId, checking, { normalizedMerchant: "ALUGUEL", date: "2026-08-01", amount: fromReais(1500) }),
+      tx(profileId, checking, { normalizedMerchant: "ALUGUEL", date: "2026-09-01", amount: fromReais(1500) }),
+      // Condominium — recurring, NOT yet paid this month (checking).
+      tx(profileId, checking, { normalizedMerchant: "CONDOMINIO", date: "2026-06-05", amount: fromReais(450) }),
+      tx(profileId, checking, { normalizedMerchant: "CONDOMINIO", date: "2026-07-05", amount: fromReais(450) }),
+      tx(profileId, checking, { normalizedMerchant: "CONDOMINIO", date: "2026-08-05", amount: fromReais(450) }),
+      // Electricity — recurring, varying amount, NOT yet paid this month (checking).
+      tx(profileId, checking, { normalizedMerchant: "ENERGIA", date: "2026-06-10", amount: fromReais(180) }),
+      tx(profileId, checking, { normalizedMerchant: "ENERGIA", date: "2026-07-10", amount: fromReais(235) }),
+      tx(profileId, checking, { normalizedMerchant: "ENERGIA", date: "2026-08-10", amount: fromReais(207) }),
+      // Netflix — recurring, charged to the CARD, normally posts around day
+      // 20. Today (ASOF) is day 5 — nothing has posted yet this month. The
+      // card's CURRENT balance (670.80) reflects only what already posted;
+      // it does not and cannot contain this month's not-yet-posted charge.
+      tx(profileId, card, { normalizedMerchant: "NETFLIX", date: "2026-06-20", amount: fromReais(55.9) }),
+      tx(profileId, card, { normalizedMerchant: "NETFLIX", date: "2026-07-20", amount: fromReais(55.9) }),
+      tx(profileId, card, { normalizedMerchant: "NETFLIX", date: "2026-08-20", amount: fromReais(55.9) }),
+    ];
+    for (const row of rows) await repo.upsertTransaction(db, row);
+
+    const snapshot = await getFinancialSnapshot(db, profileId, ASOF);
+
+    const currentUsableCash = 28_059.56;
+    const currentCardObligations = 670.8;
+    const remainingCheckingCommitments = 450 + (180 + 235 + 207) / 3; // condo + avg electricity = 657.33
+    const remainingCardCommitmentsNotPosted = 55.9; // Netflix — not yet realized this month
+    const otherCanonicalObligations = 0;
+    const recommendedTotal =
+      currentUsableCash -
+      currentCardObligations -
+      remainingCheckingCommitments -
+      remainingCardCommitmentsNotPosted -
+      otherCanonicalObligations;
+
+    expect(snapshot.liquidity.basis).toBe("LIQUIDITY_AWARE");
+    expect(Math.round(recommendedTotal * 100)).toBe(2_667_553);
+    expect(snapshot.liquidity.recommendedTotal.cents).toBe(Math.round(recommendedTotal * 100));
+
+    const cardObligationsComponent = snapshot.liquidity.components.find((c) => c.type === "CARD_OBLIGATIONS");
+    expect(Math.abs(cardObligationsComponent?.amount.cents ?? 0)).toBe(67_080);
+
+    // UPCOMING_FIXED_COMMITMENTS is a single combined figure — it must
+    // include BOTH the checking-account remainder AND the not-yet-posted
+    // card charge, never silently drop the card side.
+    const upcomingFixed = snapshot.liquidity.components.find((c) => c.type === "UPCOMING_FIXED_COMMITMENTS");
+    expect(Math.abs(upcomingFixed?.amount.cents ?? 0)).toBe(45_000 + 20_733 + 5_590);
+  });
+
+  it("(DEC-142) after the Netflix card transaction posts this month, the obligation is represented ONLY by CARD_OBLIGATIONS — never double-counted", async () => {
+    const db = await freshSeededDb();
+    const profileId = await seedSecondProfile(db);
+
+    const checking: PaymentSource = {
+      id: createId("payment-source"),
+      label: "Conta Corrente",
+      type: "DEBIT",
+      subtype: "CHECKING_ACCOUNT",
+      provider: "pluggy",
+      externalAccountId: "acc-checking-dec142-posted",
+      balance: actual(fromReais(28_059.56)),
+      availableBalance: actual(fromReais(28_059.56)),
+    };
+    const card: PaymentSource = {
+      id: createId("payment-source"),
+      label: "Cartão",
+      type: "CREDIT_CARD",
+      subtype: "CREDIT_CARD",
+      provider: "pluggy",
+      externalAccountId: "acc-card-dec142-posted",
+      // The card's current balance now REFLECTS the posted Netflix charge
+      // (670.80 unrelated spending + 55.90 Netflix = 726.70).
+      balance: actual(fromReais(726.7)),
+    };
+    await repo.upsertPaymentSource(db, checking, profileId);
+    await repo.upsertPaymentSource(db, card, profileId);
+
+    const rows: FinancialTransaction[] = [
+      tx(profileId, checking, { normalizedMerchant: "ALUGUEL", date: "2026-06-01", amount: fromReais(1500) }),
+      tx(profileId, checking, { normalizedMerchant: "ALUGUEL", date: "2026-07-01", amount: fromReais(1500) }),
+      tx(profileId, checking, { normalizedMerchant: "ALUGUEL", date: "2026-08-01", amount: fromReais(1500) }),
+      tx(profileId, checking, { normalizedMerchant: "ALUGUEL", date: "2026-09-01", amount: fromReais(1500) }),
+      tx(profileId, checking, { normalizedMerchant: "CONDOMINIO", date: "2026-06-05", amount: fromReais(450) }),
+      tx(profileId, checking, { normalizedMerchant: "CONDOMINIO", date: "2026-07-05", amount: fromReais(450) }),
+      tx(profileId, checking, { normalizedMerchant: "CONDOMINIO", date: "2026-08-05", amount: fromReais(450) }),
+      tx(profileId, checking, { normalizedMerchant: "ENERGIA", date: "2026-06-10", amount: fromReais(180) }),
+      tx(profileId, checking, { normalizedMerchant: "ENERGIA", date: "2026-07-10", amount: fromReais(235) }),
+      tx(profileId, checking, { normalizedMerchant: "ENERGIA", date: "2026-08-10", amount: fromReais(207) }),
+      tx(profileId, card, { normalizedMerchant: "NETFLIX", date: "2026-06-20", amount: fromReais(55.9) }),
+      tx(profileId, card, { normalizedMerchant: "NETFLIX", date: "2026-07-20", amount: fromReais(55.9) }),
+      tx(profileId, card, { normalizedMerchant: "NETFLIX", date: "2026-08-20", amount: fromReais(55.9) }),
+      // This month's Netflix charge HAS posted.
+      tx(profileId, card, { normalizedMerchant: "NETFLIX", date: "2026-09-01", amount: fromReais(55.9) }),
+    ];
+    for (const row of rows) await repo.upsertTransaction(db, row);
+
+    const snapshot = await getFinancialSnapshot(db, profileId, ASOF);
+
+    const currentUsableCash = 28_059.56;
+    const currentCardObligations = 726.7; // now includes the posted Netflix charge
+    const remainingCheckingCommitments = 450 + (180 + 235 + 207) / 3;
+    const remainingCardCommitmentsNotPosted = 0; // Netflix already realized — owned by CARD_OBLIGATIONS
+    const recommendedTotal = currentUsableCash - currentCardObligations - remainingCheckingCommitments - remainingCardCommitmentsNotPosted;
+
+    expect(snapshot.liquidity.recommendedTotal.cents).toBe(Math.round(recommendedTotal * 100));
+
+    // UPCOMING_FIXED_COMMITMENTS must NOT include Netflix a second time —
+    // only the checking-account remainder (condo + electricity).
+    const upcomingFixed = snapshot.liquidity.components.find((c) => c.type === "UPCOMING_FIXED_COMMITMENTS");
+    expect(Math.abs(upcomingFixed?.amount.cents ?? 0)).toBe(45_000 + 20_733);
+  });
+
   it("never double-counts a declared FixedExpense that already represents the same identity", async () => {
     const db = await freshSeededDb();
     const profileId = await seedSecondProfile(db);

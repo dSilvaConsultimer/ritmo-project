@@ -25,7 +25,15 @@ export interface RecurringFixedCommitment {
   readonly identity: string;
   /** The most recent evidence transaction's category, when it has one — informational only, never used to decide recurrence. */
   readonly categoryId?: Id<"category">;
-  /** The most recent evidence transaction's payment source, when known — used ONLY by `reconcileRecurringFixedCommitments` to detect card coverage (DEC-141), never to decide recurrence itself. */
+  /**
+   * The most recent evidence transaction's payment source — informational/
+   * drill-down only (e.g. "this is usually charged to card X"). Never used
+   * by `reconcileRecurringFixedCommitments` to decide card coverage — a
+   * known CURRENT balance on this HISTORICAL card is not proof a future,
+   * not-yet-posted charge is already inside it (see that function's own
+   * doc comment, DEC-142). Coverage is decided from the ACTUAL transaction
+   * that realizes this month's occurrence, not from history.
+   */
   readonly paymentSourceId?: Id<"payment-source">;
   /** Arithmetic mean of the observed amount across `evidenceMonths` — see this module's own doc comment: varying amounts are expected, not a disqualifier. */
   readonly predictedAmount: Money;
@@ -180,19 +188,19 @@ function matchesDeclaredLabel(identity: string, label: string): boolean {
 }
 
 /**
- * DEC-141: reconciles DETECTED recurring-fixed commitments (HISTORY_INFERRED,
- * from `detectRecurringFixedCommitments`) against the CURRENT month's real
- * transactions and against DECLARED planning knowledge, to answer "how
- * much of this profile's predicted monthly fixed spending is still a real,
- * unpaid, forward obligation right now" — the ONLY number from this
- * module that may ever reduce liquidity (see
+ * DEC-141/DEC-142: reconciles DETECTED recurring-fixed commitments
+ * (HISTORY_INFERRED, from `detectRecurringFixedCommitments`) against the
+ * CURRENT month's real transactions and against DECLARED planning
+ * knowledge, to answer "how much of this profile's predicted monthly
+ * fixed spending is still a real, unpaid, forward obligation right now" —
+ * the ONLY number from this module that may ever reduce liquidity (see
  * `FinancialSnapshotInput.inferredUpcomingFixedCommitments`). The MONTHLY
  * FORECAST itself (`RecurringFixedCommitment.predictedAmount`, what
  * Planning's "Compromissos fixos" card shows) is completely untouched by
- * this function — a realized/deduped/card-covered pattern still shows its
- * normal predicted amount there, it just contributes `ZERO` here.
+ * this function — a deduped/realized pattern still shows its normal
+ * predicted amount there, it just contributes `ZERO` here.
  *
- * Three exclusions, checked in this order:
+ * Checked in this order:
  * 1. **Precedence over declared knowledge**: a declared `FixedExpense`
  *    whose `label` plausibly names the SAME real-world obligation
  *    (`matchesDeclaredLabel`) means the user (or a prior confirmed
@@ -201,17 +209,30 @@ function matchesDeclaredLabel(identity: string, label: string): boolean {
  *    `HISTORY_INFERRED` guess. That declared record has its OWN
  *    reconciliation already (`snapshot.ts`'s `unrealizedFixed`) — this
  *    function contributes nothing for it, never a second obligation.
- * 2. **Card coverage** (`isPaymentSourceCoveredByCardBalance`, the exact
- *    same rule `isInstallmentCoveredByCardBalance` already applies to
- *    installments): a pattern whose evidence was charged to a card with a
- *    KNOWN current balance already lives inside `CARD_OBLIGATIONS` —
- *    subtracting it again here would double-count it the moment it posts.
- * 3. **Realized this month**: reusing the exact same `recurrenceIdentity`
- *    this module's own detector groups by (never `Category.name`, never a
- *    separate/looser heuristic) — if a transaction with this identity has
- *    already posted in `asOfDate`'s own calendar month, the money is
- *    already reflected in the current account balance and must not be
- *    added again.
+ * 2. **Not yet realized this month → the full predicted amount is still
+ *    owed, PERIOD** — this holds EVEN WHEN the pattern's usual payment
+ *    source is a credit card with a currently-known balance (DEC-142
+ *    correction: an unposted future charge is never already inside a
+ *    balance that only reflects what has ALREADY posted — a known
+ *    CURRENT card balance is never proof a FUTURE, not-yet-charged
+ *    transaction is already counted inside it). "Realized this month" is
+ *    decided purely by whether a transaction with this SAME identity
+ *    (`recurrenceIdentity` — never `Category.name`, never a separate
+ *    heuristic) has posted in `asOfDate`'s own calendar month; it never
+ *    requires the current date to have passed `expectedDayOfMonth` (a
+ *    bill due later this month is still a real forward obligation today).
+ * 3. **Realized this month, on a NON-card account** → the money already
+ *    left that account and is already reflected in the current cash
+ *    balance — contributes `ZERO`.
+ * 4. **Realized this month, on a CREDIT CARD whose balance is currently
+ *    KNOWN** → the obligation has moved from "inferred future commitment"
+ *    to "already inside `CARD_OBLIGATIONS`" (the exact same coverage rule
+ *    `isInstallmentCoveredByCardBalance` already applies to installments,
+ *    via the shared `isPaymentSourceCoveredByCardBalance`) — contributes
+ *    `ZERO`, since counting it again here would double it.
+ * 5. **Realized this month, on a credit card whose balance is UNKNOWN** →
+ *    conservative fallback: the obligation must never simply disappear
+ *    just because it moved payment rails — it stays counted as owed.
  */
 export function reconcileRecurringFixedCommitments(
   commitments: readonly RecurringFixedCommitment[],
@@ -222,27 +243,48 @@ export function reconcileRecurringFixedCommitments(
   cardBalanceKnown: boolean,
 ): ReconciledFixedCommitments {
   const currentMonth = monthKey(asOfDate);
-  const identitiesRealizedThisMonth = new Set(
-    transactions
-      .filter((t) => monthKey(t.date) === currentMonth && isConsumptionLike(t.financialEffect) && t.status !== "REVERSED")
-      .map((t) => recurrenceIdentity(t)),
+  const eligibleThisMonth = transactions.filter(
+    (t) => monthKey(t.date) === currentMonth && isConsumptionLike(t.financialEffect) && t.status !== "REVERSED",
   );
+  // First match per identity — if more than one transaction shares an
+  // identity this month, which one "represents" the realization doesn't
+  // change the outcome for any of the card-vs-not-card branches below in
+  // practice, so the first is a reasonable, deterministic choice.
+  const realizedTransactionByIdentity = new Map<string, FinancialTransaction>();
+  for (const t of eligibleThisMonth) {
+    const identity = recurrenceIdentity(t);
+    if (!realizedTransactionByIdentity.has(identity)) {
+      realizedTransactionByIdentity.set(identity, t);
+    }
+  }
 
   const entries: ReconciledFixedCommitment[] = commitments.map((commitment) => {
     const dedupedAgainstDeclared = declaredFixedExpenses.some((e) =>
       matchesDeclaredLabel(commitment.identity, e.label),
     );
-    const coveredByCardBalance = isPaymentSourceCoveredByCardBalance(
-      commitment.paymentSourceId,
-      cardPaymentSourceIds,
-      cardBalanceKnown,
-    );
-    const realizedThisMonth = identitiesRealizedThisMonth.has(commitment.identity);
 
-    const remainingAmount =
-      dedupedAgainstDeclared || coveredByCardBalance || realizedThisMonth
-        ? M.ZERO
-        : commitment.predictedAmount;
+    const realizedTransaction = realizedTransactionByIdentity.get(commitment.identity);
+    const realizedThisMonth = realizedTransaction !== undefined;
+
+    let remainingAmount: Money;
+    let coveredByCardBalance = false;
+
+    if (dedupedAgainstDeclared) {
+      remainingAmount = M.ZERO;
+    } else if (!realizedThisMonth) {
+      // Not yet posted — still owed, regardless of which payment source it
+      // usually posts to. See this function's own doc comment, point 2.
+      remainingAmount = commitment.predictedAmount;
+    } else if (realizedTransaction.paymentSource.type !== "CREDIT_CARD") {
+      remainingAmount = M.ZERO;
+    } else {
+      coveredByCardBalance = isPaymentSourceCoveredByCardBalance(
+        realizedTransaction.paymentSource.id,
+        cardPaymentSourceIds,
+        cardBalanceKnown,
+      );
+      remainingAmount = coveredByCardBalance ? M.ZERO : commitment.predictedAmount;
+    }
 
     return {
       identity: commitment.identity,

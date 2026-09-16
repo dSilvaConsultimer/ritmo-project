@@ -272,44 +272,107 @@ describe("reconcileRecurringFixedCommitments (DEC-141)", () => {
     expect(result.total.cents).toBe(0);
   });
 
-  it("(test E) a recurring pattern charged to a card with a KNOWN current balance is never subtracted independently — already inside CARD_OBLIGATIONS", () => {
+  function netflixPattern() {
     const netflixTx = [
-      tx({ normalizedMerchant: "NETFLIX", date: "2026-06-05", amount: M.fromReais(39.9), paymentSource: cardSource }),
-      tx({ normalizedMerchant: "NETFLIX", date: "2026-07-05", amount: M.fromReais(39.9), paymentSource: cardSource }),
-      tx({ normalizedMerchant: "NETFLIX", date: "2026-08-05", amount: M.fromReais(39.9), paymentSource: cardSource }),
+      tx({ normalizedMerchant: "NETFLIX", date: "2026-06-05", amount: M.fromReais(55.9), paymentSource: cardSource }),
+      tx({ normalizedMerchant: "NETFLIX", date: "2026-07-05", amount: M.fromReais(55.9), paymentSource: cardSource }),
+      tx({ normalizedMerchant: "NETFLIX", date: "2026-08-05", amount: M.fromReais(55.9), paymentSource: cardSource }),
     ];
-    const netflix = detectRecurringFixedCommitments(netflixTx, [], ASOF)[0]!;
+    return detectRecurringFixedCommitments(netflixTx, [], ASOF)[0]!;
+  }
+
+  it("(DEC-142 test A) Netflix recurring on a card with a KNOWN current balance, but NOT yet charged this month — still included as a remaining obligation", () => {
+    const netflix = netflixPattern();
     const result = reconcileRecurringFixedCommitments(
       [netflix],
       [],
-      [], // not yet realized this month
+      [], // no Netflix transaction posted yet this month
       ASOF,
       new Set([cardSource.id]),
-      true, // card balance known
+      true, // the card's CURRENT balance is known — but that says nothing about a future charge
     );
-    // Still visible as a forecast...
-    expect(netflix.predictedAmount.cents).toBe(M.fromReais(39.9).cents);
-    // ...but never subtracted a second time from liquidity.
+    expect(result.entries[0]?.realizedThisMonth).toBe(false);
+    // A known CURRENT balance is never proof a FUTURE, unposted charge is
+    // already inside it — this is the exact DEC-142 correction.
+    expect(result.entries[0]?.coveredByCardBalance).toBe(false);
+    expect(result.total.cents).toBe(M.fromReais(55.9).cents);
+  });
+
+  it("(DEC-142 test B) after the Netflix transaction posts this month, the obligation moves into CARD_OBLIGATIONS — never double-counted", () => {
+    const netflix = netflixPattern();
+    const postedThisMonth = tx({
+      normalizedMerchant: "NETFLIX",
+      date: "2026-09-05",
+      amount: M.fromReais(55.9),
+      paymentSource: cardSource,
+    });
+    const result = reconcileRecurringFixedCommitments(
+      [netflix],
+      [],
+      [postedThisMonth],
+      ASOF,
+      new Set([cardSource.id]),
+      true,
+    );
+    // The forecast itself is untouched...
+    expect(netflix.predictedAmount.cents).toBe(M.fromReais(55.9).cents);
+    // ...but the obligation has now moved to CARD_OBLIGATIONS — the
+    // inferred remaining amount is zero (never subtracted a second time).
+    expect(result.entries[0]?.realizedThisMonth).toBe(true);
     expect(result.entries[0]?.coveredByCardBalance).toBe(true);
     expect(result.total.cents).toBe(0);
   });
 
-  it("does NOT treat a card-charged pattern as covered when the card balance is UNKNOWN — stays an independent obligation", () => {
-    const netflixTx = [
-      tx({ normalizedMerchant: "NETFLIX", date: "2026-06-05", amount: M.fromReais(39.9), paymentSource: cardSource }),
-      tx({ normalizedMerchant: "NETFLIX", date: "2026-07-05", amount: M.fromReais(39.9), paymentSource: cardSource }),
-      tx({ normalizedMerchant: "NETFLIX", date: "2026-08-05", amount: M.fromReais(39.9), paymentSource: cardSource }),
-    ];
-    const netflix = detectRecurringFixedCommitments(netflixTx, [], ASOF)[0]!;
+  it("(DEC-142 test C) an unrelated existing card balance never suppresses a future recurring commitment expected later this month", () => {
+    const netflix = netflixPattern();
+    // The card balance reflects OTHER spending entirely — no Netflix
+    // transaction has posted, regardless of what else is on the card.
+    const unrelatedCardSpending = tx({
+      normalizedMerchant: "POSTO SHELL",
+      date: "2026-09-03",
+      amount: M.fromReais(300),
+      paymentSource: cardSource,
+    });
     const result = reconcileRecurringFixedCommitments(
       [netflix],
       [],
+      [unrelatedCardSpending],
+      ASOF,
+      new Set([cardSource.id]),
+      true,
+    );
+    expect(result.entries[0]?.realizedThisMonth).toBe(false);
+    expect(result.total.cents).toBe(M.fromReais(55.9).cents);
+  });
+
+  it("(DEC-142 test D) a realized card transaction with an UNKNOWN card balance never disappears — conservative fallback keeps it owed", () => {
+    const netflix = netflixPattern();
+    const postedThisMonth = tx({
+      normalizedMerchant: "NETFLIX",
+      date: "2026-09-05",
+      amount: M.fromReais(55.9),
+      paymentSource: cardSource,
+    });
+    const result = reconcileRecurringFixedCommitments(
+      [netflix],
       [],
+      [postedThisMonth],
       ASOF,
       new Set([cardSource.id]),
       false, // card balance UNKNOWN
     );
+    expect(result.entries[0]?.realizedThisMonth).toBe(true);
     expect(result.entries[0]?.coveredByCardBalance).toBe(false);
-    expect(result.total.cents).toBe(M.fromReais(39.9).cents);
+    expect(result.total.cents).toBe(M.fromReais(55.9).cents);
+  });
+
+  it("(DEC-142 test E) installment behavior is unaffected — a card installment marker is still excluded from recurrence detection entirely", () => {
+    const installmentTx = [
+      tx({ normalizedMerchant: "LOJA X", rawDescription: "LOJA X 3/12", normalizedDescription: "LOJA X 3/12", date: "2026-06-20", amount: M.fromReais(200), paymentSource: cardSource }),
+      tx({ normalizedMerchant: "LOJA X", rawDescription: "LOJA X 4/12", normalizedDescription: "LOJA X 4/12", date: "2026-07-20", amount: M.fromReais(200), paymentSource: cardSource }),
+      tx({ normalizedMerchant: "LOJA X", rawDescription: "LOJA X 5/12", normalizedDescription: "LOJA X 5/12", date: "2026-08-20", amount: M.fromReais(200), paymentSource: cardSource }),
+    ];
+    const detected = detectRecurringFixedCommitments(installmentTx, [], ASOF);
+    expect(detected.find((c) => c.identity === "LOJA X")).toBeUndefined();
   });
 });

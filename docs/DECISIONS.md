@@ -4841,3 +4841,55 @@ R$26.731,43), the declared-vs-inferred dedup case, and F/G (variable-spending av
 income average both correctly absent from any liquidity component). Full monorepo typecheck/lint/test/
 build pass, including `check-client-bundle`. Not pushed. Not merged to main. `computeLiquidityAwareSafeToSpend`'s
 own formula/arithmetic untouched beyond the one new additive input term in `snapshot.ts`.
+
+### DEC-142
+
+**Date:** 2026-09-16
+**Context:** DEC-141's card-coverage check used the wrong signal. `reconcileRecurringFixedCommitments`
+zeroed out a pattern's `remainingAmount` whenever its HISTORICAL evidence transactions were charged to a
+card with a currently-KNOWN balance — regardless of whether THIS month's occurrence had actually posted
+yet. A known CURRENT card balance only reflects transactions that have already happened; it says nothing
+about a predictable FUTURE charge that hasn't posted. Concretely: today day 10, card balance R$670,80
+known, Netflix normally posts around day 20 (predicted R$55,90), no Netflix transaction yet this month —
+the old code still zeroed Netflix out, silently removing a real forward obligation from "Disponível até o
+fim do mês."
+**Decision:** Reconciliation per pattern now runs in this exact order: (1) dedup against a stronger
+declared/confirmed obligation (`matchesDeclaredLabel`, unchanged from DEC-141) → zero; (2) look up whether
+a transaction matching this pattern's own `recurrenceIdentity` has posted in `asOfDate`'s calendar month
+(`realizedTransactionByIdentity`, built the same way the DEC-140 detector itself groups evidence — never
+`Category.name`); (3) **not realized** → `remainingAmount = predictedAmount`, full stop, *regardless* of
+what payment rail the pattern is historically associated with — a not-yet-posted charge is never inside
+any current balance, card or otherwise; (4) **realized on a non-card source** → zero (already inside cash);
+(5) **realized on a card** → zero ONLY if that card's OWN current balance is known
+(`isPaymentSourceCoveredByCardBalance`, DEC-141's extraction, unchanged) — in that case the posted charge
+already lives inside `CARD_OBLIGATIONS` and must never be subtracted a second time; if the card's balance
+is unknown, the conservative DEC-141 fallback is preserved and the obligation is kept
+(`remainingAmount = predictedAmount`) so it can never silently disappear. `RecurringFixedCommitment.paymentSourceId`
+is now purely informational/drill-down metadata about historical payment habits — no reconciliation
+decision is ever made from it; the decision comes only from the ACTUAL transaction (if any) found for the
+current month. `expectedDayOfMonth` remains display/scheduling metadata only — "not realized yet" is
+sufficient to count a commitment as owed; the current date is never compared against the expected day.
+No changes to `detectRecurringFixedCommitments`, DEC-140 forecasting, income forecasting, variable-spending
+behavior, category logic, or `snapshot.ts`'s additive wiring — the fix is entirely internal to
+`reconcileRecurringFixedCommitments`'s own branching.
+**Resulting arithmetic** (reproduced by test, never hardcoded), reference scenario extended with a card-
+charged Netflix pattern (R$55,90) not yet posted this month: current usable cash R$28.059,56 − card
+obligations R$670,80 − remaining recurring checking-account commitments R$657,33 (condominium + average
+electricity) − remaining recurring credit-card commitments not yet posted R$55,90 (Netflix) − other
+canonical obligations R$0 = **recommendedTotal R$26.675,53**. After the Netflix transaction posts this
+month (card balance now known at R$726,70, i.e. R$670,80 + R$55,90): card obligations R$726,70 − remaining
+checking commitments R$657,33 − remaining card commitments not yet posted R$0 (Netflix now owned entirely
+by `CARD_OBLIGATIONS`) = **recommendedTotal R$26.675,53** (unchanged across the handoff — the obligation
+moved between components without ever disappearing or being counted twice).
+**Tests added:** `recurring-fixed.test.ts` — replaced the old test that encoded the buggy assumption with
+5 new cases: (A) Netflix on a card with a known balance, not yet realized this month → full predicted
+amount still owed; (B) same pattern after the matching transaction posts this month → remaining zero,
+`coveredByCardBalance: true`, `realizedThisMonth: true`; (C) an unrelated card transaction posting this
+month must never suppress the still-unrealized Netflix commitment; (D) realized on a card with an UNKNOWN
+balance → conservative fallback keeps the obligation (never disappears); (E) installment-marked
+transactions remain excluded from recurrence detection entirely, unaffected by this fix. `queries.test.ts`
+— two new end-to-end tests reproducing the exact reference scenario above, both before and after the
+Netflix transaction posts, asserting `recommendedTotal`, the `CARD_OBLIGATIONS` component, and the combined
+`UPCOMING_FIXED_COMMITMENTS` component all reconcile exactly, with no double counting across the handoff.
+Full monorepo typecheck/lint pass; financial-engine 301 tests, app-services 453 tests, `apps/ritmo` 228
+tests all pass; `apps/ritmo` build passes with `check-client-bundle: OK`. Not pushed. Not merged to main.
