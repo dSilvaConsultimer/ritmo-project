@@ -348,7 +348,8 @@ function TimelineItem({
 }
 
 interface CategoryTotalRow {
-  readonly category: string;
+  readonly categoryId: string;
+  readonly categoryName: string;
   readonly subcategory: string | null;
   readonly totalCents: number;
   readonly transactionCount: number;
@@ -398,18 +399,26 @@ function CategorySpendingSection({
     setTotals(result);
   }
 
-  const rolledUp = new Map<string, { totalCents: number; transactionCount: number }>();
+  const rolledUp = new Map<
+    string,
+    { categoryName: string; totalCents: number; transactionCount: number }
+  >();
   for (const t of totals) {
-    const existing = rolledUp.get(t.category) ?? { totalCents: 0, transactionCount: 0 };
-    rolledUp.set(t.category, {
+    const existing = rolledUp.get(t.categoryId) ?? {
+      categoryName: t.categoryName,
+      totalCents: 0,
+      transactionCount: 0,
+    };
+    rolledUp.set(t.categoryId, {
+      categoryName: existing.categoryName,
       totalCents: existing.totalCents + t.totalCents,
       transactionCount: existing.transactionCount + t.transactionCount,
     });
   }
   const rows = [...rolledUp.entries()]
-    .map(([category, v]) => ({ category, ...v }))
+    .map(([categoryId, v]) => ({ categoryId, ...v }))
     .sort((a, b) => b.totalCents - a.totalCents);
-  const visibleRows = filter === "__all__" ? rows : rows.filter((r) => r.category === filter);
+  const visibleRows = filter === "__all__" ? rows : rows.filter((r) => r.categoryId === filter);
   const grandTotalCents = rows.reduce((sum, r) => sum + r.totalCents, 0);
 
   return (
@@ -444,7 +453,7 @@ function CategorySpendingSection({
         <option value="__all__">Todas as categorias</option>
         <option value="UNCATEGORIZED">Sem categoria</option>
         {categories.map((c) => (
-          <option key={c.id} value={c.name}>
+          <option key={c.id} value={c.id}>
             {c.name}
           </option>
         ))}
@@ -464,14 +473,15 @@ function CategorySpendingSection({
           )}
           {visibleRows.map((row) => (
             <CategorySpendingRow
-              key={row.category}
-              category={row.category}
+              key={row.categoryId}
+              categoryId={row.categoryId}
+              categoryName={row.categoryName}
               totalCents={row.totalCents}
               transactionCount={row.transactionCount}
               period={period}
-              expanded={expandedCategory === row.category}
+              expanded={expandedCategory === row.categoryId}
               onToggle={() =>
-                setExpandedCategory(expandedCategory === row.category ? null : row.category)
+                setExpandedCategory(expandedCategory === row.categoryId ? null : row.categoryId)
               }
               categories={categories}
               onCategoryCreated={onCategoryCreated}
@@ -484,7 +494,8 @@ function CategorySpendingSection({
 }
 
 function CategorySpendingRow({
-  category,
+  categoryId,
+  categoryName,
   totalCents,
   transactionCount,
   period,
@@ -493,7 +504,8 @@ function CategorySpendingRow({
   categories,
   onCategoryCreated,
 }: {
-  category: string;
+  categoryId: string;
+  categoryName: string;
   totalCents: number;
   transactionCount: number;
   period: SpendingPeriod;
@@ -509,13 +521,13 @@ function CategorySpendingRow({
     onToggle();
     if (transactions === null) {
       setIsLoading(true);
-      const result = await getCategorySpendingDetailAction({ data: { period, category } });
+      const result = await getCategorySpendingDetailAction({ data: { period, categoryId } });
       setIsLoading(false);
       setTransactions(result);
     }
   }
 
-  const displayLabel = category === "UNCATEGORIZED" ? "Sem categoria" : category;
+  const displayLabel = categoryId === "UNCATEGORIZED" ? "Sem categoria" : categoryName;
 
   return (
     <div>

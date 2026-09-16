@@ -137,8 +137,26 @@ export interface FinancialTransaction {
   readonly certainty: Certainty;
   readonly financialEffect: FinancialEffect;
 
-  /** Null until categorized; see `domain/category.ts`. */
+  /**
+   * DEC-136: LEGACY / DENORMALIZED display text — null until categorized.
+   * `categoryId` (below) is the authoritative category identity for any
+   * transaction categorized from this decision forward; this string is kept
+   * in sync as a resolved display copy (see `domain/category.ts`'s own
+   * "CATEGORY IDENTITY = categoryId" note) and otherwise exists only so
+   * transactions categorized before this decision, and never backfilled,
+   * remain readable.
+   */
   readonly category: string | null;
+  /**
+   * DEC-136: the canonical `Category` this transaction is classified under
+   * — the authoritative identity. Absent for transactions categorized
+   * before this decision that a conservative backfill
+   * (`backfillTransactionCategoryIds`) hasn't yet linked to a real
+   * `Category` id (see that function's own doc comment); absent also for a
+   * transaction that is genuinely still `UNCATEGORIZED`. Never guess this —
+   * only ever set from a real, resolved `Category`.
+   */
+  readonly categoryId?: Id<"category">;
   readonly subcategory?: string;
   /**
    * The provider's own category label, preserved for reference/future

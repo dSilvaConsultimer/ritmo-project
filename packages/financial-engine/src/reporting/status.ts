@@ -33,8 +33,13 @@ export function getCategoryBudgetStatus(
   const totals = monthlyCategoryTotals(transactions, reconciliationLinks, asOfDate);
   const spentByCategory = new Map<string, Money>();
   for (const t of totals) {
-    const existing = spentByCategory.get(t.category) ?? M.ZERO;
-    spentByCategory.set(t.category, M.add(existing, t.total));
+    // DEC-136: `VariableBudget.category` is its own free-text budget-target
+    // label (out of this decision's scope — no canonical Category entity
+    // backs it), so this intentionally still matches on the display name
+    // (`categoryName`), never the canonical `categoryId` — unchanged
+    // behavior from before this decision.
+    const existing = spentByCategory.get(t.categoryName) ?? M.ZERO;
+    spentByCategory.set(t.categoryName, M.add(existing, t.total));
   }
 
   return variableBudgets.map((budget) => {

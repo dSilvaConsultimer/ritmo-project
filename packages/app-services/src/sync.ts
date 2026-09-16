@@ -5,6 +5,7 @@ import {
   billFromExternalInput,
   normalizeMerchant,
   categorize,
+  UNCATEGORIZED,
   findTransactionDuplicates,
   reconcileEventLineItems,
   reconciliationLinkPairKey,
@@ -198,10 +199,11 @@ async function importTransactionBatch(
       ...draft,
       ...(normalizedMerchant ? { normalizedMerchant } : {}),
     };
-    const { category, subcategory } = categorize(withNormalization, categoryRules);
+    const { category, categoryId, subcategory } = categorize(withNormalization, categoryRules);
     const finalTransaction: FinancialTransaction = {
       ...withNormalization,
       category,
+      ...(categoryId !== undefined ? { categoryId } : {}),
       ...(subcategory !== undefined ? { subcategory } : {}),
       ...(existingTx ? { id: existingTx.id, createdAt: existingTx.createdAt } : {}),
     };
@@ -787,4 +789,53 @@ export async function backfillCategoryRuleCategoryIds(db: Database): Promise<Cat
   }
 
   return { linkedRuleIds, unresolvedCategoryNames: [...unresolvedCategoryNames] };
+}
+
+export interface TransactionCategoryBackfillResult {
+  readonly linkedTransactionIds: readonly string[];
+  readonly unresolvedCategoryNames: readonly string[];
+}
+
+/**
+ * DEC-136: one-time, safe, idempotent backfill linking every EXISTING
+ * categorized `FinancialTransaction` for one profile (created before
+ * `categoryId` existed on the row) to its canonical `Category` — mirrors
+ * `backfillCategoryRuleCategoryIds` exactly, same conservative posture
+ * (explicit product requirement: never guess). Profile-scoped, like
+ * `reclassifyMisclassifiedCardPayments` — there is no cross-profile
+ * transaction listing, and there must never be one.
+ *
+ * A transaction is only ever linked when its legacy `category` string is an
+ * EXACT match (case/whitespace-insensitive, never fuzzy) against a category
+ * visible to THIS profile (base + its own personal ones — never another
+ * profile's). Everything else is left completely untouched and reported in
+ * `unresolvedCategoryNames`, never guessed.
+ *
+ * Idempotent: only rows with a `category` string but no `categoryId` yet
+ * are considered, so a second run relinks nothing.
+ */
+export async function backfillTransactionCategoryIds(
+  db: Database,
+  financialProfileId: string,
+): Promise<TransactionCategoryBackfillResult> {
+  const { transactions } = await repo.loadFinancialSnapshotInput(db, financialProfileId, nowIso().slice(0, 10));
+  const visibleCategories = await repo.listCategoriesForProfile(db, financialProfileId);
+  const byName = new Map(visibleCategories.map((c) => [c.name.trim().toLowerCase(), c]));
+
+  const linkedTransactionIds: string[] = [];
+  const unresolvedCategoryNames = new Set<string>();
+
+  for (const t of transactions) {
+    if (t.categoryId !== undefined) continue;
+    if (t.category === null || t.category === UNCATEGORIZED) continue;
+    const match = byName.get(t.category.trim().toLowerCase());
+    if (!match) {
+      unresolvedCategoryNames.add(t.category);
+      continue;
+    }
+    await repo.upsertTransaction(db, { ...t, categoryId: match.id });
+    linkedTransactionIds.push(t.id);
+  }
+
+  return { linkedTransactionIds, unresolvedCategoryNames: [...unresolvedCategoryNames] };
 }

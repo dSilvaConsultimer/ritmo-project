@@ -238,23 +238,15 @@ describe("migrations — DEC-131 duplicate PaymentSource repair + unique constra
     });
 
     // A real transaction attached to the STALE row — proves repointing,
-    // never deletion, of dependent data.
-    await db.insert(schema.financialTransactions).values({
-      id: "tx-dup-1",
-      financialProfileId: "profile-dup-1",
-      paymentSourceId: "ps-stale-dup",
-      date: "2026-09-10",
-      amountCents: 5_590,
-      direction: "DEBIT",
-      rawDescription: "NETFLIX",
-      normalizedDescription: "NETFLIX",
-      status: "POSTED",
-      certainty: "ACTUAL",
-      financialEffect: "CONSUMPTION",
-      origin: "IMPORTED",
-      createdAt: "2026-09-10",
-      updatedAt: "2026-09-10",
-    });
+    // never deletion, of dependent data. Raw SQL (DEC-136): the typed
+    // `schema.financialTransactions` insert always emits every column the
+    // CURRENT schema declares (e.g. `category_id`, added by migration
+    // 0016) regardless of what's actually applied at this pre-migration-11
+    // boundary — only the columns that existed back then may appear here.
+    await db.execute(
+      sql`insert into financial_transactions (id, financial_profile_id, payment_source_id, date, amount_cents, direction, raw_description, normalized_description, status, certainty, financial_effect, origin, created_at, updated_at)
+          values ('tx-dup-1', 'profile-dup-1', 'ps-stale-dup', '2026-09-10', 5590, 'DEBIT', 'NETFLIX', 'NETFLIX', 'POSTED', 'ACTUAL', 'CONSUMPTION', 'IMPORTED', '2026-09-10', '2026-09-10')`,
+    );
     // An installment plan already attached to the CANONICAL row, to prove a
     // reference already pointing at the eventual survivor is left intact.
     await db.insert(schema.installmentPlans).values({
@@ -281,6 +273,13 @@ describe("migrations — DEC-131 duplicate PaymentSource repair + unique constra
     // 2. Apply the DEC-131 migration on top — repair, then constrain.
     const fullFolder = buildPartialMigrationsFolder(12);
     await expect(migrate(db, { migrationsFolder: fullFolder })).resolves.not.toThrow();
+    // Then catch the database up to every later migration too — the DEC-131
+    // repair being verified below is unaffected by anything added since,
+    // but the typed `schema.financialTransactions` queries further down
+    // always reference every column the CURRENT schema declares (e.g.
+    // `category_id`, added by migration 0016), so the physical table needs
+    // to actually have them.
+    await migrate(db, { migrationsFolder: REAL_MIGRATIONS_DIR });
 
     // 3. Exactly one PaymentSource remains for this provider account, and
     //    it's the more complete, fresher one.

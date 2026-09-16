@@ -484,8 +484,8 @@ export default async function HomePage() {
           </thead>
           <tbody>
             {categoryTotals.map((c) => (
-              <tr key={`${c.category}:${c.subcategory ?? ""}`}>
-                <td style={tdStyle}>{c.category}</td>
+              <tr key={`${c.categoryId}:${c.subcategory ?? ""}`}>
+                <td style={tdStyle}>{c.categoryName}</td>
                 <td style={tdStyle}>{c.subcategory ?? "—"}</td>
                 <td style={tdStyle}>{format(c.total)}</td>
                 <td style={tdStyle}>{c.transactionCount}</td>

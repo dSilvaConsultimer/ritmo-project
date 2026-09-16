@@ -71,12 +71,15 @@ export interface CategoryRule {
   readonly matchType: CategoryRuleMatchType;
   readonly pattern: string;
   /**
-   * DEC-135: kept as the resolved category NAME (denormalized from
-   * `categoryId` at write time) — `categorize`'s matcher and every existing
-   * snapshot/reporting consumer of `CategorizationResult.category` continue
-   * to work completely unchanged; this was a deliberate scope decision (see
-   * DEC-135's own writeup) rather than converting the matcher/reporting
-   * pipeline to resolve category names on every read.
+   * DEC-136: LEGACY / DENORMALIZED display text, NOT the business identity
+   * of the category this rule resolves to — `categoryId` (below) is. Kept
+   * in sync with the resolved `Category.name` at write time purely so a
+   * rule that predates `categoryId` (never backfilled — see
+   * `backfillCategoryRuleCategoryIds`'s unresolved report) still has
+   * *something* readable/displayable, and so `ruleMatchesTransaction`
+   * (which only ever reads `pattern`/`matchType`, never this field) stays
+   * unaffected. Never use this string as identity for new code — resolve
+   * via `categoryId` and `Category.name` instead.
    */
   readonly category: string;
   readonly subcategory?: string;
@@ -84,12 +87,17 @@ export interface CategoryRule {
   readonly origin: CategoryRuleOrigin;
   readonly financialProfileId?: Id<"financial-profile">;
   /**
-   * DEC-135: the canonical `Category` this rule resolves to. Optional
-   * because it never existed before this decision — every SYSTEM_DEFAULT/
-   * fixture rule that predates it has no `categoryId` yet (see DEC-135's
-   * conservative migration report for exactly which ones were safely
-   * backfilled and which were left unresolved). Every rule created through
-   * `mutations.createCategoryRule` going forward always sets it.
+   * DEC-135/136: the canonical `Category` this rule resolves to — CATEGORY
+   * IDENTITY = categoryId, `category` (above) is legacy display data only.
+   * Optional only because a rule can predate this field and not yet have
+   * been linked by `backfillCategoryRuleCategoryIds`'s conservative,
+   * exact-match-only migration (unresolved names are reported, never
+   * guessed). Every rule created or updated through
+   * `mutations.createCategoryRule` — the only write path for personal
+   * rules — always sets it; `fixtures/system-default-category-rules.ts`
+   * (the real global `SYSTEM_DEFAULT` baseline) always sets it too. Only
+   * the pre-DEC-135 founder fixture (`fixtures/rules.ts`, Sprint 1/2,
+   * test-only) may still lack it.
    */
   readonly categoryId?: Id<"category">;
 }
@@ -139,11 +147,24 @@ export function ruleMatchesTransaction(rule: CategoryRule, t: FinancialTransacti
 }
 
 export interface CategorizationResult {
+  /**
+   * DEC-136: the authoritative result when the matched rule has one (every
+   * rule created from this decision forward always does — see
+   * `CategoryRule.categoryId`). Callers persisting a freshly-categorized
+   * transaction MUST write this to `FinancialTransaction.categoryId`, never
+   * only the string below.
+   */
+  readonly categoryId?: Id<"category">;
+  /**
+   * DEC-136: LEGACY / DENORMALIZED display text — kept for the rare rule
+   * that predates `categoryId` and hasn't been backfilled yet (see
+   * `CategoryRule.category`'s own doc comment). Still always populated
+   * (mirrors `categoryId` when present) so every existing display/reporting
+   * consumer keeps working, but it is never the authoritative value.
+   */
   readonly category: string;
   readonly subcategory?: string;
   readonly matchedRuleId?: Id<"category-rule">;
-  /** DEC-135: the canonical category id, when the matched rule has one — see `CategoryRule.categoryId`. */
-  readonly categoryId?: Id<"category">;
 }
 
 /** DEC-135: true for a global BASE category (available to every profile). */

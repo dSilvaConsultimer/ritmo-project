@@ -1,0 +1,2 @@
+ALTER TABLE "financial_transactions" ADD COLUMN "category_id" text;--> statement-breakpoint
+ALTER TABLE "financial_transactions" ADD CONSTRAINT "financial_transactions_category_id_categories_id_fk" FOREIGN KEY ("category_id") REFERENCES "public"."categories"("id") ON DELETE no action ON UPDATE no action;

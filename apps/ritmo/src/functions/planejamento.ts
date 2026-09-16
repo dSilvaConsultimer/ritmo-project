@@ -161,7 +161,8 @@ export const getPlanejamentoData = createServerFn({ method: "GET" })
       // every other field on this response stays tied to the REAL current date.
       categorySpendingPeriod: period,
       categoryTotals: categoryTotals.map((t) => ({
-        category: t.category,
+        categoryId: t.categoryId,
+        categoryName: t.categoryName,
         subcategory: t.subcategory ?? null,
         totalCents: t.total.cents,
         transactionCount: t.transactionCount,
@@ -182,7 +183,8 @@ export const getCategoryTotalsAction = createServerFn({ method: "GET" })
     const asOfDate = resolveSpendingAsOfDate(resolveAsOfDate(), data.period);
     const categoryTotals = await getCategoryTotals(db, financialProfileId, asOfDate);
     return categoryTotals.map((t) => ({
-      category: t.category,
+      categoryId: t.categoryId,
+      categoryName: t.categoryName,
       subcategory: t.subcategory ?? null,
       totalCents: t.total.cents,
       transactionCount: t.transactionCount,
@@ -191,7 +193,7 @@ export const getCategoryTotalsAction = createServerFn({ method: "GET" })
 
 const getCategorySpendingDetailInput = z.object({
   period: z.enum(["current", "previous"]),
-  category: z.string().min(1),
+  categoryId: z.string().min(1),
 });
 
 /**
@@ -209,7 +211,7 @@ export const getCategorySpendingDetailAction = createServerFn({ method: "GET" })
       db,
       financialProfileId,
       asOfDate,
-      data.category,
+      data.categoryId,
     );
     return transactions.map((t) => ({
       id: t.id,

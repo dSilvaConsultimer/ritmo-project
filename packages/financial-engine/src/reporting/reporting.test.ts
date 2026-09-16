@@ -12,6 +12,12 @@ import {
 } from "./reporting";
 
 const asOfDate = initialUserSnapshotInput.asOfDate;
+// Sprint 1/2 fixture rules (`fixtures/rules.ts`) predate `categoryId` — every
+// transaction they classify groups under this `legacy:<name>` synthetic key
+// (see `categoryGroupId`'s own doc comment in reporting.ts), never the raw
+// name alone.
+const legacyFood = "legacy:Food";
+const legacyEntertainment = "legacy:Entertainment";
 
 describe("monthlyTransactionList", () => {
   it("lists every September transaction in date order", () => {
@@ -28,15 +34,15 @@ describe("monthlyCategoryTotals", () => {
     // Only iFood has category "Food" with no subcategory; Mineiros Dog is
     // Food/Fast Food, Adega do Rai is Food/Bar, OXXO is Food/Convenience —
     // each rule assigns its own subcategory (see fixtures/rules.ts).
-    const food = totals.find((t) => t.category === "Food" && t.subcategory === undefined);
+    const food = totals.find((t) => t.categoryId === legacyFood && t.subcategory === undefined);
     expect(food?.total.cents).toBe(4_500);
   });
 
   it("keeps subcategories distinct", () => {
     const totals = monthlyCategoryTotals(transactions, reconciliationLinks, asOfDate);
-    const fastFood = totals.find((t) => t.category === "Food" && t.subcategory === "Fast Food");
-    const bar = totals.find((t) => t.category === "Food" && t.subcategory === "Bar");
-    const convenience = totals.find((t) => t.category === "Food" && t.subcategory === "Convenience");
+    const fastFood = totals.find((t) => t.categoryId === legacyFood && t.subcategory === "Fast Food");
+    const bar = totals.find((t) => t.categoryId === legacyFood && t.subcategory === "Bar");
+    const convenience = totals.find((t) => t.categoryId === legacyFood && t.subcategory === "Convenience");
     expect(fastFood?.total.cents).toBe(2_600);
     expect(bar?.total.cents).toBe(5_550);
     expect(convenience?.total.cents).toBe(4_078);
@@ -44,7 +50,7 @@ describe("monthlyCategoryTotals", () => {
 
   it("does not include the reconciled rodeo ticket — it's already accounted for via the event", () => {
     const totals = monthlyCategoryTotals(transactions, reconciliationLinks, asOfDate);
-    expect(totals.some((t) => t.category === "Entertainment")).toBe(false);
+    expect(totals.some((t) => t.categoryId === legacyEntertainment)).toBe(false);
   });
 
   it("never lets the old credit-card debt installment inflate any category total (RULE: no double counting)", () => {
@@ -79,13 +85,13 @@ describe("reconciliationCandidates", () => {
 describe("categorySpendingTransactions (DEC-135, tests 9-14)", () => {
   it("(test 13) a category filter returns exactly the transactions summing to that category's monthlyCategoryTotals bucket", () => {
     const totals = monthlyCategoryTotals(transactions, reconciliationLinks, asOfDate);
-    const fastFood = totals.find((t) => t.category === "Food" && t.subcategory === "Fast Food")!;
+    const fastFood = totals.find((t) => t.categoryId === legacyFood && t.subcategory === "Fast Food")!;
 
-    const detail = categorySpendingTransactions(transactions, reconciliationLinks, asOfDate, "Food");
+    const detail = categorySpendingTransactions(transactions, reconciliationLinks, asOfDate, legacyFood);
     // "Food" alone (no subcategory distinction at the filter level) —
     // aggregate every "Food" transaction's amount and compare to the sum of
     // every "Food"-prefixed bucket (with-and-without-subcategory).
-    const foodBuckets = totals.filter((t) => t.category === "Food");
+    const foodBuckets = totals.filter((t) => t.categoryId === legacyFood);
     const expectedTotalCents = foodBuckets.reduce((sum, b) => sum + b.total.cents, 0);
     const actualTotalCents = detail.reduce((sum, t) => sum + t.amount.cents, 0);
     expect(actualTotalCents).toBe(expectedTotalCents);

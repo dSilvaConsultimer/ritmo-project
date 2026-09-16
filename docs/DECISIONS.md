@@ -4536,3 +4536,92 @@ CARD_PAYMENT/INVESTMENT exclusion even when sharing a category string); `learnin
 including the idempotency and cross-scope-isolation cases); `learning.test.ts`/`tools.test.ts` updated
 for the `categoryId`-based mutation signatures. Full monorepo typecheck/lint/test/build all pass
 (1,000+ tests). Not pushed. No changes to Safe-to-Spend/liquidity math.
+
+### DEC-136
+
+**Date:** 2026-09-15
+**Context:** DEC-135 revived `Category` as a canonical entity and added `CategoryRule.categoryId`, but
+left every actual consumer — `categorize()`'s return contract, `FinancialTransaction`'s own category
+field, spending-by-category grouping, and Planning's category filter — reading/writing the legacy
+`category` STRING as the real identity, with `categoryId` bolted on as a secondary, optional field. Two
+sources of truth for the same concept defeats the point of a canonical entity: a rename could silently
+fragment history, and "Transporte"/"transporte"/"Transport" could group as three different buckets.
+Explicit new rule going forward: **CATEGORY IDENTITY = categoryId. `Category.name` is display data.**
+**Decision:**
+1. **`FinancialTransaction.categoryId?: Id<"category">` added** (new nullable `category_id` FK column,
+   migration `0016_add_transaction_category_id.sql`) — the authoritative identity for a categorized
+   transaction going forward. `category` (the string) is now explicitly documented as LEGACY/
+   DENORMALIZED display text only, kept in sync for old rows and for any rule that still predates
+   `categoryId`. Every write path that categorizes a transaction —
+   `mutations.categorizeTransaction` (direct + retroactive "Todas, passadas e futuras" loop),
+   `mutations.recordManualTransaction`, and `sync.ts`'s external-transaction import path — now sets
+   BOTH fields from `categorize()`'s result, never the string alone.
+2. **`CategoryRule.category` and `CategorizationResult.category` re-documented as LEGACY/DENORMALIZED**,
+   `categoryId` as the authoritative field a caller must persist — no behavior change to `categorize()`
+   itself (it already surfaced `categoryId` when a matched rule had one; DEC-135's
+   `system-default-category-rules.ts` fixtures already set it for all 7 entries). Only the pre-DEC-135
+   Sprint 1/2 founder fixture (`fixtures/rules.ts`, test-only) may still lack it, exactly as before.
+3. **`reporting.CategoryTotal` grouping key inverted**: `{categoryId, categoryName, subcategory?, total,
+   transactionCount}` (previously `{category, subcategory?, total, transactionCount}`). New internal
+   `categoryGroupId(transaction)` (exported) resolves the grouping key — a real `categoryId` when
+   present, the `UNCATEGORIZED` sentinel for genuinely uncategorized transactions, or a `legacy:<name>`
+   synthetic key ONLY for a transaction categorized before this decision and not yet backfilled. Two
+   transactions sharing a `categoryId` always roll up together regardless of what their denormalized
+   name strings say; a renamed `Category` never fragments its own history. `monthlyCategoryTotals`/
+   `categorySpendingTransactions` both use it; `categorySpendingTransactions`'s filter parameter is now
+   `categoryId`, not a raw name. `reporting.status.ts`'s unrelated `getCategoryBudgetStatus` (matches
+   `VariableBudget.category`, its own free-text budget-target label, no canonical entity backing it,
+   out of this decision's scope) now reads `categoryName` to keep its exact prior string-matching
+   behavior — a rename, not a behavior change.
+4. **`queries.getCategorySpendingDetail`'s parameter renamed `category` -> `categoryId`**; Planning's
+   `getCategoryTotalsAction`/`getCategorySpendingDetailAction`/`getPlanejamentoData` DTOs now carry
+   `categoryId`/`categoryName` instead of a single `category` string. The Planning UI's category
+   `<select>` filter now uses `categoryId` as each option's value (display text unchanged); the
+   category-spending rollup, row expansion state, and drill-down fetch are keyed by `categoryId`
+   end-to-end. `CategoryPicker` and the per-transaction correction flow were already `categoryId`-based
+   since DEC-135 and are unchanged.
+5. **Duplicate-name guard on category creation**: `mutations.createCategory` now checks every category
+   already VISIBLE to the calling profile (base + its own personal ones) for a case/whitespace-
+   insensitive name match before creating anything, and returns the existing one instead — typing
+   "Transporte" (or "transporte", or "  Transporte  ") via "+ Criar nova categoria" when the base
+   "Transporte" already exists selects it rather than shadowing it with a redundant personal category.
+   Conservative by design: this is name-COLLISION avoidance only, never semantic merging — two
+   genuinely different names (e.g. "Presentes" vs. "Viagens") are always created as distinct categories.
+6. **Rename/delete safety**: no rename or delete mutation is exposed anywhere in the product today (grep
+   confirms zero call sites) — covered at the repository/domain level only, per the request's own
+   fallback: a repository test proves updating a `Category`'s `name` (same id) leaves every
+   `CategoryRule` referencing it by `categoryId` fully matchable and correctly resolved, since matching
+   is by `pattern`/`matchType` and never touches the name. No dangling-`categoryId` risk exists today
+   because nothing can delete a `Category`; if a delete mutation is ever added, it must block deletion
+   while referenced or require explicit reassignment, matching this codebase's existing safe-deletion
+   convention elsewhere (never silently degrade a referenced row to free text).
+7. **New conservative migration `backfillTransactionCategoryIds(db, financialProfileId)`**
+   (`app-services/src/sync.ts`), mirroring `backfillCategoryRuleCategoryIds` exactly — profile-scoped
+   (there is no cross-profile transaction listing, and there must never be one), exact
+   case/whitespace-insensitive match only against that profile's own visible categories, idempotent,
+   unresolved names reported rather than guessed. Not auto-wired into `initializeDb()` (same posture as
+   the rule backfill — a report-then-decide operational migration, not a boot-time side effect).
+8. **SYSTEM_DEFAULT bootstrap ordering already correct, now proven by a test**: `initializeDb()` already
+   calls `bootstrapBaseCategories` before `bootstrapSystemDefaultCategoryRules` in both the Postgres and
+   PGlite branches (DEC-135), and every `system-default-category-rules.ts` entry already set
+   `categoryId` pointing at a real `baseCategories` row. New `category.test.ts` assertion verifies every
+   SYSTEM_DEFAULT rule's `categoryId` resolves to a real base category and that its denormalized
+   `category` string matches that category's name exactly — never independently invented.
+**Tests added (11):** `category.test.ts` — classification resolves `categoryId` as authoritative;
+SYSTEM_DEFAULT rules reference real base category ids. `learning.test.ts` — new transaction
+categorization persists `categoryId`; retroactive reclassification writes `categoryId` to every
+reclassified row; a personal category with the same name in another profile never leaks across
+profiles; creating "Transporte" when the base category already exists returns the existing one instead
+of duplicating (plus a control case proving genuinely different names are never merged);
+`categorizeTransaction`/`createCategoryRule` are satisfied by `categoryId` alone.
+`category-spending.test.ts` — spending totals group by `categoryId` (verified against `categoryName`
+denormalization); the category filter uses `categoryId` and never cross-matches a same-looking name in
+a different scope; an unresolved legacy free-text category (no `categoryId` yet) still shows up in
+totals and drill-down under its own bucket, never conflated with true `UNCATEGORIZED`; 4 new
+`backfillTransactionCategoryIds` tests (linked match, unresolved report, idempotency, cross-profile
+isolation). `migration.test.ts`'s DEC-131 test updated: its pre-DEC-131 raw insert (added before
+`categoryId` existed) now uses raw SQL instead of the typed schema insert, matching this file's own
+established convention for querying a database frozen at an old migration boundary, and now advances to
+every later migration before its post-repair typed queries run. Full monorepo typecheck/lint/test/build
+all pass. Not pushed. Not merged to main. No changes to Safe-to-Spend/liquidity math. No UI redesign —
+data/architecture only.

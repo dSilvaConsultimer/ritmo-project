@@ -626,3 +626,88 @@ describe("DEC-134: new-user categorization uses the real global SYSTEM_DEFAULT b
     expect(categorize(txB, rulesForB).category).toBe("Transporte");
   });
 });
+
+describe("DEC-136: categoryId is authoritative", () => {
+  it("(test 3) new transaction categorization persists categoryId on the transaction row, not just the legacy string", async () => {
+    const db = await freshSeededDb();
+    const source = await checkingSource(db);
+    const tx = await insertTransaction(db, source, { category: "UNCATEGORIZED" });
+    const categoryId = await categoryIdFor(db, fixtureProfile.id, "Combustível");
+
+    await categorizeTransaction(db, fixtureProfile.id, {
+      transactionId: tx.id,
+      categoryId,
+      alwaysForMerchant: false,
+    });
+
+    const persisted = await repo.getTransactionById(db, tx.id);
+    expect(persisted?.categoryId).toBe(categoryId);
+    expect(persisted?.category).toBe("Combustível");
+  });
+
+  it("(test 4) retroactive reclassification writes categoryId to every reclassified historical transaction, not only the one corrected directly", async () => {
+    const db = await freshSeededDb();
+    const source = await checkingSource(db);
+    const older = await insertTransaction(db, source, { id: createId("transaction"), category: "UNCATEGORIZED" });
+    const target = await insertTransaction(db, source, { category: "UNCATEGORIZED" });
+    const categoryId = await categoryIdFor(db, fixtureProfile.id, "Combustível");
+
+    await categorizeTransaction(db, fixtureProfile.id, {
+      transactionId: target.id,
+      categoryId,
+      alwaysForMerchant: true,
+    });
+
+    const reclassifiedOlder = await repo.getTransactionById(db, older.id);
+    expect(reclassifiedOlder?.categoryId).toBe(categoryId);
+  });
+
+  it("(test 7) a personal category with the same name in another profile never leaks across profiles", async () => {
+    const db = await freshSeededDb();
+    const otherProfile = await seedSecondProfile(db, "Other");
+    const mine = await createCategory(db, fixtureProfile.id, { name: "Trabalho" });
+    const theirs = await createCategory(db, otherProfile, { name: "Trabalho" });
+
+    expect(mine.id).not.toBe(theirs.id);
+    const visibleToMe = await repo.listCategoriesForProfile(db, fixtureProfile.id);
+    expect(visibleToMe.some((c) => c.id === theirs.id)).toBe(false);
+    const visibleToThem = await repo.listCategoriesForProfile(db, otherProfile);
+    expect(visibleToThem.some((c) => c.id === mine.id)).toBe(false);
+  });
+
+  it("(test 8) creating a category with the same normalized name as an already-visible base category returns the existing one instead of duplicating it", async () => {
+    const db = await freshSeededDb();
+    await repo.bootstrapBaseCategories(db);
+    const baseTransporte = (await repo.listBaseCategories(db)).find((c) => c.name === "Transporte")!;
+
+    const result = await createCategory(db, fixtureProfile.id, { name: "  transporte  " });
+    expect(result.id).toBe(baseTransporte.id);
+
+    const allVisible = await repo.listCategoriesForProfile(db, fixtureProfile.id);
+    expect(allVisible.filter((c) => c.name.toLowerCase() === "transporte")).toHaveLength(1);
+  });
+
+  it("(test 8b) two genuinely different category names are never merged", async () => {
+    const db = await freshSeededDb();
+    const a = await createCategory(db, fixtureProfile.id, { name: "Presentes" });
+    const b = await createCategory(db, fixtureProfile.id, { name: "Viagens" });
+    expect(a.id).not.toBe(b.id);
+  });
+
+  it("(test 10) categorizeTransaction and createCategoryRule are satisfied by categoryId alone — no free-text category identity is required", async () => {
+    const db = await freshSeededDb();
+    const source = await checkingSource(db);
+    const tx = await insertTransaction(db, source, { category: "UNCATEGORIZED" });
+    const categoryId = await categoryIdFor(db, fixtureProfile.id, "Lazer");
+
+    const result = await categorizeTransaction(db, fixtureProfile.id, { transactionId: tx.id, categoryId });
+    expect(result.transaction.categoryId).toBe(categoryId);
+
+    const rule = await createCategoryRule(db, fixtureProfile.id, {
+      matchType: "CONTAINS_MERCHANT",
+      pattern: "ALGUM COMERCIO",
+      categoryId,
+    });
+    expect(rule.categoryId).toBe(categoryId);
+  });
+});

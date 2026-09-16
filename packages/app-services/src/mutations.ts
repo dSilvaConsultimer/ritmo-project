@@ -132,10 +132,11 @@ export async function recordManualTransaction(
     updatedAt: nowIso(),
   };
 
-  const { category, subcategory } = categorize(draft, categoryRules);
+  const { category, categoryId, subcategory } = categorize(draft, categoryRules);
   const finalTransaction: FinancialTransaction = {
     ...draft,
     category,
+    ...(categoryId !== undefined ? { categoryId } : {}),
     ...(subcategory !== undefined ? { subcategory } : {}),
   };
 
@@ -453,21 +454,38 @@ export interface CreateCategoryInput {
 }
 
 /**
- * DEC-135: always creates/updates a PERSONAL category scoped to this
+ * DEC-135/136: always creates/updates a PERSONAL category scoped to this
  * profile — never the global base taxonomy ("users do not edit the global
  * default; when the desired category doesn't exist, they create a personal
  * one"). Conflict-safe on `(financialProfileId, name)` — creating the same
  * name twice for one profile updates in place rather than duplicating,
  * mirroring `createCategoryRule`'s own "create or update" contract.
+ *
+ * DEC-136: before creating anything, checks every category ALREADY VISIBLE
+ * to this profile (base + its own personal ones) for a case/whitespace-
+ * insensitive name match and returns that existing category instead —
+ * prevents the accidental-duplicate case explicitly called out by the
+ * product brief (typing "Transporte" via "+ Criar nova categoria" when the
+ * base "Transporte" category already exists must select it, not shadow it
+ * with a redundant personal one). This is conservative name-collision
+ * avoidance ONLY, never semantic merging — two categories with genuinely
+ * different names are always created as distinct, even if a human might
+ * consider them related.
  */
 export async function createCategory(
   db: Database,
   financialProfileId: string,
   input: CreateCategoryInput,
 ): Promise<Category> {
+  const trimmedName = input.name.trim();
+  const normalized = trimmedName.toLowerCase();
+  const visible = await repo.listCategoriesForProfile(db, financialProfileId);
+  const existing = visible.find((c) => c.name.trim().toLowerCase() === normalized);
+  if (existing) return existing;
+
   const category: Category = {
     id: createId("category"),
-    name: input.name.trim(),
+    name: trimmedName,
     financialProfileId: financialProfileId as Id<"financial-profile">,
   };
   return repo.upsertPersonalCategory(db, category);
@@ -595,6 +613,7 @@ export async function categorizeTransaction(
 
   const updatedTransaction: FinancialTransaction = {
     ...transaction,
+    categoryId: category.id,
     category: category.name,
     ...(input.subcategory !== undefined ? { subcategory: input.subcategory } : {}),
   };
@@ -623,6 +642,7 @@ export async function categorizeTransaction(
   for (const t of matchingHistorical) {
     await repo.upsertTransaction(db, {
       ...t,
+      categoryId: category.id,
       category: category.name,
       ...(input.subcategory !== undefined ? { subcategory: input.subcategory } : {}),
     });

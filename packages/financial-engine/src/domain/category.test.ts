@@ -244,3 +244,38 @@ describe("isBaseCategory (DEC-135)", () => {
     expect(isBaseCategory(personal)).toBe(false);
   });
 });
+
+describe("DEC-136: categoryId is authoritative", () => {
+  it("(test 1) classification resolves categoryId as the authoritative result, not just a denormalized name", () => {
+    const rule: CategoryRule = {
+      id: createId("category-rule"),
+      matchType: "CONTAINS_MERCHANT",
+      pattern: "UBER",
+      category: "Transporte",
+      categoryId: createId("category"),
+      priority: 100,
+      origin: "SYSTEM_DEFAULT",
+    };
+    const t = tx({ normalizedMerchant: "UBER" });
+    const result = categorize(t, [rule]);
+    expect(result.categoryId).toBe(rule.categoryId);
+    // `category` stays populated too (legacy display), but it is never the
+    // field a caller should treat as identity — see `CategorizationResult`'s
+    // own doc comment.
+    expect(result.category).toBe("Transporte");
+  });
+
+  it("(test 11) the real global SYSTEM_DEFAULT baseline references canonical base category ids, never bare names", async () => {
+    const { systemDefaultCategoryRules } = await import("../fixtures/system-default-category-rules");
+    const { baseCategories } = await import("../fixtures/base-categories");
+    const baseIds = new Set(baseCategories.map((c) => c.id));
+    for (const rule of systemDefaultCategoryRules) {
+      expect(rule.categoryId).toBeDefined();
+      expect(baseIds.has(rule.categoryId!)).toBe(true);
+      // The denormalized display string must actually match that same
+      // category's name — never independently invented.
+      const base = baseCategories.find((c) => c.id === rule.categoryId);
+      expect(rule.category).toBe(base?.name);
+    }
+  });
+});

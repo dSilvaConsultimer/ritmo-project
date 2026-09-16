@@ -218,7 +218,13 @@ export const financialTransactions = pgTable("financial_transactions", {
   status: text("status").$type<TransactionStatus>().notNull(),
   certainty: text("certainty").$type<Certainty>().notNull(),
   financialEffect: text("financial_effect").$type<FinancialEffect>().notNull(),
+  // DEC-136: `category` is LEGACY/DENORMALIZED display text; `category_id`
+  // is the authoritative category identity going forward — nullable
+  // because most historical rows predate it (see
+  // `backfillTransactionCategoryIds`'s conservative migration) and because
+  // a genuinely UNCATEGORIZED transaction has neither.
   category: text("category"),
+  categoryId: text("category_id").references(() => categories.id),
   subcategory: text("subcategory"),
   origin: text("origin").$type<TransactionOrigin>().notNull(),
   metadata: text("metadata"), // JSON-encoded; never used in calculations.

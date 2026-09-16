@@ -356,21 +356,22 @@ export async function getCategoryTotals(
 }
 
 /**
- * DEC-135: Planning's "Gastos por categoria" drill-down — the real
+ * DEC-135/136: Planning's "Gastos por categoria" drill-down — the real
  * transactions behind one category's total for the given period, using the
  * EXACT SAME filtering `getCategoryTotals`/`monthlyCategoryTotals` applies
  * (never a separate/looser query), so the list always sums to the total
- * shown alongside it. `category` accepts the literal `UNCATEGORIZED`
- * sentinel for the "uncategorized" filter option.
+ * shown alongside it. `categoryId` accepts the literal `UNCATEGORIZED`
+ * sentinel for the "uncategorized" filter option — see
+ * `CategoryTotal.categoryId`'s own doc comment for what else this can be.
  */
 export async function getCategorySpendingDetail(
   db: Database,
   financialProfileId: string,
   asOfDate: string,
-  category: string,
+  categoryId: string,
 ): Promise<readonly FinancialTransaction[]> {
   const input = await repo.loadFinancialSnapshotInput(db, financialProfileId, asOfDate);
-  return categorySpendingTransactions(input.transactions, input.reconciliationLinks, asOfDate, category);
+  return categorySpendingTransactions(input.transactions, input.reconciliationLinks, asOfDate, categoryId);
 }
 
 /**
