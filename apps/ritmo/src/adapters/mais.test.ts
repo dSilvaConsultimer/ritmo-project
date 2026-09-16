@@ -33,10 +33,18 @@ describe("toMaisViewModel", () => {
       "/perfil",
       "/notificacoes",
       "/conectar-banco",
-      "/categorias",
+      "/planejamento",
       "/ajuda",
       "/privacidade",
     ]);
+  });
+
+  it("(DEC-132) 'Categorias e regras' resolves to Planning's canonical rules/category area — never a second source of truth", () => {
+    const vm = toMaisViewModel(baseData());
+    const categoriasRow = vm.groups
+      .flatMap((g) => g.itens)
+      .find((i) => i.label === "Categorias e regras");
+    expect(categoriasRow?.to).toBe("/planejamento");
   });
 
   it("shows the real package version, never a hardcoded/stale number", () => {

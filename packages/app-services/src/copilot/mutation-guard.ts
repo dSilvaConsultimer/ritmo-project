@@ -104,6 +104,18 @@ const EXPLICIT_ACTION_PATTERNS: readonly RegExp[] = [
   /\bdispensa(r)? (esse|este) alerta\b/i,
   /\bpare de me avisar\b/i,
   /\bdesativ(e|ar|a) (os )?alertas\b/i,
+  // DEC-132: manual entry classification (transfer/investment/
+  // categorization/recurring-candidate confirmation) — English
+  /\bi transferred\b/i,
+  /\bi invested\b/i,
+  /\bi redeemed\b/i,
+  /\bclassify (it|this)\b/i,
+  // Português (PT-BR)
+  /\btransfer(i|iu|ir|indo)\b/i,
+  /\bapliqu(ei|ou|ar)\b/i,
+  /\bresgat(ei|ou|ar)\b/i,
+  /\bclassifiqu(e|ei|ar)\b/i,
+  /\bsempre que aparecer\b/i,
 ];
 
 /** True when the text contains a hypothetical/exploratory marker — a strong signal the message is NOT reporting a completed or decided action. */

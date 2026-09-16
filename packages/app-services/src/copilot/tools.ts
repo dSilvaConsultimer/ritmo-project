@@ -243,6 +243,14 @@ const getRecentSpendingSummaryTool = tool({
 
 // ---------- MUTATION tools — gated by hasExplicitMutationIntent in the orchestrator ----------
 
+const manualEntryFinancialEffectEnum = z.enum([
+  "CONSUMPTION",
+  "TRANSFER",
+  "REFUND",
+  "INVESTMENT",
+  "INVESTMENT_REDEMPTION",
+]);
+
 const recordManualTransactionSchema = z.object({
   amountReais: z.number().positive().describe("The amount actually spent, in BRL reais."),
   merchantOrDescription: z.string().min(1).describe("Where or what the money was spent on, e.g. 'Restaurant X'."),
@@ -258,12 +266,24 @@ const recordManualTransactionSchema = z.object({
     )
     .nullable()
     .default(null),
+  financialEffect: manualEntryFinancialEffectEnum
+    .describe(
+      "DEC-132: classify what kind of money movement this is, from the user's own words — this is YOUR classification job, never a keyword guess in code. " +
+        "CONSUMPTION: an ordinary purchase (default). " +
+        "TRANSFER: money moved between the user's OWN accounts (e.g. 'Transferi 2 mil do Itaú para o Nubank') — never consumption, even though money left an account. " +
+        "REFUND: money returned to the user for a prior purchase. " +
+        "INVESTMENT: money moved INTO an investment/application product (e.g. 'Apliquei 500 no CDB') — never ordinary spending. " +
+        "INVESTMENT_REDEMPTION: money moved back OUT of an investment product — never ordinary income. " +
+        "Null defaults to CONSUMPTION.",
+    )
+    .nullable()
+    .default(null),
 });
 
 const recordManualTransactionTool = tool({
   name: "recordManualTransaction",
   description:
-    "Records an expense the user says ALREADY HAPPENED (e.g. 'I just spent R$250 at Restaurant X'). Only call this when the user's message reports a completed action, never for a hypothetical amount.",
+    "Records a transaction the user says ALREADY HAPPENED (e.g. 'I just spent R$250 at Restaurant X', 'Transferi 2 mil do Itaú para o Nubank', 'Apliquei 500 no CDB'). Only call this when the user's message reports a completed action, never for a hypothetical amount. Classify `financialEffect` yourself from their words — never let a transfer or investment become a consumption expense.",
   kind: "MUTATION",
   schema: recordManualTransactionSchema,
   execute: (ctx, args) =>
@@ -272,6 +292,7 @@ const recordManualTransactionTool = tool({
       merchantOrDescription: args.merchantOrDescription,
       date: args.date ?? ctx.asOfDate,
       ...(args.paymentSourceLabel ? { paymentSourceLabel: args.paymentSourceLabel } : {}),
+      ...(args.financialEffect ? { financialEffect: args.financialEffect } : {}),
     }),
 });
 
@@ -418,6 +439,148 @@ const createFixedExpenseTool = tool({
       amount: fromReais(args.amountReais),
       ...(args.dueDayOfMonth !== null ? { dueDayOfMonth: args.dueDayOfMonth } : {}),
     }),
+});
+
+// ---------- Categorization / learning (DEC-132) ----------
+
+const categoryMatchTypeEnum = z.enum([
+  "EXACT_MERCHANT",
+  "CONTAINS_MERCHANT",
+  "CONTAINS_DESCRIPTION",
+  "REGEX_DESCRIPTION",
+]);
+
+const categorizeTransactionSchema = z.object({
+  transactionId: z.string().min(1).describe("Obtained from a prior getPendingConfirmations/getRecentSpendingSummary read — never guessed."),
+  category: z.string().min(1).describe("The spending category the user chose, e.g. 'Combustível'."),
+  subcategory: z.string().describe("Optional finer-grained subcategory.").nullable().default(null),
+  alwaysForMerchant: z
+    .boolean()
+    .describe(
+      "True ONLY when the user explicitly agreed this should apply automatically next time (e.g. answering 'sim' to 'Quer que eu classifique X como Y da próxima vez?'). False/null for a one-time correction that changes only this transaction.",
+    )
+    .nullable()
+    .default(null),
+});
+
+const categorizeTransactionTool = tool({
+  name: "categorizeTransaction",
+  description:
+    "Answers a pending 'what was this transaction?' question, or corrects a transaction's category. Never changes what kind of money movement it was (a transfer/card payment/investment stays that way) — only its spending category.",
+  kind: "MUTATION",
+  schema: categorizeTransactionSchema,
+  execute: (ctx, args) =>
+    mutations.categorizeTransaction(ctx.db, ctx.financialProfileId, {
+      transactionId: args.transactionId,
+      category: args.category,
+      ...(args.subcategory ? { subcategory: args.subcategory } : {}),
+      ...(args.alwaysForMerchant !== null ? { alwaysForMerchant: args.alwaysForMerchant } : {}),
+    }),
+});
+
+const createCategoryRuleSchema = z.object({
+  matchType: categoryMatchTypeEnum.describe(
+    "How to match: CONTAINS_MERCHANT is the usual choice for a merchant name (e.g. 'UBER'). Use CONTAINS_DESCRIPTION when there's no clean merchant name.",
+  ),
+  pattern: z.string().min(1).describe("The merchant name or description fragment to match, e.g. 'UBER'."),
+  category: z.string().min(1).describe("The spending category to assign, e.g. 'Transporte'."),
+  subcategory: z.string().describe("Optional finer-grained subcategory.").nullable().default(null),
+});
+
+const createCategoryRuleTool = tool({
+  name: "createCategoryRule",
+  description:
+    "Creates a standing categorization rule directly (e.g. 'sempre que aparecer UBER, classifique como Transporte'), without it being tied to correcting one specific transaction. Only call this on the user's explicit instruction.",
+  kind: "MUTATION",
+  schema: createCategoryRuleSchema,
+  execute: (ctx, args) =>
+    mutations.createCategoryRule(ctx.db, {
+      matchType: args.matchType,
+      pattern: args.pattern,
+      category: args.category,
+      ...(args.subcategory ? { subcategory: args.subcategory } : {}),
+      origin: "USER_DECLARED",
+    }),
+});
+
+const confirmRecurringIncomeCandidateSchema = z.object({
+  candidateId: z.string().min(1).describe("Obtained from a prior getRecurringIncomeCandidates/getPendingConfirmations read — never guessed."),
+  label: z.string().min(1).describe("A short label for this income, e.g. 'Salário'."),
+  expectedDayOfMonth: z
+    .number()
+    .int()
+    .min(1)
+    .max(31)
+    .describe("Day of month this income is typically received, only if known/observable. Null otherwise.")
+    .nullable()
+    .default(null),
+});
+
+const confirmRecurringIncomeCandidateTool = tool({
+  name: "confirmRecurringIncomeCandidate",
+  description:
+    "Confirms a pattern Ritmo detected (e.g. 'SMART FIT parece ser um gasto mensal — confirmar?' for income) as real recurring income, creating it with USER_CONFIRMED_HISTORY provenance. Only call this after the user explicitly agrees.",
+  kind: "MUTATION",
+  schema: confirmRecurringIncomeCandidateSchema,
+  execute: (ctx, args) =>
+    mutations.confirmRecurringIncomeCandidate(ctx.db, ctx.financialProfileId, {
+      candidateId: args.candidateId,
+      label: args.label,
+      ...(args.expectedDayOfMonth !== null ? { expectedDayOfMonth: args.expectedDayOfMonth } : {}),
+    }),
+});
+
+const confirmRecurringFixedExpenseCandidateSchema = z.object({
+  candidateId: z.string().min(1).describe("Obtained from a prior getRecurringFixedExpenseCandidates/getPendingConfirmations read — never guessed."),
+  label: z.string().min(1).describe("A short label for this commitment, e.g. 'Academia'."),
+  category: z.string().min(1).describe("The spending category, e.g. 'Saúde'."),
+  dueDayOfMonth: z
+    .number()
+    .int()
+    .min(1)
+    .max(31)
+    .describe("Day of month it's typically due, only if known/observable. Null otherwise.")
+    .nullable()
+    .default(null),
+});
+
+const confirmRecurringFixedExpenseCandidateTool = tool({
+  name: "confirmRecurringFixedExpenseCandidate",
+  description:
+    "Confirms a pattern Ritmo detected (e.g. 'SMART FIT parece ser um gasto mensal de R$119,90. Confirmar?') as a real recurring fixed expense, creating it with USER_CONFIRMED_HISTORY provenance. Only call this after the user explicitly agrees.",
+  kind: "MUTATION",
+  schema: confirmRecurringFixedExpenseCandidateSchema,
+  execute: (ctx, args) =>
+    mutations.confirmRecurringFixedExpenseCandidate(ctx.db, ctx.financialProfileId, {
+      candidateId: args.candidateId,
+      label: args.label,
+      category: args.category,
+      ...(args.dueDayOfMonth !== null ? { dueDayOfMonth: args.dueDayOfMonth } : {}),
+    }),
+});
+
+const rejectRecurringCandidateSchema = z.object({
+  candidateId: z.string().min(1).describe("Obtained from a prior getRecurringIncomeCandidates/getRecurringFixedExpenseCandidates/getPendingConfirmations read."),
+  kind: z.enum(["INCOME", "FIXED_EXPENSE"]).describe("Which pool this candidate belongs to."),
+});
+
+const rejectRecurringCandidateTool = tool({
+  name: "rejectRecurringCandidate",
+  description:
+    "Dismisses a recurring pattern Ritmo detected — the user said it's NOT a real recurring commitment/income. Never creates any planning knowledge; the same evidence won't be asked about again unless it materially changes.",
+  kind: "MUTATION",
+  schema: rejectRecurringCandidateSchema,
+  execute: (ctx, args) =>
+    mutations.rejectRecurringCandidate(ctx.db, ctx.financialProfileId, args.candidateId, args.kind),
+});
+
+const getPendingConfirmationsTool = tool({
+  name: "getPendingConfirmations",
+  description:
+    "Everything Ritmo needs a human answer for: uncategorized transactions, detected recurring income/expense patterns awaiting confirmation, and pending recommendations.",
+  kind: "READ",
+  schema: z.object({}),
+  execute: (ctx) => queries.getPendingConfirmations(ctx.db, ctx.financialProfileId, ctx.asOfDate),
 });
 
 const replanAfterExpenseSchema = z.object({
@@ -886,6 +1049,12 @@ export const TOOL_REGISTRY: readonly ToolDefinition<never, unknown>[] = [
   updatePlannedFinancialEventTool,
   createIncomeTool,
   createFixedExpenseTool,
+  categorizeTransactionTool,
+  createCategoryRuleTool,
+  confirmRecurringIncomeCandidateTool,
+  confirmRecurringFixedExpenseCandidateTool,
+  rejectRecurringCandidateTool,
+  getPendingConfirmationsTool,
   replanAfterExpenseTool,
   getRecommendationsTool,
   getRecommendationDetailsTool,

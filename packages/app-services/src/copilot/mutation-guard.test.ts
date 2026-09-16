@@ -28,6 +28,16 @@ describe("hasExplicitMutationIntent", () => {
   });
 
   it.each([
+    "Transferi 2 mil do Itaú para o Nubank.",
+    "Apliquei 500 no CDB.",
+    "Resgatei 200 do CDB.",
+    "Classifique sempre que aparecer POSTO CAMPINAS como Combustível.",
+    "Confirmo, é isso mesmo.",
+  ])("(DEC-132) returns true for explicit manual-entry/classification action: %s", (text) => {
+    expect(hasExplicitMutationIntent(text)).toBe(true);
+  });
+
+  it.each([
     "Gastei R$ 250 no Restaurante X.",
     "Acabei de gastar R$ 250 no Restaurante X.",
     "Reserve R$ 1.000 para a praia.",

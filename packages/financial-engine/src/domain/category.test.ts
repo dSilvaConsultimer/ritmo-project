@@ -33,7 +33,14 @@ function tx(overrides: Partial<FinancialTransaction> = {}): FinancialTransaction
 describe("categorize", () => {
   it("matches IFOOD -> Food via CONTAINS_MERCHANT", () => {
     const rules: CategoryRule[] = [
-      { id: createId("category-rule"), matchType: "CONTAINS_MERCHANT", pattern: "IFOOD", category: "Food", priority: 100 },
+      {
+        id: createId("category-rule"),
+        matchType: "CONTAINS_MERCHANT",
+        pattern: "IFOOD",
+        category: "Food",
+        priority: 100,
+        origin: "SYSTEM_DEFAULT",
+      },
     ];
     expect(categorize(tx(), rules).category).toBe("Food");
   });
@@ -47,6 +54,7 @@ describe("categorize", () => {
         category: "Food",
         subcategory: "Convenience",
         priority: 100,
+        origin: "SYSTEM_DEFAULT",
       },
     ];
     const result = categorize(tx({ normalizedMerchant: "OXXO" }), rules);
@@ -56,15 +64,36 @@ describe("categorize", () => {
 
   it("respects rule priority — the highest-priority matching rule wins", () => {
     const rules: CategoryRule[] = [
-      { id: createId("category-rule"), matchType: "CONTAINS_MERCHANT", pattern: "IFOOD", category: "Generic", priority: 1 },
-      { id: createId("category-rule"), matchType: "EXACT_MERCHANT", pattern: "IFOOD", category: "Food", priority: 100 },
+      {
+        id: createId("category-rule"),
+        matchType: "CONTAINS_MERCHANT",
+        pattern: "IFOOD",
+        category: "Generic",
+        priority: 1,
+        origin: "SYSTEM_DEFAULT",
+      },
+      {
+        id: createId("category-rule"),
+        matchType: "EXACT_MERCHANT",
+        pattern: "IFOOD",
+        category: "Food",
+        priority: 100,
+        origin: "SYSTEM_DEFAULT",
+      },
     ];
     expect(categorize(tx(), rules).category).toBe("Food");
   });
 
   it("leaves an unmatched transaction UNCATEGORIZED rather than guessing", () => {
     const rules: CategoryRule[] = [
-      { id: createId("category-rule"), matchType: "CONTAINS_MERCHANT", pattern: "IFOOD", category: "Food", priority: 100 },
+      {
+        id: createId("category-rule"),
+        matchType: "CONTAINS_MERCHANT",
+        pattern: "IFOOD",
+        category: "Food",
+        priority: 100,
+        origin: "SYSTEM_DEFAULT",
+      },
     ];
     const result = categorize(tx({ normalizedMerchant: "PAGSEGURO", rawMerchant: "PAGSEGURO" }), rules);
     expect(result.category).toBe(UNCATEGORIZED);
@@ -79,6 +108,7 @@ describe("categorize", () => {
         pattern: "^IFOOD",
         category: "Food",
         priority: 100,
+        origin: "SYSTEM_DEFAULT",
       },
     ];
     expect(categorize(tx(), rules).category).toBe("Food");
@@ -92,6 +122,7 @@ describe("categorize", () => {
         pattern: "(unterminated[",
         category: "Food",
         priority: 100,
+        origin: "SYSTEM_DEFAULT",
       },
     ];
     expect(() => categorize(tx(), rules)).not.toThrow();

@@ -21,6 +21,7 @@ import type {
   CreditCardBill,
   Recommendation,
   LiquidityCoverage,
+  RecurringExpenseCandidate,
 } from "@money-copilot/financial-engine";
 import type { AIRequestLog, AIToolExecution, Conversation, ConversationMessage } from "@money-copilot/ai";
 import { createId } from "@money-copilot/shared";
@@ -271,6 +272,24 @@ export async function findTransactionByExternalId(
   return mappers.rowToTransaction(row, mappers.rowToPaymentSource(paymentSourceRow));
 }
 
+/** Loads a single transaction by its own internal id, with its full `PaymentSource` embedded — see `findTransactionByExternalId`. */
+export async function getTransactionById(
+  db: Database,
+  transactionId: string,
+): Promise<FinancialTransaction | undefined> {
+  const [row] = await db
+    .select()
+    .from(schema.financialTransactions)
+    .where(eq(schema.financialTransactions.id, transactionId));
+  if (!row) return undefined;
+  const [paymentSourceRow] = await db
+    .select()
+    .from(schema.paymentSources)
+    .where(eq(schema.paymentSources.id, row.paymentSourceId));
+  if (!paymentSourceRow) return undefined;
+  return mappers.rowToTransaction(row, mappers.rowToPaymentSource(paymentSourceRow));
+}
+
 /**
  * Cheap existence check — never loads a transaction row, just whether at
  * least one exists for this payment source (DEC-128: used by `syncConnection`
@@ -428,6 +447,85 @@ export async function upsertCategoryRule(db: Database, rule: CategoryRule): Prom
     .insert(schema.categoryRules)
     .values(row)
     .onConflictDoUpdate({ target: schema.categoryRules.id, set: row });
+}
+
+/** DEC-132: only ever deletes a USER-authored rule from the Planning UI — callers decide what's deletable. */
+export async function deleteCategoryRule(db: Database, id: string): Promise<void> {
+  await db.delete(schema.categoryRules).where(eq(schema.categoryRules.id, id));
+}
+
+export async function deleteMerchantRule(db: Database, id: string): Promise<void> {
+  await db.delete(schema.merchantNormalizationRules).where(eq(schema.merchantNormalizationRules.id, id));
+}
+
+// ---------- RecurringExpenseCandidate (DEC-132) ----------
+
+/**
+ * Conflict-safe upsert on the candidate's natural identity
+ * (financialProfileId, kind, evidenceKey) — mirrors the DEC-131
+ * PaymentSource fix exactly, for the same reason: two overlapping
+ * detection runs for the same profile must never create two rows for the
+ * same evidence. Returns the row actually persisted (its `id`/`status`
+ * survive across re-detections; only the evidence numbers refresh).
+ */
+export async function upsertRecurringCandidate(
+  db: Database,
+  candidate: RecurringExpenseCandidate,
+  financialProfileId: string,
+  kind: "INCOME" | "FIXED_EXPENSE",
+): Promise<RecurringExpenseCandidate> {
+  const row = mappers.recurringCandidateToRow(candidate, financialProfileId, kind);
+  const { id: _id, status: _status, createdAt: _createdAt, ...refreshableFields } = row;
+  const [saved] = await db
+    .insert(schema.recurringCandidates)
+    .values(row)
+    .onConflictDoUpdate({
+      target: [
+        schema.recurringCandidates.financialProfileId,
+        schema.recurringCandidates.kind,
+        schema.recurringCandidates.evidenceKey,
+      ],
+      // Never overwrite `id`, `status`, or `createdAt` of an existing
+      // candidate — only the evidence numbers (occurrences/amount/interval/
+      // confidence) refresh on re-detection. A user's CONFIRMED/REJECTED
+      // decision must never be silently reset back to CANDIDATE.
+      set: refreshableFields,
+    })
+    .returning();
+  return mappers.rowToRecurringCandidate(saved!);
+}
+
+export async function listRecurringCandidatesForProfile(
+  db: Database,
+  financialProfileId: string,
+  kind: "INCOME" | "FIXED_EXPENSE",
+): Promise<RecurringExpenseCandidate[]> {
+  const rows = await db
+    .select()
+    .from(schema.recurringCandidates)
+    .where(
+      and(
+        eq(schema.recurringCandidates.financialProfileId, financialProfileId),
+        eq(schema.recurringCandidates.kind, kind),
+      ),
+    );
+  return rows.map(mappers.rowToRecurringCandidate);
+}
+
+export async function getRecurringCandidateById(
+  db: Database,
+  id: string,
+): Promise<RecurringExpenseCandidate | undefined> {
+  const [row] = await db.select().from(schema.recurringCandidates).where(eq(schema.recurringCandidates.id, id));
+  return row ? mappers.rowToRecurringCandidate(row) : undefined;
+}
+
+export async function updateRecurringCandidateStatus(
+  db: Database,
+  id: string,
+  status: "CONFIRMED" | "REJECTED",
+): Promise<void> {
+  await db.update(schema.recurringCandidates).set({ status }).where(eq(schema.recurringCandidates.id, id));
 }
 
 // ---------- Loading a full FinancialSnapshotInput back out ----------

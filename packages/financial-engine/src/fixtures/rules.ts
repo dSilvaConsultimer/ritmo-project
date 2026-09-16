@@ -104,6 +104,7 @@ export const categoryRules: readonly CategoryRule[] = [
     category: "Transportation",
     subcategory: "Car Subscription",
     priority: 100,
+    origin: "SYSTEM_DEFAULT",
   },
   {
     id: "category-rule_fixture-ifood" as Id<"category-rule">,
@@ -111,6 +112,7 @@ export const categoryRules: readonly CategoryRule[] = [
     pattern: "IFOOD",
     category: "Food",
     priority: 100,
+    origin: "SYSTEM_DEFAULT",
   },
   {
     id: "category-rule_fixture-mineiros-dog" as Id<"category-rule">,
@@ -119,6 +121,7 @@ export const categoryRules: readonly CategoryRule[] = [
     category: "Food",
     subcategory: "Fast Food",
     priority: 100,
+    origin: "SYSTEM_DEFAULT",
   },
   {
     id: "category-rule_fixture-adega" as Id<"category-rule">,
@@ -127,6 +130,7 @@ export const categoryRules: readonly CategoryRule[] = [
     category: "Food",
     subcategory: "Bar",
     priority: 100,
+    origin: "SYSTEM_DEFAULT",
   },
   {
     id: "category-rule_fixture-oxxo" as Id<"category-rule">,
@@ -135,6 +139,7 @@ export const categoryRules: readonly CategoryRule[] = [
     category: "Food",
     subcategory: "Convenience",
     priority: 100,
+    origin: "SYSTEM_DEFAULT",
   },
   {
     id: "category-rule_fixture-tiktok" as Id<"category-rule">,
@@ -142,6 +147,7 @@ export const categoryRules: readonly CategoryRule[] = [
     pattern: "TIKTOK",
     category: "Shopping",
     priority: 100,
+    origin: "SYSTEM_DEFAULT",
   },
   {
     id: "category-rule_fixture-rodeo" as Id<"category-rule">,
@@ -149,6 +155,7 @@ export const categoryRules: readonly CategoryRule[] = [
     pattern: "RODEO",
     category: "Entertainment",
     priority: 100,
+    origin: "SYSTEM_DEFAULT",
   },
   {
     id: "category-rule_fixture-netflix" as Id<"category-rule">,
@@ -157,6 +164,7 @@ export const categoryRules: readonly CategoryRule[] = [
     category: "Entertainment",
     subcategory: "Streaming",
     priority: 100,
+    origin: "SYSTEM_DEFAULT",
   },
   {
     id: "category-rule_fixture-spotify" as Id<"category-rule">,
@@ -165,6 +173,7 @@ export const categoryRules: readonly CategoryRule[] = [
     category: "Entertainment",
     subcategory: "Streaming",
     priority: 100,
+    origin: "SYSTEM_DEFAULT",
   },
   // No rule matches "PAGSEGURO" — it stays UNCATEGORIZED.
 ];

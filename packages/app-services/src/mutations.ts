@@ -1,7 +1,11 @@
 import { createId, type Id } from "@money-copilot/shared";
 import {
   categorize,
+  defaultDirectionForManualEntry,
   normalizeMerchant,
+  type CategoryRule,
+  type CategoryRuleMatchType,
+  type CategoryRuleOrigin,
   type Certainty,
   type FinancialEvent,
   type FinancialEventLineItem,
@@ -9,11 +13,14 @@ import {
   type FixedExpense,
   type Income,
   type IncomeSource,
+  type ManualEntryFinancialEffect,
   type Money,
   type PaymentSource,
+  type RecurringExpenseCandidate,
 } from "@money-copilot/financial-engine";
 import * as repo from "@money-copilot/persistence";
 import type { Database } from "@money-copilot/persistence";
+import { assertOwnedByProfile, ResourceNotFoundError } from "./ownership";
 
 /**
  * State-changing application services. Every function here PERSISTS a
@@ -67,10 +74,21 @@ export interface RecordManualTransactionInput {
   readonly certainty?: Exclude<Certainty, "UNKNOWN">;
   /** Never fabricated when the user didn't say how they paid. */
   readonly paymentSourceLabel?: string;
+  /**
+   * DEC-132: the caller (UI form or the AI copilot, having parsed the
+   * user's own words) declares what kind of money movement this is —
+   * defaults to `CONSUMPTION` (the historical, only behavior). This is
+   * classification-by-explicit-declaration, not keyword-guessing: a
+   * "Transferi 2 mil do Itaú para o Nubank" statement must be classified
+   * TRANSFER by whoever parsed that sentence, never silently recorded as a
+   * purchase. See `ManualEntryFinancialEffect`'s own doc comment for why
+   * CARD_PAYMENT/DEBT_PAYMENT/INCOME are deliberately excluded here.
+   */
+  readonly financialEffect?: ManualEntryFinancialEffect;
 }
 
 /**
- * Records a manually-reported expense. Deterministically categorizes it
+ * Records a manually-reported transaction. Deterministically categorizes it
  * through the SAME `categorize`/`normalizeMerchant` rules a provider import
  * uses — the AI never assigns the category itself. Because this is a
  * normal `FinancialTransaction` with `origin: "MANUAL"`, it automatically
@@ -78,7 +96,9 @@ export interface RecordManualTransactionInput {
  * `getSafeToSpend`) on the very next read, and remains reconcilable
  * against a later-imported equivalent provider transaction via the
  * existing `findTransactionDuplicates` reconciliation pass (Sprint 2/3) —
- * no new dedup logic needed.
+ * no new dedup logic needed. `direction` is ALWAYS derived from
+ * `financialEffect` (`defaultDirectionForManualEntry`), never independently
+ * guessed — see DEC-132.
  */
 export async function recordManualTransaction(
   db: Database,
@@ -88,6 +108,7 @@ export async function recordManualTransaction(
   const { categoryRules, merchantRules } = await repo.loadRules(db);
   const paymentSource = await resolveManualPaymentSource(db, financialProfileId, input.paymentSourceLabel);
   const normalizedMerchant = normalizeMerchant(input.merchantOrDescription, merchantRules);
+  const financialEffect = input.financialEffect ?? "CONSUMPTION";
 
   const draft: FinancialTransaction = {
     id: createId("transaction"),
@@ -95,14 +116,14 @@ export async function recordManualTransaction(
     paymentSource,
     date: input.date,
     amount: input.amount,
-    direction: "DEBIT",
+    direction: defaultDirectionForManualEntry(financialEffect),
     rawDescription: input.merchantOrDescription,
     normalizedDescription: input.merchantOrDescription,
     rawMerchant: input.merchantOrDescription,
     ...(normalizedMerchant ? { normalizedMerchant } : {}),
     status: "POSTED",
     certainty: input.certainty ?? "ACTUAL",
-    financialEffect: "CONSUMPTION",
+    financialEffect,
     category: null,
     origin: "MANUAL",
     createdAt: nowIso(),
@@ -181,6 +202,8 @@ export interface CreateFixedExpenseInput {
   readonly protected?: boolean;
   /** Day of month (1-31), when actually known — never guessed. See `FixedExpense.dueDayOfMonth`. */
   readonly dueDayOfMonth?: number;
+  /** DEC-132: see `FixedExpense.source`'s own doc comment. Defaults to `USER_DECLARED` when the caller doesn't specify one — a copilot/UI flow confirming a `RecurringExpenseCandidate` should pass `USER_CONFIRMED_HISTORY` explicitly. */
+  readonly source?: IncomeSource;
 }
 
 /**
@@ -206,6 +229,7 @@ export async function createFixedExpense(
     certainty: input.certainty ?? "CONFIRMED",
     protected: input.protected ?? false,
     ...(input.dueDayOfMonth !== undefined ? { dueDayOfMonth: input.dueDayOfMonth } : {}),
+    source: input.source ?? "USER_DECLARED",
   };
 
   await repo.upsertFixedExpense(db, expense, financialProfileId);
@@ -390,4 +414,220 @@ export async function updatePlannedFinancialEvent(
 
   await repo.upsertEvent(db, updated, financialProfileId);
   return updated;
+}
+
+// ---------- Category rules / learning (DEC-132) ----------
+
+/**
+ * Priority given to a rule created from an explicit user action (a
+ * one-time correction turned "always," or direct manual rule creation) —
+ * deliberately higher than every `fixtures/rules.ts` `SYSTEM_DEFAULT` rule
+ * (priority 100), so an explicit user decision always wins if a future
+ * system-default rule is ever added for the same pattern.
+ */
+const USER_RULE_PRIORITY = 200;
+
+export interface CreateCategoryRuleInput {
+  readonly matchType: CategoryRuleMatchType;
+  readonly pattern: string;
+  readonly category: string;
+  readonly subcategory?: string;
+  readonly priority?: number;
+  readonly origin?: CategoryRuleOrigin;
+}
+
+/**
+ * Directly creates a categorization rule (Planning's "Regras e categorias"
+ * manual creation, and the AI copilot's equivalent tool) — the SAME
+ * `repo.upsertCategoryRule` primitive `categorizeTransaction`'s
+ * "always" path below uses, so there is exactly one rule-creation code
+ * path regardless of how the rule was authored.
+ */
+export async function createCategoryRule(db: Database, input: CreateCategoryRuleInput): Promise<CategoryRule> {
+  const rule: CategoryRule = {
+    id: createId("category-rule"),
+    matchType: input.matchType,
+    pattern: input.pattern,
+    category: input.category,
+    ...(input.subcategory !== undefined ? { subcategory: input.subcategory } : {}),
+    priority: input.priority ?? USER_RULE_PRIORITY,
+    origin: input.origin ?? "USER_DECLARED",
+  };
+  await repo.upsertCategoryRule(db, rule);
+  return rule;
+}
+
+/** Rules are global (not per-profile) — see `repo.loadRules`'s own comment — so this takes no `financialProfileId`, matching that existing architecture. */
+export async function deleteCategoryRule(db: Database, id: string): Promise<void> {
+  await repo.deleteCategoryRule(db, id);
+}
+
+export interface CategorizeTransactionInput {
+  readonly transactionId: string;
+  readonly category: string;
+  readonly subcategory?: string;
+  /**
+   * When true, ALSO creates a durable `CategoryRule` (origin
+   * `USER_DECLARED`) so a future matching transaction is categorized
+   * automatically — the "Quer que eu classifique X como Y da próxima vez?"
+   * flow. Defaults to false: a one-time correction changes only this
+   * transaction and never silently creates a permanent rule.
+   */
+  readonly alwaysForMerchant?: boolean;
+}
+
+export interface CategorizeTransactionResult {
+  readonly transaction: FinancialTransaction;
+  readonly createdRule?: CategoryRule;
+}
+
+/**
+ * Resolves a pending "what was this?" classification question
+ * (`queries.getPendingConfirmations`'s `UNCATEGORIZED_TRANSACTION` items) —
+ * or any other manual re-categorization. Deliberately touches ONLY
+ * `category`/`subcategory`, never `financialEffect` — a TRANSFER,
+ * CARD_PAYMENT, INVESTMENT, or INVESTMENT_REDEMPTION transaction can be
+ * given a display category without ever being reinterpreted as ordinary
+ * consumption (DEC-132 safety rule: financial effect is decided before, and
+ * independently of, category).
+ */
+export async function categorizeTransaction(
+  db: Database,
+  financialProfileId: string,
+  input: CategorizeTransactionInput,
+): Promise<CategorizeTransactionResult> {
+  const transaction = assertOwnedByProfile(
+    await repo.getTransactionById(db, input.transactionId),
+    financialProfileId,
+    `transaction ${input.transactionId}`,
+  );
+
+  const updatedTransaction: FinancialTransaction = {
+    ...transaction,
+    category: input.category,
+    ...(input.subcategory !== undefined ? { subcategory: input.subcategory } : {}),
+  };
+  await repo.upsertTransaction(db, updatedTransaction);
+
+  if (!input.alwaysForMerchant) {
+    return { transaction: updatedTransaction };
+  }
+
+  const matchType: CategoryRuleMatchType = transaction.normalizedMerchant
+    ? "CONTAINS_MERCHANT"
+    : "CONTAINS_DESCRIPTION";
+  const pattern =
+    transaction.normalizedMerchant ?? (transaction.normalizedDescription || transaction.rawDescription);
+  const createdRule = await createCategoryRule(db, {
+    matchType,
+    pattern,
+    category: input.category,
+    ...(input.subcategory !== undefined ? { subcategory: input.subcategory } : {}),
+  });
+
+  return { transaction: updatedTransaction, createdRule };
+}
+
+// ---------- Recurring candidate confirmation (DEC-132) ----------
+
+async function requireOwnedRecurringCandidate(
+  db: Database,
+  financialProfileId: string,
+  candidateId: string,
+  kind: "INCOME" | "FIXED_EXPENSE",
+): Promise<RecurringExpenseCandidate> {
+  const candidates = await repo.listRecurringCandidatesForProfile(db, financialProfileId, kind);
+  const found = candidates.find((c) => c.id === candidateId);
+  if (!found) {
+    throw new ResourceNotFoundError(`recurring ${kind.toLowerCase()} candidate ${candidateId}`);
+  }
+  return found;
+}
+
+export interface ConfirmRecurringIncomeCandidateInput {
+  /** Obtained from a prior `getPendingConfirmations`/`getRecurringIncomeCandidates` read — never guessed. */
+  readonly candidateId: string;
+  readonly label: string;
+  readonly expectedDayOfMonth?: number;
+}
+
+/**
+ * Converts a still-pending income recurrence candidate into real planning
+ * knowledge — creates an `Income` via the SAME `createIncome` canonical
+ * mutation manual/AI declaration uses, with `source: "USER_CONFIRMED_HISTORY"`
+ * (DEC-130: inferred from history AND explicitly confirmed — never silently
+ * treated as a bare `USER_DECLARED` statement). The candidate itself is
+ * marked CONFIRMED so `detectRecurringCandidates` never re-surfaces it as a
+ * fresh pending question (DEC-132 fix, `recurring.ts`).
+ */
+export async function confirmRecurringIncomeCandidate(
+  db: Database,
+  financialProfileId: string,
+  input: ConfirmRecurringIncomeCandidateInput,
+): Promise<Income> {
+  const candidate = await requireOwnedRecurringCandidate(db, financialProfileId, input.candidateId, "INCOME");
+  const income = await createIncome(db, financialProfileId, {
+    label: input.label,
+    grossAmount: candidate.evidence.averageAmount,
+    certainty: "ESTIMATED",
+    recurring: true,
+    source: "USER_CONFIRMED_HISTORY",
+    ...(input.expectedDayOfMonth !== undefined ? { expectedDayOfMonth: input.expectedDayOfMonth } : {}),
+  });
+  await repo.updateRecurringCandidateStatus(db, candidate.id, "CONFIRMED");
+  return income;
+}
+
+export interface ConfirmRecurringFixedExpenseCandidateInput {
+  /** Obtained from a prior `getPendingConfirmations`/`getRecurringFixedExpenseCandidates` read — never guessed. */
+  readonly candidateId: string;
+  readonly label: string;
+  /** A `RecurringExpenseCandidate` carries no category of its own — the confirming caller supplies it (from the transaction's own category, or the user's choice). */
+  readonly category: string;
+  readonly dueDayOfMonth?: number;
+}
+
+/**
+ * Converts a still-pending fixed-expense recurrence candidate into real
+ * planning knowledge — mirrors `confirmRecurringIncomeCandidate` exactly,
+ * via the SAME `createFixedExpense` canonical mutation, with
+ * `source: "USER_CONFIRMED_HISTORY"`.
+ */
+export async function confirmRecurringFixedExpenseCandidate(
+  db: Database,
+  financialProfileId: string,
+  input: ConfirmRecurringFixedExpenseCandidateInput,
+): Promise<FixedExpense> {
+  const candidate = await requireOwnedRecurringCandidate(
+    db,
+    financialProfileId,
+    input.candidateId,
+    "FIXED_EXPENSE",
+  );
+  const expense = await createFixedExpense(db, financialProfileId, {
+    label: input.label,
+    category: input.category,
+    amount: candidate.evidence.averageAmount,
+    certainty: "ESTIMATED",
+    source: "USER_CONFIRMED_HISTORY",
+    ...(input.dueDayOfMonth !== undefined ? { dueDayOfMonth: input.dueDayOfMonth } : {}),
+  });
+  await repo.updateRecurringCandidateStatus(db, candidate.id, "CONFIRMED");
+  return expense;
+}
+
+/**
+ * Dismisses a pending recurring candidate without creating any planning
+ * knowledge — `detectRecurringCandidates` suppresses its `evidenceKey` from
+ * then on (DEC-132 fix, `recurring.ts`), so it does not immediately
+ * reappear from the same evidence.
+ */
+export async function rejectRecurringCandidate(
+  db: Database,
+  financialProfileId: string,
+  candidateId: string,
+  kind: "INCOME" | "FIXED_EXPENSE",
+): Promise<void> {
+  await requireOwnedRecurringCandidate(db, financialProfileId, candidateId, kind);
+  await repo.updateRecurringCandidateStatus(db, candidateId, "REJECTED");
 }

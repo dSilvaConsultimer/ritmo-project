@@ -81,17 +81,19 @@ function averageIntervalDays(dates: readonly string[]): number | null {
  * means a genuine price change (e.g. a subscription going from BRL 39.90 to
  * BRL 55.90) forms its own distinct evidence group rather than being
  * blended with the old price into one inconsistent-amount group. Candidates
- * whose `evidenceKey` matches a prior REJECTED decision are suppressed;
- * a materially different amount produces a different key and may resurface,
- * honoring "should not immediately reappear from the same evidence."
+ * whose `evidenceKey` matches a prior REJECTED **or** CONFIRMED decision are
+ * suppressed — a rejected one should not immediately reappear from the same
+ * evidence, and a confirmed one has already become real planning knowledge
+ * (see DEC-132) and re-surfacing it as a fresh pending "candidate" would be
+ * redundant/confusing. A materially different amount produces a different
+ * key and may resurface, honoring "should not immediately reappear from the
+ * same evidence."
  */
 export function detectRecurringCandidates(
   transactions: readonly FinancialTransaction[],
   priorDecisions: readonly RecurringDecision[] = [],
 ): RecurringExpenseCandidate[] {
-  const rejectedKeys = new Set(
-    priorDecisions.filter((d) => d.status === "REJECTED").map((d) => d.evidenceKey),
-  );
+  const resolvedKeys = new Set(priorDecisions.map((d) => d.evidenceKey));
 
   const groups = new Map<string, FinancialTransaction[]>();
   for (const t of transactions) {
@@ -119,7 +121,7 @@ export function detectRecurringCandidates(
     const averageAmount = M.fromCents(
       Math.round(amounts.reduce((sum, a) => sum + a.cents, 0) / amounts.length),
     );
-    if (rejectedKeys.has(evidenceKey)) continue;
+    if (resolvedKeys.has(evidenceKey)) continue;
 
     let confidence: RecurringCandidateConfidence;
     if (similarAmounts && monthlyCadence && group.length >= 3) {

@@ -70,6 +70,20 @@ describe("detectRecurringCandidates", () => {
     expect(second).toHaveLength(0);
   });
 
+  it("also suppresses a candidate previously CONFIRMED for the same evidence (DEC-132) — it already became real planning knowledge, not a fresh pending question", () => {
+    const transactions = [
+      tx("NETFLIX", 39.9, "2026-07-05"),
+      tx("NETFLIX", 39.9, "2026-08-04"),
+      tx("NETFLIX", 39.9, "2026-09-05"),
+    ];
+    const first = detectRecurringCandidates(transactions);
+    const decisions: RecurringDecision[] = [
+      { evidenceKey: first[0]!.evidenceKey, status: "CONFIRMED" },
+    ];
+    const second = detectRecurringCandidates(transactions, decisions);
+    expect(second).toHaveLength(0);
+  });
+
   it("may resurface once the evidence materially changes (e.g. a price change)", () => {
     const original = [
       tx("NETFLIX", 39.9, "2026-07-05"),

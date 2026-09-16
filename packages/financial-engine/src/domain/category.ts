@@ -15,6 +15,26 @@ export type CategoryRuleMatchType =
   | "REGEX_DESCRIPTION";
 
 /**
+ * DEC-132: where a categorization rule came from — the same provenance
+ * discipline as `Income.source` (DEC-130), generalized to rules. A rule
+ * created by explicit user correction must never be silently overwritten by
+ * a later system inference, and the UI must be able to show the user WHY a
+ * rule exists.
+ * - SYSTEM_DEFAULT: shipped with the app (e.g. `fixtures/rules.ts`), never
+ *   authored by this specific user.
+ * - USER_DECLARED: the user explicitly created or confirmed this rule (e.g.
+ *   "always classify X as Y").
+ * - HISTORY_INFERRED: Ritmo inferred this rule from repeated history but the
+ *   user has not confirmed it — never authoritative on its own.
+ * - USER_CONFIRMED_HISTORY: inferred from history AND the user confirmed it.
+ */
+export type CategoryRuleOrigin =
+  | "SYSTEM_DEFAULT"
+  | "USER_DECLARED"
+  | "HISTORY_INFERRED"
+  | "USER_CONFIRMED_HISTORY";
+
+/**
  * A deterministic categorization rule — no LLM, no guessing. Rules are
  * evaluated by descending `priority`; the first match wins. A transaction
  * matching no rule stays `UNCATEGORIZED` rather than being force-fit into a
@@ -27,6 +47,7 @@ export interface CategoryRule {
   readonly category: string;
   readonly subcategory?: string;
   readonly priority: number;
+  readonly origin: CategoryRuleOrigin;
 }
 
 /**

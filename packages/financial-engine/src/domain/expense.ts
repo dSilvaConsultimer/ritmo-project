@@ -1,6 +1,7 @@
 import type { Id } from "@money-copilot/shared";
 import type { Money } from "../money/index";
 import type { Certainty } from "./certainty";
+import type { IncomeSource } from "./income";
 
 /**
  * Reserved category used to identify tax commitments so the snapshot can
@@ -44,6 +45,17 @@ export interface FixedExpense {
    * "Data-model gaps," and docs/DECISIONS.md DEC-130.
    */
   readonly dueDayOfMonth?: number;
+  /**
+   * DEC-132: reuses the SAME three-state provenance concept `Income.source`
+   * established in DEC-130 (`USER_DECLARED`/`HISTORY_INFERRED`/
+   * `USER_CONFIRMED_HISTORY`) — not income-specific in meaning, just named
+   * after where it was first introduced. Optional (unlike `Income.source`)
+   * since this field is new and most existing `FixedExpense` rows/fixtures
+   * predate it; absent means genuinely unknown provenance, never guessed.
+   * `HISTORY_INFERRED` must never be treated as authoritative/confirmed —
+   * same rule as for Income.
+   */
+  readonly source?: IncomeSource;
 }
 
 /**

@@ -4200,3 +4200,97 @@ through `syncConnection`.
 **Staging repair:** see the delivery message for the exact SQL performed against
 `financial-profile_2_mu1rzk0f`'s two duplicate rows (`payment-source_38_mu20nczj`,
 `payment-source_37_mu20ncy4`) and the resulting snapshot breakdown.
+
+### DEC-132
+
+**Date:** 2026-09-15
+**Context:** Product consolidation request: the Planning ("Planejamento") screen becomes the ONE
+canonical place Ritmo represents what it knows/needs-to-know about the user's financial future —
+planned income, fixed/recurring expenses, installments, categorization rules, and learned/pending
+knowledge — replacing the standalone, read-only "Categorias e regras" screen under "Mais" as a second
+source of truth. Explicit non-goal: do not touch Safe-to-Spend.
+**Architecture reused (confirmed via research pass before implementing, per explicit instruction —
+"do not create duplicate category models," "use existing recommendation/pending-confirmation
+architecture where possible"):** `CategoryRule`/`MerchantNormalizationRule`/`categorize`/
+`normalizeMerchant` (unchanged matching logic); `FinancialEffect` (existing TRANSFER/CARD_PAYMENT/
+DEBT_PAYMENT/REFUND separation preserved exactly); `Income.source`/`IncomeSource` (DEC-130 provenance,
+now also reused on `FixedExpense`); `RecurringExpenseCandidate`/`detectRecurringCandidates` (DEC-127,
+previously computed fresh every call with random ids and never persisted — the `recurring_candidates`
+table existed but was completely dead code); `Recommendation`/`recommendation-service.ts` (Sprint 5,
+previously interactive only in `apps/web`, read-only in `apps/ritmo`); `getUncategorizedTransactions`
+(pre-existing derived filter, previously wired only into `apps/web`).
+**Decision:**
+1. **Three distinct concepts preserved, never collapsed.** Financial effect (what happened to the
+   money) still strictly precedes and is independent of category (what kind of spend/income). A rule/
+   learned-knowledge object (`CategoryRule`) now carries its own provenance (`CategoryRuleOrigin`:
+   `SYSTEM_DEFAULT` | `USER_DECLARED` | `HISTORY_INFERRED` | `USER_CONFIRMED_HISTORY`, mirroring
+   `IncomeSource`) — every pre-existing rule (`fixtures/rules.ts`, any row predating this column)
+   defaults to `SYSTEM_DEFAULT`, never guessed as user-authored.
+2. **New `FinancialEffect` values `INVESTMENT`/`INVESTMENT_REDEMPTION`** (neither is
+   `isConsumptionLike`) — an investment application is never ordinary spending, a redemption is never
+   ordinary income. Manual/AI entry now explicitly declares one of `ManualEntryFinancialEffect`
+   (`CONSUMPTION | TRANSFER | REFUND | INVESTMENT | INVESTMENT_REDEMPTION`) — `recordManualTransaction`
+   no longer hardcodes `CONSUMPTION`; `defaultDirectionForManualEntry` derives cash direction from the
+   declared effect, never independently guessed. The AI copilot's job is this classification (from the
+   user's own words, e.g. "Transferi 2 mil do Itaú para o Nubank" → TRANSFER) — never a keyword-guess
+   in application code. `hasExplicitMutationIntent` (the defense-in-depth mutation gate) gained PT-BR/
+   English patterns for transfer/investment/classification/confirmation language so these new tools are
+   actually reachable.
+3. **Category rules gained real CRUD**, previously entirely absent (`categorias.ts` was explicitly
+   documented as "read-only: no per-profile rule authoring UI yet"): `mutations.createCategoryRule`/
+   `deleteCategoryRule`, reusing the pre-existing but previously-unused `repo.upsertCategoryRule`
+   primitive (added `repo.deleteCategoryRule`, which didn't exist at all). A one-time transaction
+   correction (`categorizeTransaction`) changes only that transaction; choosing "always" additionally
+   creates a `USER_DECLARED` rule via the exact same `createCategoryRule` call — never a parallel
+   rule-creation path, and NEVER touches `financialEffect`.
+4. **"Ritmo precisa confirmar" is a read-model aggregation, not a fourth pending-task system.**
+   `queries.getPendingConfirmations` unions three previously-separate, previously-mostly-unsurfaced
+   mechanisms (uncategorized transactions, recurring income/expense candidates, pending
+   Recommendations) into one list; each item resolves via ITS OWN existing/extended mutation
+   (`categorizeTransaction`, `confirmRecurringIncomeCandidate`/`confirmRecurringFixedExpenseCandidate`/
+   `rejectRecurringCandidate`, `acceptRecommendation`/`rejectRecommendation`). No new persisted "task"
+   table was created.
+5. **`RecurringExpenseCandidate` is now actually persisted** (the `recurring_candidates` table was
+   dead code before this). `repo.upsertRecurringCandidate` is a DEC-131-style conflict-safe upsert on
+   `(financialProfileId, kind, evidenceKey)` — a new unique constraint enforces it at the DB level too.
+   A candidate keeps a STABLE id/status across re-detections (a re-run refreshes only its evidence
+   numbers, never `id`/`status`/`createdAt`). Fixed a real latent bug found while wiring this up:
+   `detectRecurringCandidates` only ever suppressed REJECTED evidence keys, never CONFIRMED ones — a
+   confirmed pattern would have kept re-appearing as a fresh "candidate" forever. Now both are
+   suppressed.
+6. **Confirming a candidate creates real planning knowledge with `USER_CONFIRMED_HISTORY` provenance**
+   (DEC-130's third state — inferred AND confirmed) via the SAME `createIncome`/`createFixedExpense`
+   canonical mutations manual/AI declaration already used — never a parallel creation path. Rejecting
+   marks the candidate `REJECTED` and creates nothing. A LOW-confidence candidate still surfaces (never
+   silently forced into a category/plan, never silently dropped) — only an explicit confirm/reject ever
+   changes its status.
+7. **`FixedExpense` gained a `source?: IncomeSource` field** (previously only `Income` had provenance —
+   a real, confirmed gap from the research pass) — reuses the exact same three-state concept, not a
+   parallel type.
+8. **"Mais" no longer owns a second source of truth.** `/categorias` (the old standalone screen) is now
+   a pure redirect to `/planejamento`; its data-fetching function (`categorias.ts`) was deleted entirely
+   rather than left dead. The "Categorias e regras" row in "Mais" still shows a live rule count
+   (`getCategoryRuleCount`, unchanged, a summary — not a second list) and now navigates to Planning.
+9. **AI and manual/UI entry converge on identical mutations** — every new copilot tool
+   (`categorizeTransaction`, `createCategoryRule`, `confirmRecurringIncomeCandidate`,
+   `confirmRecurringFixedExpenseCandidate`, `rejectRecurringCandidate`, and the extended
+   `recordManualTransaction`) is a direct, thin delegation to the exact same `@money-copilot/app-services`
+   mutation the Planning UI's server actions call — verified by tests exercising both paths against the
+   same assertions.
+10. **Safe-to-Spend untouched.** No change to `position.ts`, `snapshot.ts`, or any liquidity math.
+**Remaining open items (explicitly out of scope this pass, not silently skipped):** no dedicated
+income-creation UI form was added to Planning's "Criar manualmente" flow (`planejamento-novo.tsx` still
+only supports event/fixed-expense kinds) — declaring new income remains reachable via the AI copilot's
+`createIncome` tool or a confirmed recurring-income candidate, not yet a manual form field. Category
+rules remain global or (not per-profile), matching the pre-existing architecture — not something this
+task was scoped to change.
+**Tests added:** `financial-effect.test.ts` (new file — `isConsumptionLike`/`defaultDirectionForManualEntry`
+for the new effects); `recurring.test.ts` (CONFIRMED-suppression regression); `learning-repository.test.ts`
+(new file — CategoryRule provenance round-trip/default/delete; RecurringExpenseCandidate conflict-safe
+upsert, status-preservation, per-kind independence); `learning.test.ts` (new file, app-services — covers
+required scenarios 1-9, 11-13); `mutation-guard.test.ts` (new explicit-intent patterns);
+`copilot/tools.test.ts` (DEC-132 tool-registry additions, AI-path convergence tests — scenario 10);
+`adapters/planejamento.test.ts` (income/rule/pending-confirmation view-model mapping); `adapters/mais.test.ts`
+(scenario 14 — Mais resolves to Planning). Scenario 15 (no duplicated source of truth) verified
+structurally: `getCategoryRulesList` has exactly one call site (`planejamento.ts`) after `categorias.ts`
+was deleted.

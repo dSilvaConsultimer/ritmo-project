@@ -1,8 +1,11 @@
 import { createServerFn } from "@tanstack/react-start";
 import {
+  getCategoryRulesList,
   getDb,
   getFinancialSnapshot,
   getFixedExpensesForProfile,
+  getIncomesForProfile,
+  getPendingConfirmations,
   getUpcomingFinancialEventsForProfile,
 } from "@money-copilot/app-services";
 import { getCurrentProfileContext } from "./profile.server";
@@ -26,11 +29,15 @@ export const getPlanejamentoData = createServerFn({ method: "GET" }).handler(asy
   const db = await getDb();
   const asOfDate = resolveAsOfDate();
 
-  const [snapshot, fixedExpenses, upcomingEvents] = await Promise.all([
-    getFinancialSnapshot(db, financialProfileId, asOfDate),
-    getFixedExpensesForProfile(db, financialProfileId, asOfDate),
-    getUpcomingFinancialEventsForProfile(db, financialProfileId, asOfDate),
-  ]);
+  const [snapshot, fixedExpenses, incomes, upcomingEvents, categoryRules, pendingConfirmations] =
+    await Promise.all([
+      getFinancialSnapshot(db, financialProfileId, asOfDate),
+      getFixedExpensesForProfile(db, financialProfileId, asOfDate),
+      getIncomesForProfile(db, financialProfileId, asOfDate),
+      getUpcomingFinancialEventsForProfile(db, financialProfileId, asOfDate),
+      getCategoryRulesList(db),
+      getPendingConfirmations(db, financialProfileId, asOfDate),
+    ]);
 
   return {
     asOfDate,
@@ -46,6 +53,13 @@ export const getPlanejamentoData = createServerFn({ method: "GET" }).handler(asy
       amountCents: e.amount.cents,
       dueDayOfMonth: e.dueDayOfMonth ?? null,
     })),
+    incomes: incomes.map((i) => ({
+      id: i.id,
+      label: i.label,
+      grossAmountCents: i.grossAmount.cents,
+      expectedDayOfMonth: i.expectedDayOfMonth ?? null,
+      source: i.source,
+    })),
     upcomingEvents: upcomingEvents.map(({ event, breakdown }) => ({
       id: event.id,
       label: event.label,
@@ -54,6 +68,52 @@ export const getPlanejamentoData = createServerFn({ method: "GET" }).handler(asy
       knownReservedCents: breakdown.futureConfirmed.cents + breakdown.futureEstimated.cents,
       hasUnknownAmount: breakdown.unknownLabels.length > 0,
     })),
+    // DEC-132: "Regras e categorias" — the ONE canonical source, replacing
+    // the old standalone `/categorias` screen entirely (see that route,
+    // now a redirect here).
+    categoryRules: categoryRules.map((r) => ({
+      id: r.id,
+      matchType: r.matchType,
+      pattern: r.pattern,
+      category: r.category,
+      subcategory: r.subcategory ?? null,
+      origin: r.origin,
+    })),
+    // DEC-132: "Ritmo precisa confirmar" — see `getPendingConfirmations`'s
+    // own doc comment for what this aggregates and why. Flattened to
+    // `*Cents` numbers, matching every other DTO field in this function —
+    // `Money` itself is never sent across the RPC boundary directly.
+    pendingConfirmations: pendingConfirmations.map((p) => {
+      switch (p.kind) {
+        case "UNCATEGORIZED_TRANSACTION":
+          return {
+            kind: p.kind,
+            transactionId: p.transactionId,
+            description: p.description,
+            amountCents: p.amount.cents,
+            direction: p.direction,
+            date: p.date,
+          };
+        case "RECURRING_INCOME_CANDIDATE":
+        case "RECURRING_EXPENSE_CANDIDATE":
+          return {
+            kind: p.kind,
+            candidateId: p.candidateId,
+            merchant: p.merchant,
+            amountCents: p.amount.cents,
+            occurrences: p.occurrences,
+            confidence: p.confidence,
+          };
+        case "RECOMMENDATION":
+          return {
+            kind: p.kind,
+            recommendationId: p.recommendationId,
+            title: p.title,
+            description: p.description ?? null,
+            recommendationType: p.recommendationType,
+          };
+      }
+    }),
   };
 });
 

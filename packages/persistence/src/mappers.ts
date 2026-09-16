@@ -22,6 +22,7 @@ import type {
   CreditCardBill,
   Recommendation,
   RecommendationDecisionEvent,
+  RecurringExpenseCandidate,
 } from "@money-copilot/financial-engine";
 import { EMPTY_SYNC_RUN_METRICS } from "@money-copilot/financial-engine";
 import type { AIRequestLog, AIToolExecution, Conversation, ConversationMessage } from "@money-copilot/ai";
@@ -43,6 +44,7 @@ type LifestyleDeltaRow = typeof schema.lifestyleDeltas.$inferSelect;
 type PositionRow = typeof schema.financialPositions.$inferSelect;
 type MerchantRuleRow = typeof schema.merchantNormalizationRules.$inferSelect;
 type CategoryRuleRow = typeof schema.categoryRules.$inferSelect;
+type RecurringCandidateRow = typeof schema.recurringCandidates.$inferSelect;
 
 // ---------- PaymentSource ----------
 
@@ -177,6 +179,7 @@ export function fixedExpenseToRow(
     certainty: e.certainty,
     protected: e.protected,
     dueDayOfMonth: e.dueDayOfMonth ?? null,
+    source: e.source ?? null,
   };
 }
 
@@ -189,6 +192,7 @@ export function rowToFixedExpense(row: FixedExpenseRow): FixedExpense {
     certainty: row.certainty,
     protected: row.protected,
     ...(row.dueDayOfMonth !== null ? { dueDayOfMonth: row.dueDayOfMonth } : {}),
+    ...(row.source ? { source: row.source } : {}),
   };
 }
 
@@ -576,6 +580,7 @@ export function categoryRuleToRow(r: CategoryRule): typeof schema.categoryRules.
     category: r.category,
     subcategory: r.subcategory ?? null,
     priority: r.priority,
+    origin: r.origin,
   };
 }
 
@@ -587,6 +592,56 @@ export function rowToCategoryRule(row: CategoryRuleRow): CategoryRule {
     category: row.category,
     ...(row.subcategory ? { subcategory: row.subcategory } : {}),
     priority: row.priority,
+    // DEC-132: every rule that existed before provenance tracking was added
+    // was, in fact, a bundled system default — never guessed as anything else.
+    origin: row.origin ?? "SYSTEM_DEFAULT",
+  };
+}
+
+// ---------- RecurringExpenseCandidate (DEC-132) ----------
+
+export function recurringCandidateToRow(
+  c: RecurringExpenseCandidate,
+  financialProfileId: string,
+  kind: "INCOME" | "FIXED_EXPENSE",
+): typeof schema.recurringCandidates.$inferInsert {
+  return {
+    id: c.id,
+    financialProfileId,
+    kind,
+    evidenceKey: c.evidenceKey,
+    normalizedMerchant: c.normalizedMerchant,
+    occurrences: c.evidence.occurrences,
+    averageAmountCents: c.evidence.averageAmount.cents,
+    // `averageIntervalDays` is a mean of day-differences and can be
+    // fractional (e.g. 28.5); the column is an integer display hint only
+    // (never used in money math), so round rather than widen the schema.
+    averageIntervalDays:
+      c.evidence.averageIntervalDays === null ? null : Math.round(c.evidence.averageIntervalDays),
+    confidence: c.confidence,
+    status: c.status,
+    createdAt: c.createdAt,
+  };
+}
+
+export function rowToRecurringCandidate(row: RecurringCandidateRow): RecurringExpenseCandidate {
+  return {
+    id: row.id as Id<"recurring-candidate">,
+    evidenceKey: row.evidenceKey,
+    normalizedMerchant: row.normalizedMerchant,
+    evidence: {
+      occurrences: row.occurrences,
+      // Provider transaction ids aren't persisted on this row (the evidence
+      // is recomputed from live transactions on every read — see
+      // `reconcileRecurringCandidates` in app-services — this row exists
+      // only to give a candidate a STABLE id/status across reads).
+      transactionIds: [],
+      averageAmount: M.fromCents(row.averageAmountCents),
+      averageIntervalDays: row.averageIntervalDays,
+    },
+    confidence: row.confidence,
+    status: row.status,
+    createdAt: row.createdAt,
   };
 }
 

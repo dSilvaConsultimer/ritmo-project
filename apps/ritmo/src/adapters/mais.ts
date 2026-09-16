@@ -2,7 +2,7 @@ import type { MaisData } from "@/functions/mais";
 
 /** Every real subpage a Mais row can now navigate to. */
 export type MaisDestination =
-  "/perfil" | "/notificacoes" | "/conectar-banco" | "/categorias" | "/ajuda" | "/privacidade";
+  "/perfil" | "/notificacoes" | "/conectar-banco" | "/planejamento" | "/ajuda" | "/privacidade";
 
 export interface MaisItem {
   readonly label: string;
@@ -87,7 +87,10 @@ export function toMaisViewModel(data: MaisData): MaisViewModel {
           {
             label: "Categorias e regras",
             hint: `${data.categoryRuleCount} regras ativas`,
-            to: "/categorias",
+            // DEC-132: navigates into Planning's "Regras e categorias"
+            // section — the one canonical management experience — rather
+            // than the old standalone (now-removed) `/categorias` screen.
+            to: "/planejamento",
           },
         ],
       },

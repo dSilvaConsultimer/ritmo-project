@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { fixtureProfile } from "@money-copilot/financial-engine";
+import { createId } from "@money-copilot/shared";
+import { fixtureProfile, fromReais } from "@money-copilot/financial-engine";
+import type { FinancialTransaction, PaymentSource } from "@money-copilot/financial-engine";
+import * as repo from "@money-copilot/persistence";
 import { freshSeededDb } from "../test-helpers";
 import { findTool, TOOL_REGISTRY } from "./tools";
 
@@ -66,6 +69,10 @@ describe("TOOL_REGISTRY", () => {
     expect(mutationNames).toEqual(
       [
         "acceptRecommendation",
+        "categorizeTransaction",
+        "confirmRecurringFixedExpenseCandidate",
+        "confirmRecurringIncomeCandidate",
+        "createCategoryRule",
         "createFixedExpense",
         "createIncome",
         "createPlannedFinancialEvent",
@@ -74,6 +81,7 @@ describe("TOOL_REGISTRY", () => {
         "modifyRecommendation",
         "recordManualTransaction",
         "rejectRecommendation",
+        "rejectRecurringCandidate",
         "replanAfterExpense",
         "reservePlanBudget",
         "saveConciergePlan",
@@ -228,5 +236,78 @@ describe("tool execution against seeded data", () => {
       args,
     )) as { amount: { cents: number } };
     expect(result.amount.cents).toBe(80_000);
+  });
+
+  it("(DEC-132, test 10) recordManualTransaction classifies a TRANSFER from the AI's own declared financialEffect, never as CONSUMPTION", async () => {
+    const db = await freshSeededDb();
+    const tool = findTool("recordManualTransaction")!;
+    const args = tool.schema.parse({
+      amountReais: 2_000,
+      merchantOrDescription: "Transferência Itaú -> Nubank",
+      financialEffect: "TRANSFER",
+    });
+    const result = (await tool.execute(
+      { db, financialProfileId: fixtureProfile.id, asOfDate: ASOF },
+      args,
+    )) as { financialEffect: string; direction: string };
+    expect(result.financialEffect).toBe("TRANSFER");
+    expect(result.direction).toBe("DEBIT");
+  });
+
+  it("(DEC-132, test 10) createCategoryRule and categorizeTransaction's 'always' path both create a rule usable by categorize() — the same canonical domain the AI and the UI share", async () => {
+    const db = await freshSeededDb();
+    const tool = findTool("createCategoryRule")!;
+    const args = tool.schema.parse({ matchType: "CONTAINS_MERCHANT", pattern: "UBER", category: "Transporte" });
+    const result = (await tool.execute({ db, financialProfileId: fixtureProfile.id, asOfDate: ASOF }, args)) as {
+      origin: string;
+    };
+    expect(result.origin).toBe("USER_DECLARED");
+  });
+
+  it("(DEC-132, test 10) confirmRecurringFixedExpenseCandidate creates a FixedExpense with USER_CONFIRMED_HISTORY provenance via the SAME mutation the UI uses", async () => {
+    const db = await freshSeededDb();
+    const source: PaymentSource = { id: createId("payment-source"), label: "Conta Corrente", type: "DEBIT" };
+    await repo.upsertPaymentSource(db, source, fixtureProfile.id);
+    for (const date of ["2026-07-10", "2026-08-10", "2026-09-05"]) {
+      const tx: FinancialTransaction = {
+        id: createId("transaction"),
+        financialProfileId: fixtureProfile.id,
+        paymentSource: source,
+        date,
+        amount: fromReais(119.9),
+        direction: "DEBIT",
+        rawDescription: "SMART FIT",
+        normalizedDescription: "SMART FIT",
+        rawMerchant: "SMART FIT",
+        normalizedMerchant: "SMART FIT",
+        status: "POSTED",
+        certainty: "ACTUAL",
+        financialEffect: "CONSUMPTION",
+        category: null,
+        origin: "IMPORTED",
+        createdAt: date,
+        updatedAt: date,
+      };
+      await repo.upsertTransaction(db, tx);
+    }
+
+    const readTool = findTool("getRecurringFixedExpenseCandidates")!;
+    const candidates = (await readTool.execute(
+      { db, financialProfileId: fixtureProfile.id, asOfDate: ASOF },
+      {},
+    )) as readonly { id: string }[];
+    expect(candidates.length).toBeGreaterThan(0);
+
+    const confirmTool = findTool("confirmRecurringFixedExpenseCandidate")!;
+    const args = confirmTool.schema.parse({
+      candidateId: candidates[0]!.id,
+      label: "Academia",
+      category: "Saúde",
+    });
+    const result = (await confirmTool.execute(
+      { db, financialProfileId: fixtureProfile.id, asOfDate: ASOF },
+      args,
+    )) as { source: string };
+    expect(result.source).toBe("USER_CONFIRMED_HISTORY");
   });
 });

@@ -3,6 +3,7 @@ export * from "./auth-schema";
 import { user } from "./auth-schema";
 import type {
   Certainty,
+  CategoryRuleOrigin,
   EventLineItemStatus,
   FinancialEffect,
   IncomeSource,
@@ -170,6 +171,10 @@ export const fixedExpenses = pgTable("fixed_expenses", {
    * `FixedExpense.dueDayOfMonth`'s doc comment.
    */
   dueDayOfMonth: integer("due_day_of_month"),
+  // DEC-132: same provenance concept as `incomes.source` (DEC-130) — see
+  // `FixedExpense.source`'s doc comment. Null (unset) means genuinely
+  // unknown provenance, never guessed.
+  source: text("source").$type<IncomeSource>(),
 });
 
 export const variableBudgets = pgTable("variable_budgets", {
@@ -415,22 +420,42 @@ export const categoryRules = pgTable("category_rules", {
   category: text("category").notNull(),
   subcategory: text("subcategory"),
   priority: integer("priority").notNull(),
+  // DEC-132: nullable at the DB level (existing rows predate this field) —
+  // `rowToCategoryRule` defaults a null `origin` to `"SYSTEM_DEFAULT"`,
+  // matching every rule that existed before user-authored rules were possible.
+  origin: text("origin").$type<CategoryRuleOrigin>(),
 });
 
-export const recurringCandidates = pgTable("recurring_candidates", {
-  id: text("id").primaryKey(),
-  financialProfileId: text("financial_profile_id")
-    .notNull()
-    .references(() => financialProfiles.id),
-  evidenceKey: text("evidence_key").notNull(),
-  normalizedMerchant: text("normalized_merchant").notNull(),
-  occurrences: integer("occurrences").notNull(),
-  averageAmountCents: integer("average_amount_cents").notNull(),
-  averageIntervalDays: integer("average_interval_days"),
-  confidence: text("confidence").$type<RecurringCandidateConfidence>().notNull(),
-  status: text("status").$type<RecurringCandidateStatus>().notNull(),
-  createdAt: text("created_at").notNull(),
-});
+/**
+ * DEC-132: which pending-planning pool this candidate belongs to — an
+ * income pattern (e.g. recurring salary) and a fixed-expense pattern (e.g. a
+ * subscription) are detected and confirmed independently, even if they
+ * happened to share an evidence key.
+ */
+type RecurringCandidateKind = "INCOME" | "FIXED_EXPENSE";
+
+export const recurringCandidates = pgTable(
+  "recurring_candidates",
+  {
+    id: text("id").primaryKey(),
+    financialProfileId: text("financial_profile_id")
+      .notNull()
+      .references(() => financialProfiles.id),
+    // DEC-132: nullable at the DB level for the same reason as `origin`
+    // above — no row existed before this column did (the table was
+    // previously unused/dead). Always set by every write path going forward.
+    kind: text("kind").$type<RecurringCandidateKind>(),
+    evidenceKey: text("evidence_key").notNull(),
+    normalizedMerchant: text("normalized_merchant").notNull(),
+    occurrences: integer("occurrences").notNull(),
+    averageAmountCents: integer("average_amount_cents").notNull(),
+    averageIntervalDays: integer("average_interval_days"),
+    confidence: text("confidence").$type<RecurringCandidateConfidence>().notNull(),
+    status: text("status").$type<RecurringCandidateStatus>().notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [unique().on(table.financialProfileId, table.kind, table.evidenceKey)],
+);
 
 /**
  * A credit card bill/invoice. Never fed into snapshot math — see

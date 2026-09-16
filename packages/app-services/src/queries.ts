@@ -1,5 +1,11 @@
 import type { Id } from "@money-copilot/shared";
-import type { CategoryRule, Recommendation } from "@money-copilot/financial-engine";
+import type {
+  CategoryRule,
+  Recommendation,
+  RecommendationType,
+  RecurringCandidateConfidence,
+  TransactionDirection,
+} from "@money-copilot/financial-engine";
 import {
   buildFinancialSnapshot,
   buildFinancialPositionFromAccounts,
@@ -40,6 +46,7 @@ import {
   type RecurringExpenseCandidate,
   type ProviderConnection,
   type FixedExpense,
+  type Income,
 } from "@money-copilot/financial-engine";
 import * as repo from "@money-copilot/persistence";
 import type { Database } from "@money-copilot/persistence";
@@ -129,6 +136,36 @@ export async function getRealizedIncomeForProfile(
  * ever becomes a real `Income` row (`mutations.createIncome`) — see
  * docs/AI-COPILOT.md, "Explicit mutation policy."
  */
+/**
+ * DEC-132: detects candidates fresh from live transactions (unchanged
+ * behavior), then reconciles them against the profile's PERSISTED
+ * `recurring_candidates` — giving each candidate a STABLE id/status across
+ * calls, and making a user's prior CONFIRMED/REJECTED decision durable
+ * (previously this package never persisted a single decision — every call
+ * re-detected the exact same "fresh" candidates with brand new ids). Only
+ * still-`CANDIDATE` items are returned — `detectRecurringCandidates` itself
+ * already excludes anything with a resolved decision (see DEC-132's fix in
+ * `recurring.ts`).
+ */
+async function reconcileRecurringCandidates(
+  db: Database,
+  financialProfileId: string,
+  kind: "INCOME" | "FIXED_EXPENSE",
+  transactions: readonly FinancialTransaction[],
+): Promise<readonly RecurringExpenseCandidate[]> {
+  const persisted = await repo.listRecurringCandidatesForProfile(db, financialProfileId, kind);
+  const priorDecisions = persisted
+    .filter((p) => p.status !== "CANDIDATE")
+    .map((p) => ({ evidenceKey: p.evidenceKey, status: p.status as "CONFIRMED" | "REJECTED" }));
+
+  const detected = detectRecurringCandidates(transactions, priorDecisions);
+  const reconciled: RecurringExpenseCandidate[] = [];
+  for (const candidate of detected) {
+    reconciled.push(await repo.upsertRecurringCandidate(db, candidate, financialProfileId, kind));
+  }
+  return reconciled;
+}
+
 export async function getRecurringIncomeCandidates(
   db: Database,
   financialProfileId: string,
@@ -136,7 +173,7 @@ export async function getRecurringIncomeCandidates(
 ): Promise<readonly RecurringExpenseCandidate[]> {
   const input = await repo.loadFinancialSnapshotInput(db, financialProfileId, asOfDate);
   const incomeTransactions = input.transactions.filter((t) => t.financialEffect === "INCOME");
-  return detectRecurringCandidates(incomeTransactions);
+  return reconcileRecurringCandidates(db, financialProfileId, "INCOME", incomeTransactions);
 }
 
 /**
@@ -156,7 +193,109 @@ export async function getRecurringFixedExpenseCandidates(
 ): Promise<readonly RecurringExpenseCandidate[]> {
   const input = await repo.loadFinancialSnapshotInput(db, financialProfileId, asOfDate);
   const consumptionTransactions = input.transactions.filter((t) => t.financialEffect === "CONSUMPTION");
-  return detectRecurringCandidates(consumptionTransactions);
+  return reconcileRecurringCandidates(db, financialProfileId, "FIXED_EXPENSE", consumptionTransactions);
+}
+
+/**
+ * DEC-132: "Ritmo precisa confirmar" — the ONE aggregated, canonical list of
+ * everything Ritmo needs a human answer for, spanning three previously
+ * separate/unsurfaced mechanisms (never a new fourth pending-task system):
+ * uncategorized transactions (`getUncategorizedTransactions` — pre-existing,
+ * previously wired only into `apps/web`), recurring income/expense
+ * candidates (`getRecurringIncomeCandidates`/`getRecurringFixedExpenseCandidates`
+ * above), and pending Recommendations (`getRecommendationsSummary` —
+ * pre-existing, previously only interactive in `apps/web`). A caller resolves
+ * each item via the mutation matching its `kind` — see
+ * `mutations.categorizeTransaction`/`confirmRecurringIncomeCandidate`/
+ * `confirmRecurringFixedExpenseCandidate`/`rejectRecurringCandidate`, and the
+ * pre-existing `acceptRecommendation`/`modifyRecommendation`/`rejectRecommendation`.
+ */
+export type PendingConfirmation =
+  | {
+      readonly kind: "UNCATEGORIZED_TRANSACTION";
+      readonly transactionId: string;
+      readonly description: string;
+      readonly amount: Money;
+      readonly direction: TransactionDirection;
+      readonly date: string;
+    }
+  | {
+      readonly kind: "RECURRING_INCOME_CANDIDATE";
+      readonly candidateId: string;
+      readonly merchant: string;
+      readonly amount: Money;
+      readonly occurrences: number;
+      readonly confidence: RecurringCandidateConfidence;
+    }
+  | {
+      readonly kind: "RECURRING_EXPENSE_CANDIDATE";
+      readonly candidateId: string;
+      readonly merchant: string;
+      readonly amount: Money;
+      readonly occurrences: number;
+      readonly confidence: RecurringCandidateConfidence;
+    }
+  | {
+      readonly kind: "RECOMMENDATION";
+      readonly recommendationId: string;
+      readonly title: string;
+      readonly description?: string;
+      readonly recommendationType: RecommendationType;
+    };
+
+export async function getPendingConfirmations(
+  db: Database,
+  financialProfileId: string,
+  asOfDate: string,
+): Promise<readonly PendingConfirmation[]> {
+  const [uncategorized, incomeCandidates, expenseCandidates, recommendations] = await Promise.all([
+    getUncategorizedTransactions(db, financialProfileId, asOfDate),
+    getRecurringIncomeCandidates(db, financialProfileId, asOfDate),
+    getRecurringFixedExpenseCandidates(db, financialProfileId, asOfDate),
+    getRecommendationsSummary(db, financialProfileId),
+  ]);
+
+  const items: PendingConfirmation[] = [];
+  for (const t of uncategorized) {
+    items.push({
+      kind: "UNCATEGORIZED_TRANSACTION",
+      transactionId: t.id,
+      description: t.normalizedDescription || t.rawDescription,
+      amount: t.amount,
+      direction: t.direction,
+      date: t.date,
+    });
+  }
+  for (const c of incomeCandidates) {
+    items.push({
+      kind: "RECURRING_INCOME_CANDIDATE",
+      candidateId: c.id,
+      merchant: c.normalizedMerchant,
+      amount: c.evidence.averageAmount,
+      occurrences: c.evidence.occurrences,
+      confidence: c.confidence,
+    });
+  }
+  for (const c of expenseCandidates) {
+    items.push({
+      kind: "RECURRING_EXPENSE_CANDIDATE",
+      candidateId: c.id,
+      merchant: c.normalizedMerchant,
+      amount: c.evidence.averageAmount,
+      occurrences: c.evidence.occurrences,
+      confidence: c.confidence,
+    });
+  }
+  for (const r of recommendations.pending) {
+    items.push({
+      kind: "RECOMMENDATION",
+      recommendationId: r.id,
+      title: r.title,
+      ...(r.description ? { description: r.description } : {}),
+      recommendationType: r.type,
+    });
+  }
+  return items;
 }
 
 export async function getSafeToSpendBreakdown(
@@ -327,6 +466,20 @@ export async function getFixedExpensesForProfile(
 ): Promise<readonly FixedExpense[]> {
   const input = await repo.loadFinancialSnapshotInput(db, financialProfileId, asOfDate);
   return input.fixedExpenses;
+}
+
+/**
+ * DEC-132: the raw list of declared/confirmed recurring income (Planning's
+ * "Receitas previstas" section) — mirrors `getFixedExpensesForProfile`
+ * exactly.
+ */
+export async function getIncomesForProfile(
+  db: Database,
+  financialProfileId: string,
+  asOfDate: string,
+): Promise<readonly Income[]> {
+  const input = await repo.loadFinancialSnapshotInput(db, financialProfileId, asOfDate);
+  return input.income;
 }
 
 /**
