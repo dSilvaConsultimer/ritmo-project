@@ -1,4 +1,5 @@
 import {
+  bootstrapSystemDefaultCategoryRules,
   createDatabase,
   createPostgresDatabase,
   runMigrations,
@@ -81,6 +82,14 @@ async function initializeDb(): Promise<Database> {
     // never silently serve traffic against a stale/partial schema.
     // shouldSeedDatabase(environment) is always false here — Founder fixture
     // data must never reach staging/production (brief §31, DEC-090).
+    // DEC-134: the global SYSTEM_DEFAULT category-rule baseline is NOT
+    // founder fixture data (it's generic product configuration every real
+    // user needs) — it runs here UNCONDITIONALLY, unlike `seed()` above.
+    // Safe under concurrent instance startup: every upsert here is
+    // id-keyed `ON CONFLICT DO UPDATE` against a handful of stable ids,
+    // never DDL, so this carries none of the migration race risk the
+    // comment above describes.
+    await bootstrapSystemDefaultCategoryRules(db);
     return db;
   }
 
@@ -90,6 +99,7 @@ async function initializeDb(): Promise<Database> {
   if (shouldSeedDatabase(environment)) {
     await seed(db); // idempotent — safe to run on every process start.
   }
+  await bootstrapSystemDefaultCategoryRules(db);
   return db;
 }
 

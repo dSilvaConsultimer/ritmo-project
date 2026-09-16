@@ -17,7 +17,7 @@ import {
   getRecurringFixedExpenseCandidates,
   getRecurringIncomeCandidates,
 } from "./queries";
-import { freshSeededDb } from "./test-helpers";
+import { freshSeededDb, seedSecondProfile } from "./test-helpers";
 
 const ASOF = "2026-09-05";
 
@@ -503,5 +503,114 @@ describe("createCategoryRule (test 9: manual creation uses the same canonical do
       updatedAt: ASOF,
     };
     expect(categorize(tx, categoryRules).category).toBe("Transporte");
+  });
+});
+
+describe("DEC-134: new-user categorization uses the real global SYSTEM_DEFAULT baseline (product test)", () => {
+  async function txForProfile(
+    db: Awaited<ReturnType<typeof freshSeededDb>>,
+    financialProfileId: Id<"financial-profile">,
+    source: PaymentSource,
+    overrides: Partial<FinancialTransaction>,
+  ): Promise<FinancialTransaction> {
+    const transaction: FinancialTransaction = {
+      id: createId("transaction"),
+      financialProfileId,
+      paymentSource: source,
+      date: ASOF,
+      amount: fromReais(50),
+      direction: "DEBIT",
+      rawDescription: "GENERIC",
+      normalizedDescription: "GENERIC",
+      status: "POSTED",
+      certainty: "ACTUAL",
+      financialEffect: "CONSUMPTION",
+      category: null,
+      origin: "IMPORTED",
+      createdAt: ASOF,
+      updatedAt: ASOF,
+      ...overrides,
+    };
+    await repo.upsertTransaction(db, transaction);
+    return transaction;
+  }
+
+  it("a brand-new profile with NO personal rules gets obvious merchants auto-categorized by the real global baseline, and an ambiguous PIX stays pending", async () => {
+    const db = await freshSeededDb();
+    // The exact function `app-services`' `initializeDb()` calls on every
+    // real boot (including production) — see DEC-134.
+    await repo.bootstrapSystemDefaultCategoryRules(db);
+    const newProfileId = await seedSecondProfile(db, "New user, DEC-134");
+    const source: PaymentSource = { id: createId("payment-source"), label: "Conta Nova", type: "DEBIT" };
+    await repo.upsertPaymentSource(db, source, newProfileId);
+
+    const { categoryRules } = await repo.loadRules(db, newProfileId);
+
+    const uber = await txForProfile(db, newProfileId, source, {
+      rawDescription: "UBER *TRIP",
+      normalizedDescription: "UBER *TRIP",
+    });
+    const netflix = await txForProfile(db, newProfileId, source, {
+      rawDescription: "NETFLIX.COM",
+      normalizedDescription: "NETFLIX.COM",
+    });
+    const spotify = await txForProfile(db, newProfileId, source, {
+      rawDescription: "SPOTIFY AB",
+      normalizedDescription: "SPOTIFY AB",
+    });
+    const ifood = await txForProfile(db, newProfileId, source, {
+      rawDescription: "IFOOD *IFOOD.COM.BR",
+      normalizedDescription: "IFOOD *IFOOD.COM.BR",
+    });
+    const smartFit = await txForProfile(db, newProfileId, source, {
+      rawDescription: "SMART FIT ACADEMIA",
+      normalizedDescription: "SMART FIT ACADEMIA",
+    });
+    const ambiguousPix = await txForProfile(db, newProfileId, source, {
+      rawDescription: "PIX MARCOS SILVA",
+      normalizedDescription: "PIX MARCOS SILVA",
+    });
+
+    expect(categorize(uber, categoryRules).category).toBe("Transporte");
+    expect(categorize(netflix, categoryRules).category).toBe("Assinaturas");
+    expect(categorize(spotify, categoryRules).category).toBe("Assinaturas");
+    expect(categorize(ifood, categoryRules).category).toBe("Delivery");
+    expect(categorize(smartFit, categoryRules).category).toBe("Academia");
+    // A person's name in a PIX description is never a safe global default —
+    // stays UNCATEGORIZED, which is exactly what makes it a pending question.
+    expect(categorize(ambiguousPix, categoryRules).category).toBe("UNCATEGORIZED");
+  });
+
+  it("a personal UBER override wins for that profile; a different profile with no override still gets the system default", async () => {
+    const db = await freshSeededDb();
+    await repo.bootstrapSystemDefaultCategoryRules(db);
+    const profileWithOverride = await seedSecondProfile(db, "Douglas");
+    const profileWithoutOverride = await seedSecondProfile(db, "Someone else");
+
+    await createCategoryRule(db, profileWithOverride, {
+      matchType: "CONTAINS_DESCRIPTION",
+      pattern: "UBER",
+      category: "Trabalho",
+    });
+
+    const sourceA: PaymentSource = { id: createId("payment-source"), label: "Conta", type: "DEBIT" };
+    const sourceB: PaymentSource = { id: createId("payment-source"), label: "Conta", type: "DEBIT" };
+    await repo.upsertPaymentSource(db, sourceA, profileWithOverride);
+    await repo.upsertPaymentSource(db, sourceB, profileWithoutOverride);
+
+    const { categoryRules: rulesForA } = await repo.loadRules(db, profileWithOverride);
+    const { categoryRules: rulesForB } = await repo.loadRules(db, profileWithoutOverride);
+
+    const txA = await txForProfile(db, profileWithOverride, sourceA, {
+      rawDescription: "UBER *TRIP",
+      normalizedDescription: "UBER *TRIP",
+    });
+    const txB = await txForProfile(db, profileWithoutOverride, sourceB, {
+      rawDescription: "UBER *TRIP",
+      normalizedDescription: "UBER *TRIP",
+    });
+
+    expect(categorize(txA, rulesForA).category).toBe("Trabalho");
+    expect(categorize(txB, rulesForB).category).toBe("Transporte");
   });
 });

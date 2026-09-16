@@ -1,4 +1,5 @@
-import { boolean, integer, pgTable, text, unique } from "drizzle-orm/pg-core";
+import { boolean, check, integer, pgTable, text, unique, uniqueIndex } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 export * from "./auth-schema";
 import { user } from "./auth-schema";
 import type {
@@ -414,15 +415,25 @@ export const categories = pgTable("categories", {
 });
 
 /**
- * DEC-133: `financial_profile_id` is nullable — null means a GLOBAL
+ * DEC-133/134: `financial_profile_id` is nullable — null means a GLOBAL
  * `SYSTEM_DEFAULT` rule (every profile gets it automatically); non-null
- * means a PERSONAL override scoped to exactly that profile. The unique
- * constraint only ever matters for personal rules — Postgres NULL
- * semantics mean multiple global `SYSTEM_DEFAULT` rows sharing a
- * `(matchType, pattern)` are never constrained by it (fixtures/rules.ts is
- * hand-curated to already avoid that) — but two rows for the SAME profile
- * with the same (matchType, pattern) are prevented, matching
- * `mutations.createCategoryRule`'s "create or UPDATE" contract.
+ * means a PERSONAL override scoped to exactly that profile.
+ *
+ * DEC-134: a PLAIN `unique(financialProfileId, matchType, pattern)` does
+ * NOT protect the global tier — Postgres treats every NULL as distinct in a
+ * unique constraint, so any number of `financial_profile_id IS NULL` rows
+ * sharing a `(matchType, pattern)` would have passed it silently. Fixed
+ * with two PARTIAL unique indexes instead, one per tier:
+ * - personal rows (`financial_profile_id IS NOT NULL`): unique per
+ *   `(financialProfileId, matchType, pattern)` — matches
+ *   `mutations.createCategoryRule`'s "create or UPDATE" contract.
+ * - global rows (`financial_profile_id IS NULL`): unique per
+ *   `(matchType, pattern)` alone — a real DB-level guarantee that two
+ *   identical `SYSTEM_DEFAULT` rules can never coexist.
+ * A CHECK constraint enforces the ownership invariant itself at the DB
+ * layer too (never TypeScript-only): `financial_profile_id IS NULL` REQUIRES
+ * `origin = 'SYSTEM_DEFAULT'`, and `financial_profile_id IS NOT NULL`
+ * REQUIRES `origin <> 'SYSTEM_DEFAULT'`.
  */
 export const categoryRules = pgTable(
   "category_rules",
@@ -439,7 +450,18 @@ export const categoryRules = pgTable(
     origin: text("origin").$type<CategoryRuleOrigin>(),
     financialProfileId: text("financial_profile_id").references(() => financialProfiles.id),
   },
-  (table) => [unique().on(table.financialProfileId, table.matchType, table.pattern)],
+  (table) => [
+    uniqueIndex("category_rules_personal_identity_unique")
+      .on(table.financialProfileId, table.matchType, table.pattern)
+      .where(sql`${table.financialProfileId} IS NOT NULL`),
+    uniqueIndex("category_rules_global_identity_unique")
+      .on(table.matchType, table.pattern)
+      .where(sql`${table.financialProfileId} IS NULL`),
+    check(
+      "category_rules_origin_ownership_check",
+      sql`(${table.financialProfileId} IS NULL AND ${table.origin} = 'SYSTEM_DEFAULT') OR (${table.financialProfileId} IS NOT NULL AND ${table.origin} <> 'SYSTEM_DEFAULT')`,
+    ),
+  ],
 );
 
 /**

@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNull, or } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type {
   FinancialEvent,
   FinancialGoal,
@@ -451,12 +451,16 @@ export async function upsertCategoryRule(db: Database, rule: CategoryRule): Prom
 }
 
 /**
- * DEC-133: conflict-safe upsert for a PERSONAL rule, keyed on its natural
- * identity `(financialProfileId, matchType, pattern)` — mirrors the
- * DEC-131 PaymentSource fix exactly, and satisfies "create or UPDATE the
- * profile-scoped personal rule" (correcting the same merchant twice updates
- * the existing rule rather than creating a duplicate). `rule.financialProfileId`
- * MUST be set — this function is never valid for a global `SYSTEM_DEFAULT` rule.
+ * DEC-133/134: conflict-safe upsert for a PERSONAL rule, keyed on its
+ * natural identity `(financialProfileId, matchType, pattern)` — mirrors
+ * the DEC-131 PaymentSource fix exactly, and satisfies "create or UPDATE
+ * the profile-scoped personal rule" (correcting the same merchant twice
+ * updates the existing rule rather than creating a duplicate).
+ * `rule.financialProfileId` MUST be set — this function is never valid for
+ * a global `SYSTEM_DEFAULT` rule. `targetWhere` mirrors the PARTIAL unique
+ * index's own predicate exactly (DEC-134) — Postgres requires the conflict
+ * inference clause to match a partial index's predicate verbatim, or it
+ * cannot infer which index this upsert means to use.
  */
 export async function upsertPersonalCategoryRule(db: Database, rule: CategoryRule): Promise<CategoryRule> {
   if (rule.financialProfileId === undefined) {
@@ -469,6 +473,7 @@ export async function upsertPersonalCategoryRule(db: Database, rule: CategoryRul
     .values(row)
     .onConflictDoUpdate({
       target: [schema.categoryRules.financialProfileId, schema.categoryRules.matchType, schema.categoryRules.pattern],
+      targetWhere: sql`${schema.categoryRules.financialProfileId} IS NOT NULL`,
       set: refreshableFields,
     })
     .returning();

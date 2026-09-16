@@ -4356,3 +4356,85 @@ a system-default-matching transaction never becomes a pending question).
 Douglas gets "Trabalho," every other profile with no override still gets the system default
 "Transporte," and creating Douglas's override never touches, deletes, or shadows the global rule row
 itself.
+
+### DEC-134
+
+**Date:** 2026-09-15
+**Context:** Two closing gaps identified in DEC-133's category-rule ownership model.
+**Gap 1 — the DB uniqueness fix was incomplete:** `UNIQUE(financial_profile_id, match_type, pattern)`
+never actually protected the GLOBAL tier — Postgres treats every NULL as distinct in a unique
+constraint, so any number of `financial_profile_id IS NULL` (`SYSTEM_DEFAULT`) rows sharing a
+`(match_type, pattern)` would have passed it silently. **Gap 2 — no real baseline dataset ever reached
+a real user:** the only place any `category_rules` row was ever written was `seed()`, which is
+explicitly gated behind `shouldSeedDatabase` (`development`/`test` only — "Founder fixture data must
+never reach a real user's database," DEC-090). Confirmed by direct inspection of
+`packages/app-services/src/db.ts`: staging and production have NEVER received a single
+`SYSTEM_DEFAULT` category rule — every real user was starting from zero, exactly the state DEC-132
+said must not happen.
+**Decision (Gap 1 — DB uniqueness):**
+1. Replaced the plain unique constraint with two PARTIAL unique indexes, one per tier:
+   `category_rules_personal_identity_unique` on `(financial_profile_id, match_type, pattern) WHERE
+   financial_profile_id IS NOT NULL`, and `category_rules_global_identity_unique` on `(match_type,
+   pattern) WHERE financial_profile_id IS NULL`. Two identical `SYSTEM_DEFAULT` rows can no longer
+   exist; two profiles may each have an identical personal matcher; a personal rule and the global
+   default for the same matcher coexist without conflict (different indexes entirely).
+2. Added a genuine DB-level ownership invariant, not TypeScript-only:
+   `category_rules_origin_ownership_check` — `CHECK ((financial_profile_id IS NULL AND origin =
+   'SYSTEM_DEFAULT') OR (financial_profile_id IS NOT NULL AND origin <> 'SYSTEM_DEFAULT'))`. Verified
+   live: two existing `learning-repository.test.ts` cases were themselves testing an invalid
+   combination (`USER_DECLARED` with no `financialProfileId`) — the constraint correctly rejected them
+   the moment it was added, and both were fixed to use `upsertPersonalCategoryRule` instead.
+3. Migration `0014` repairs before it enforces: backfills any pre-DEC-132 `origin IS NULL` row to the
+   explicit `'SYSTEM_DEFAULT'` it always was, deduplicates any accidental existing GLOBAL duplicate
+   (lowest id kept — never expected in practice, defensive in the same spirit as DEC-131's PaymentSource
+   repair; no downstream table references `category_rules.id`, so no repointing step was needed), THEN
+   drops the old constraint and adds the two partial indexes + the CHECK — the `CREATE UNIQUE INDEX`
+   itself is the final proof no conflicting rows remain.
+4. `repo.upsertPersonalCategoryRule`'s conflict target now includes a matching `targetWhere` clause —
+   Postgres requires a conflict-inference clause to match a partial index's predicate verbatim.
+**Decision (Gap 2 — the actual default dataset):**
+1. **No usable baseline existed.** `fixtures/rules.ts`'s existing `categoryRules` are Sprint 1/2 data
+   mined from the FOUNDER's own real transaction history — several entries ("Mineiros Dog," "Adega do
+   Rai," "Rodeo Ingressos") are hyper-local businesses tied to one person, not safe universal defaults —
+   and critically, that entire file was ALSO only ever seeded via the same production-excluded `seed()`
+   path. A new, genuinely-global, production-safe dataset was required.
+2. **New file `packages/financial-engine/src/fixtures/system-default-category-rules.ts`** —
+   deliberately separate from the founder-specific fixture. V1 is conservative (precision over
+   coverage): UBER -> Transporte, NETFLIX -> Assinaturas, SPOTIFY -> Assinaturas, IFOOD -> Delivery,
+   SMART FIT -> Academia, IPIRANGA -> Combustível, SHELL -> Combustível — all `CONTAINS_DESCRIPTION`
+   (matches the raw/normalized description directly; no companion merchant-normalization rule needed).
+   Deliberately EXCLUDED and explained in that file's own comment: "99" (no verified real-world raw
+   Pluggy description string was available to encode safely without risking a substring collision); a
+   generic bare "POSTO" pattern for fuel stations (matches almost any small gas station by name — this
+   session's own "POSTO CAMPINAS" example must stay a genuine pending question, not a guessed default);
+   any bank/PIX counterparty name pattern.
+3. **Category taxonomy — reported, not silently invented:** there is no enforced canonical category
+   enum anywhere in this codebase (`category` is free-form text everywhere; the `categories` table and
+   `Category` type are dead code, confirmed unused). Two informal "eras" of category strings already
+   coexisted before this change: the Sprint 1/2 English fixture ("Food," "Transportation,"
+   "Entertainment") and the Portuguese strings the real, live, Ritmo-branded product actually displays
+   verbatim (`categoryLabel` in `apps/ritmo/src/adapters/format.ts` is a pure passthrough — whatever
+   string is stored is what the user sees). The new V1 dataset uses Portuguese category names
+   ("Transporte," "Assinaturas," "Delivery," "Academia," "Combustível") to match the SECOND, currently-
+   live taxonomy real users actually see — not a third one. The Sprint 1/2 English fixture is untouched
+   (out of scope; used only by unrelated founder-fixture regression tests).
+4. **Seeding/idempotency:** `persistence.bootstrapSystemDefaultCategoryRules(db)` — a new function,
+   deliberately independent of `seed()` — upserts only this new dataset via the existing id-keyed
+   `repo.upsertCategoryRule` (stable hand-written ids, `ON CONFLICT DO UPDATE`, safe under concurrent
+   instance startup, no DDL race risk unlike migrations). Wired into
+   `app-services/src/db.ts`'s `initializeDb()` UNCONDITIONALLY — for BOTH the Postgres
+   (staging/production) and PGlite (development/test) branches — the one and only change that actually
+   closes the "real users starting from zero" gap. Never touches a personal rule; a future change to a
+   `SYSTEM_DEFAULT` row's category can never overwrite a user's override, by construction (different
+   rows, different ids, `categorize`'s precedence is unaffected by either row's content).
+**Tests added:** `learning-repository.test.ts` (new "DB-level uniqueness per tier" describe block —
+5 tests matching the requested list exactly: duplicate globals rejected, two profiles share an
+identical personal matcher, same-profile duplicate rejected, personal+global coexist, personal wins);
+`learning.test.ts` (new "new-user categorization" describe block — a brand-new profile with zero
+personal rules gets UBER/NETFLIX/SPOTIFY/IFOOD/SMART FIT auto-categorized and an ambiguous
+"PIX MARCOS SILVA" stays `UNCATEGORIZED`; a personal UBER override wins for one profile while a
+different profile with no override still gets "Transporte").
+**Verification:** the two pre-existing `learning-repository.test.ts` tests that were (unknowingly)
+exercising an invalid origin/ownership combination failed the instant the CHECK constraint was added —
+direct, live proof the constraint works, not just a written assertion. Full monorepo
+typecheck/lint/test/build all pass. Not pushed.

@@ -14,6 +14,7 @@ import {
   independentLivingScenario,
   merchantNormalizationRules,
   categoryRules,
+  systemDefaultCategoryRules,
 } from "@money-copilot/financial-engine";
 import type { Database } from "./db";
 import { createDatabase } from "./db";
@@ -85,6 +86,31 @@ export async function seed(db: Database): Promise<void> {
     await repo.upsertMerchantRule(db, rule);
   }
   for (const rule of categoryRules) {
+    await repo.upsertCategoryRule(db, rule);
+  }
+}
+
+/**
+ * DEC-134: the REAL global `SYSTEM_DEFAULT` category-rule baseline —
+ * deliberately independent of `seed()` above, which is gated behind
+ * `shouldSeedDatabase` (development/test only — "founder fixture data must
+ * never reach a real user's database," DEC-090). A brand-new user in
+ * staging/production must NOT start from zero categorization knowledge, so
+ * this must run in EVERY environment, including production — see
+ * `app-services/src/db.ts`'s `initializeDb`, the one place this is
+ * actually called from app boot.
+ *
+ * Idempotent by construction: `repo.upsertCategoryRule` is an id-keyed
+ * `ON CONFLICT DO UPDATE` and every rule here has a stable, hand-written id
+ * (never `createId()`) — running this any number of times (every app boot,
+ * concurrently across multiple instances) converges to the exact same
+ * rows, never duplicates. Never touches a PERSONAL rule (this function
+ * only ever upserts by these global rules' own fixed ids) — a user's
+ * override always continues to win via `categorize`'s own precedence,
+ * regardless of how many times or how this bootstrap has run since.
+ */
+export async function bootstrapSystemDefaultCategoryRules(db: Database): Promise<void> {
+  for (const rule of systemDefaultCategoryRules) {
     await repo.upsertCategoryRule(db, rule);
   }
 }
