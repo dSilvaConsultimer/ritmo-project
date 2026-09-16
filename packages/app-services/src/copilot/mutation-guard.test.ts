@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { containsHypotheticalLanguage, hasExplicitMutationIntent } from "./mutation-guard";
+import {
+  containsHypotheticalLanguage,
+  hasExplicitCategoryCreationIntent,
+  hasExplicitMutationIntent,
+} from "./mutation-guard";
 
 describe("hasExplicitMutationIntent", () => {
   it.each([
@@ -127,6 +131,38 @@ describe("hasExplicitMutationIntent", () => {
       expect(hasExplicitMutationIntent(text)).toBe(false);
     },
   );
+});
+
+describe("hasExplicitCategoryCreationIntent (DEC-138)", () => {
+  it.each([
+    "Crie uma categoria chamada Trabalho",
+    "Quero criar uma categoria Despesas da casa",
+    "Adicione uma nova categoria chamada Viagens",
+    "Cadastre uma categoria chamada Pets",
+    "Create a category called Work",
+    "Add a new category named Travel",
+  ])("returns true for explicit category-creation intent: %s", (text) => {
+    expect(hasExplicitCategoryCreationIntent(text)).toBe(true);
+  });
+
+  it.each([
+    // Explicit MUTATION intent (spending/recording) is not, by itself,
+    // category-creation intent — this is the exact gap DEC-138 closes.
+    "Pago fisioterapia todo mês",
+    "Gastei R$200 no médico",
+    "Isso é uma despesa de saúde",
+    "Coloca isso no meu planejamento",
+    "Paguei a consulta médica hoje",
+    "Registre R$ 250 no Restaurante X.",
+  ])("returns false for an ordinary request with no explicit creation intent: %s", (text) => {
+    expect(hasExplicitCategoryCreationIntent(text)).toBe(false);
+  });
+
+  it("returns false for hypothetical category-creation phrasing", () => {
+    expect(hasExplicitCategoryCreationIntent("Poderia criar uma categoria chamada Trabalho?")).toBe(
+      false,
+    );
+  });
 });
 
 describe("containsHypotheticalLanguage", () => {

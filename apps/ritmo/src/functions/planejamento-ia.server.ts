@@ -1,6 +1,11 @@
 import { z } from "zod";
 import { AIError, OpenAIProvider, resolveOpenAIModel, type AIProvider } from "@money-copilot/ai";
-import { getDb, createCategory, getCategoriesForProfile } from "@money-copilot/app-services";
+import {
+  getDb,
+  createCategory,
+  getCategoriesForProfile,
+  hasExplicitCategoryCreationIntent,
+} from "@money-copilot/app-services";
 import { getCurrentProfileContext } from "./profile.server";
 import { resolveAsOfDate } from "./config";
 import { checkRateLimit, RATE_LIMIT_POLICIES } from "./rate-limit.server";
@@ -77,32 +82,44 @@ export interface DraftCategoryResolution {
 /**
  * DEC-138: the actual safety mechanism — the model's raw `categoryId`/
  * `newCategoryName` output is NEVER trusted as-is, regardless of how
- * confident the prompt asked it to be. A `categoryId` is kept ONLY when it
- * matches a category genuinely visible to this profile right now (base or
- * personal); anything else (a hallucinated id, a category name used where
- * an id was expected, an id from a different profile) is discarded — never
- * silently converted into a category-creation request. A valid
+ * confident the prompt asked it to be, and regardless of what the model
+ * itself claims about the user's intent. A `categoryId` is kept ONLY when
+ * it matches a category genuinely visible to this profile right now (base
+ * or personal); anything else (a hallucinated id, a category name used
+ * where an id was expected, an id from a different profile) is discarded —
+ * never silently converted into a category-creation request. A valid
  * `categoryId` always wins over `newCategoryName`: this product never
- * creates a new category and reuses an existing one in the same draft, and
- * "the model filled both fields" is exactly the kind of confused output
- * this function exists to make safe. `newCategoryName` survives ONLY when
- * `categoryId` did not resolve — the caller (`confirmPlanningDraftHandler`)
- * is the only place that may ever act on it, and only because it can only
- * ever have been set from the user's own explicit creation request in the
- * first place (see `buildInstructions`).
+ * creates a new category and reuses an existing one in the same draft.
+ *
+ * `newCategoryName` survives ONLY when BOTH (a) no `categoryId` resolved
+ * AND (b) `explicitCategoryCreationIntent` is true — a value computed by
+ * `hasExplicitCategoryCreationIntent` from the ORIGINAL user message text,
+ * never from anything the model output. This is the actual authorization
+ * boundary: prompt instructions telling the model "only fill this in when
+ * the user explicitly asked" are not enforcement, only a hint the model
+ * might ignore — a model that fills `newCategoryName` for an ordinary
+ * request like "Pago fisioterapia todo mês" is exactly the failure mode
+ * this deterministic, model-independent check exists to catch. The caller
+ * (`confirmPlanningDraftHandler`) may create a category ONLY when this
+ * function already let `newCategoryName` through.
  */
 export function resolveDraftCategory(
   rawCategoryId: string | null,
   rawNewCategoryName: string | null,
   visibleCategories: readonly { readonly id: string }[],
+  explicitCategoryCreationIntent: boolean,
 ): DraftCategoryResolution {
   const resolvedCategoryId =
     rawCategoryId !== null && visibleCategories.some((c) => c.id === rawCategoryId)
       ? rawCategoryId
       : null;
-  return resolvedCategoryId !== null
-    ? { categoryId: resolvedCategoryId, newCategoryName: null }
-    : { categoryId: null, newCategoryName: rawNewCategoryName };
+  if (resolvedCategoryId !== null) {
+    return { categoryId: resolvedCategoryId, newCategoryName: null };
+  }
+  return {
+    categoryId: null,
+    newCategoryName: explicitCategoryCreationIntent ? rawNewCategoryName : null,
+  };
 }
 
 /**
@@ -251,12 +268,15 @@ export async function requestPlanningDraftHandler(
     }
 
     // DEC-138: NEVER trust the model's raw categoryId/newCategoryName —
-    // sanitize against the real visible-category list before this draft
-    // ever reaches the client.
+    // sanitize against the real visible-category list, AND require the
+    // ORIGINAL user message (never the model's own claim) to actually
+    // contain explicit category-creation intent before `newCategoryName`
+    // is allowed to survive at all.
     const { categoryId, newCategoryName } = resolveDraftCategory(
       parsed.data.categoryId,
       parsed.data.newCategoryName,
       visibleCategories,
+      hasExplicitCategoryCreationIntent(data.message),
     );
     const draft: PlanningDraft = { ...parsed.data, categoryId, newCategoryName };
 

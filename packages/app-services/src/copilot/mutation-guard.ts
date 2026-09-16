@@ -118,9 +118,50 @@ const EXPLICIT_ACTION_PATTERNS: readonly RegExp[] = [
   /\bsempre que aparecer\b/i,
 ];
 
+// DEC-138: patterns for "the user explicitly asked to CREATE a category" —
+// deliberately its OWN narrow list, never folded into
+// `EXPLICIT_ACTION_PATTERNS` above. An ordinary spending statement like
+// "Gastei R$200 no médico" or "Paguei fisioterapia" already matches
+// `EXPLICIT_ACTION_PATTERNS` (it's an explicit mutation — recording a
+// transaction/expense) but must NEVER be read as authorization to create a
+// new personal category; only a message that names "categoria"/"category"
+// alongside a creation verb does that.
+const CATEGORY_CREATION_PATTERNS: readonly RegExp[] = [
+  // Português (PT-BR)
+  /\bcri(e|ar|a|ei)\b.{0,30}\bcategoria\b/i,
+  /\badicion(e|ar|a|ei)\b.{0,30}\bcategoria\b/i,
+  /\bcadastr(e|ar|a|ei)\b.{0,30}\bcategoria\b/i,
+  /\bnova\s+categoria\b/i,
+  // English
+  /\bcreate\b.{0,30}\bcategor(y|ies)\b/i,
+  /\badd\b.{0,30}\bcategor(y|ies)\b/i,
+  /\bnew\s+category\b/i,
+];
+
 /** True when the text contains a hypothetical/exploratory marker — a strong signal the message is NOT reporting a completed or decided action. */
 export function containsHypotheticalLanguage(text: string): boolean {
   return HYPOTHETICAL_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+/**
+ * DEC-138: true ONLY when the ORIGINAL user message explicitly asks to
+ * create a category — the sole authorization for
+ * `mutations.createCategory` to ever run from the AI planning-draft flow
+ * (`planejamento-ia.server.ts`). Never derived from anything the model
+ * itself claims (a tool-call field, a rationale string) — the model
+ * choosing to fill in a "new category name" field is not evidence of user
+ * intent any more than the model choosing to call a mutation tool is (see
+ * `hasExplicitMutationIntent`'s own doc comment). Examples that must
+ * return true: "Crie uma categoria chamada Trabalho.", "Quero criar uma
+ * categoria Despesas da casa.", "Adicione uma nova categoria chamada
+ * Viagens." Examples that must return false: "Pago fisioterapia todo
+ * mês.", "Gastei R$200 no médico." (an explicit SPENDING statement, not a
+ * category-creation one), "Isso é uma despesa de saúde.", "Coloca isso no
+ * meu planejamento."
+ */
+export function hasExplicitCategoryCreationIntent(text: string): boolean {
+  if (containsHypotheticalLanguage(text)) return false;
+  return CATEGORY_CREATION_PATTERNS.some((pattern) => pattern.test(text));
 }
 
 /**

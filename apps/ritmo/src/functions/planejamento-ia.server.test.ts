@@ -155,29 +155,36 @@ describe("requestPlanningDraftHandler — honest failure states, no network requ
 describe("resolveDraftCategory — the actual safety mechanism (DEC-138)", () => {
   const visible = [{ id: "cat_a" }, { id: "cat_b" }];
 
-  it("keeps a categoryId that matches a real visible category", () => {
-    expect(resolveDraftCategory("cat_a", null, visible)).toEqual({
+  it("keeps a categoryId that matches a real visible category, regardless of creation intent", () => {
+    expect(resolveDraftCategory("cat_a", null, visible, false)).toEqual({
       categoryId: "cat_a",
       newCategoryName: null,
     });
   });
 
   it("discards a categoryId that is not in the visible list — never trusted blindly", () => {
-    expect(resolveDraftCategory("cat_zzz_hallucinated", null, visible)).toEqual({
+    expect(resolveDraftCategory("cat_zzz_hallucinated", null, visible, false)).toEqual({
       categoryId: null,
       newCategoryName: null,
     });
   });
 
-  it("keeps newCategoryName only when no valid categoryId resolved", () => {
-    expect(resolveDraftCategory(null, "Trabalho", visible)).toEqual({
+  it("keeps newCategoryName only when no valid categoryId resolved AND explicit creation intent is true", () => {
+    expect(resolveDraftCategory(null, "Trabalho", visible, true)).toEqual({
       categoryId: null,
       newCategoryName: "Trabalho",
     });
   });
 
-  it("a valid categoryId always wins over newCategoryName — never both at once", () => {
-    expect(resolveDraftCategory("cat_a", "Trabalho", visible)).toEqual({
+  it("(DEC-138) discards newCategoryName when explicit creation intent is false — the model's own claim is never sufficient", () => {
+    expect(resolveDraftCategory(null, "Trabalho", visible, false)).toEqual({
+      categoryId: null,
+      newCategoryName: null,
+    });
+  });
+
+  it("a valid categoryId always wins over newCategoryName — never both at once, regardless of intent", () => {
+    expect(resolveDraftCategory("cat_a", "Trabalho", visible, true)).toEqual({
       categoryId: "cat_a",
       newCategoryName: null,
     });
@@ -309,6 +316,204 @@ describe("requestPlanningDraftHandler — AI must never create a personal catego
 
     const after = await getCategoriesForProfile(db, financialProfileId);
     expect(after).toHaveLength(before.length);
+  });
+});
+
+/**
+ * DEC-139: closes the remaining gap in DEC-138 — the model SAYING creation
+ * was explicit (i.e. `newCategoryName` being non-null) was never itself a
+ * sufficient authorization boundary, since prompt compliance is not
+ * enforcement. `hasExplicitCategoryCreationIntent` re-derives intent from
+ * the ORIGINAL user message text, exactly like `hasExplicitMutationIntent`
+ * already does for every other mutation the copilot can perform — the
+ * model's own claim is never trusted on its own.
+ */
+describe("requestPlanningDraftHandler — explicit user intent must authorize category creation (DEC-139)", () => {
+  it("(test 1) 'Crie uma categoria chamada Trabalho' authorizes newCategoryName to survive resolution", async () => {
+    currentHeaders = await signUpAndGetSessionHeaders(
+      "planning-ia-m@isolation-test.invalid",
+      "supersecret123",
+      "Planning IA M",
+    );
+
+    const provider = scriptedProvider({
+      kind: "fixed_expense",
+      label: "Material de trabalho",
+      amountReais: 90,
+      categoryId: null,
+      newCategoryName: "Trabalho",
+      rationale: "Usuário pediu explicitamente para criar a categoria Trabalho.",
+    });
+
+    const result = await requestPlanningDraftHandler(
+      { message: "Crie uma categoria chamada Trabalho" },
+      provider,
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.draft.newCategoryName).toBe("Trabalho");
+  });
+
+  it("(test 2) an ordinary spending message never authorizes creation, even when the model wrongly fills newCategoryName", async () => {
+    currentHeaders = await signUpAndGetSessionHeaders(
+      "planning-ia-n@isolation-test.invalid",
+      "supersecret123",
+      "Planning IA N",
+    );
+    const db = await getDb();
+    const { getCurrentProfileContext } = await import("./profile.server");
+    const { financialProfileId } = await getCurrentProfileContext();
+    const before = await getCategoriesForProfile(db, financialProfileId);
+
+    const provider = scriptedProvider({
+      kind: "fixed_expense",
+      label: "Fisioterapia",
+      amountReais: 120,
+      categoryId: null,
+      // The model ignored its own prompt instructions — this must be
+      // caught regardless, since prompt compliance is not enforcement.
+      newCategoryName: "Health",
+      rationale: "Interpretado como fisioterapia mensal.",
+    });
+
+    const result = await requestPlanningDraftHandler(
+      { message: "Pago fisioterapia todo mês" },
+      provider,
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.draft.categoryId).toBeNull();
+      expect(result.draft.newCategoryName).toBeNull();
+    }
+
+    const after = await getCategoriesForProfile(db, financialProfileId);
+    expect(after).toHaveLength(before.length);
+  });
+
+  it("(test 3) a spending message with BOTH a hallucinated categoryId and a newCategoryName rejects both paths", async () => {
+    currentHeaders = await signUpAndGetSessionHeaders(
+      "planning-ia-o@isolation-test.invalid",
+      "supersecret123",
+      "Planning IA O",
+    );
+
+    const provider = scriptedProvider({
+      kind: "fixed_expense",
+      label: "Consulta médica",
+      amountReais: 200,
+      categoryId: "cat_hallucinated_xyz",
+      newCategoryName: "Saúde pessoal",
+      rationale: "Interpretado como consulta médica.",
+    });
+
+    const result = await requestPlanningDraftHandler(
+      { message: "Gastei R$200 no médico" },
+      provider,
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.draft.categoryId).toBeNull();
+      expect(result.draft.newCategoryName).toBeNull();
+    }
+  });
+
+  it("(test 3b) ...unless a valid visible categoryId exists — that still resolves normally, no creation involved", async () => {
+    currentHeaders = await signUpAndGetSessionHeaders(
+      "planning-ia-p@isolation-test.invalid",
+      "supersecret123",
+      "Planning IA P",
+    );
+    const saudeId = await saudeBaseId();
+
+    const provider = scriptedProvider({
+      kind: "fixed_expense",
+      label: "Consulta médica",
+      amountReais: 200,
+      categoryId: saudeId,
+      // Even if the model also (wrongly) fills this, a valid categoryId
+      // always wins — see resolveDraftCategory's own precedence.
+      newCategoryName: "Saúde pessoal",
+      rationale: "Interpretado como consulta médica — categoria Saúde já existente.",
+    });
+
+    const result = await requestPlanningDraftHandler(
+      { message: "Gastei R$200 no médico" },
+      provider,
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.draft.categoryId).toBe(saudeId);
+      expect(result.draft.newCategoryName).toBeNull();
+    }
+  });
+
+  it("(test 4) explicit creation intent for a name that already exists (case-insensitive) reuses the existing category instead of duplicating", async () => {
+    currentHeaders = await signUpAndGetSessionHeaders(
+      "planning-ia-q@isolation-test.invalid",
+      "supersecret123",
+      "Planning IA Q",
+    );
+    const saudeId = await saudeBaseId();
+    const db = await getDb();
+    const { getCurrentProfileContext } = await import("./profile.server");
+    const { financialProfileId } = await getCurrentProfileContext();
+
+    const provider = scriptedProvider({
+      kind: "fixed_expense",
+      label: "Consulta",
+      amountReais: 150,
+      categoryId: null,
+      newCategoryName: "saúde", // different casing — still the same visible category
+      rationale: "Usuário pediu para criar uma categoria chamada saúde.",
+    });
+
+    const requestResult = await requestPlanningDraftHandler(
+      { message: "Crie uma categoria chamada saúde" },
+      provider,
+    );
+    expect(requestResult.ok).toBe(true);
+    if (!requestResult.ok) return;
+    expect(requestResult.draft.newCategoryName).toBe("saúde");
+
+    const before = await getCategoriesForProfile(db, financialProfileId);
+    const confirmResult = await confirmPlanningDraftHandler(requestResult.draft);
+    expect(confirmResult.ok).toBe(true);
+
+    // DEC-136's own createCategory dedup logic reused the existing base
+    // "Saúde" row (case/whitespace-insensitive match) — no new row created.
+    const after = await getCategoriesForProfile(db, financialProfileId);
+    expect(after).toHaveLength(before.length);
+    expect(after.some((c) => c.id === saudeId)).toBe(true);
+  });
+
+  it("(test 5) an existing personal category selected by categoryId continues working without any creation intent in the message", async () => {
+    currentHeaders = await signUpAndGetSessionHeaders(
+      "planning-ia-r@isolation-test.invalid",
+      "supersecret123",
+      "Planning IA R",
+    );
+    const db = await getDb();
+    const { getCurrentProfileContext } = await import("./profile.server");
+    const { financialProfileId } = await getCurrentProfileContext();
+    const despesas = await createCategory(db, financialProfileId, { name: "Despesas para casa" });
+
+    const provider = scriptedProvider({
+      kind: "fixed_expense",
+      label: "Conserto",
+      amountReais: 80,
+      categoryId: despesas.id,
+      newCategoryName: null,
+      rationale: "Gasto doméstico — usa a categoria pessoal já existente.",
+    });
+
+    // No creation-intent language at all — must still resolve, since a
+    // valid categoryId never needs creation authorization in the first
+    // place.
+    const result = await requestPlanningDraftHandler(
+      { message: "Coloca esse gasto em Despesas para casa" },
+      provider,
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.draft.categoryId).toBe(despesas.id);
   });
 });
 
