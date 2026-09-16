@@ -4625,3 +4625,157 @@ established convention for querying a database frozen at an old migration bounda
 every later migration before its post-repair typed queries run. Full monorepo typecheck/lint/test/build
 all pass. Not pushed. Not merged to main. No changes to Safe-to-Spend/liquidity math. No UI redesign —
 data/architecture only.
+
+### DEC-137
+
+**Date:** 2026-09-16
+**Context:** Two concrete staging bugs surfaced after DEC-136. (A) A personal category typed via the
+manual "Criar manualmente → Compromisso fixo" form vanished from CategoryPicker everywhere else — the
+form wrote straight to `FixedExpense.category` (a legacy string) without ever calling `createCategory`,
+so no canonical `Category` row was ever created. (B) Planning's "Disponível até o fim do mês" showed a
+nonsensical negative figure while Home showed a healthy positive one for the SAME profile — Planning read
+`snapshot.safeToSpend.total` (plan-based only) while Home read `snapshot.liquidity.recommendedTotal`
+(liquidity-aware, DEC-130), and Planning's other summary rows (Compromissos fixos, Gastos variáveis,
+Reservado para eventos, Entradas previstas, Saídas previstas) were built from a mix of stale plan-based
+fields and a self-referential sum that never included the real card obligation.
+**Decision:**
+1. **Issue A fixed at its root**: `requireVisibleCategory` (already used by `createCategoryRule`/
+   `categorizeTransaction`) exported from `mutations.ts`; `planejamento-novo.tsx`'s "Compromisso fixo"
+   category field replaced with the same `CategoryPicker` every other surface uses;
+   `createManualPlanningItemHandler`'s input changed from `category: string` to `categoryId: string`,
+   resolved through `requireVisibleCategory` before `createFixedExpense` is ever called (that mutation's
+   own `category: string` field is unchanged — still what `snapshot.ts`'s `TAX_CATEGORY` comparison
+   reads — only WHERE the string comes from changed, never independently typed again).
+2. **Issue B fixed by reusing the canonical liquidity components, never a second calculation**:
+   `getPlanejamentoData`'s heavy body extracted into `home.server.ts`/`planejamento-data.server.ts`
+   (plain, directly-testable functions) — NOT left as plain exports of the non-suffixed `home.ts`/
+   `planejamento.ts` files, since an initial attempt at that broke TanStack Start's client/server
+   code-split and leaked `pg`/`openai`/`pluggy-sdk` into the client bundle (`check-client-bundle.mjs`
+   caught it) — the `.server.ts` suffix is the actual protection, not just testability.
+   `availableCents` now reads `snapshot.liquidity.recommendedTotal` (identical to Home's
+   `safeToSpendCents`); "Compromissos fixos"/"Gastos variáveis"/"Reservado para eventos" read the
+   matching `snapshot.liquidity.components` entries (falling back to the unchanged plan-based fields
+   when `basis` is `PLAN_BASED`); "Saídas previstas" now correctly sums `CARD_OBLIGATIONS` +
+   `DEBT_COMMITMENTS` (previously summed fixed+variable+events and never included card at all).
+**Tests added:** `planejamento-criar.server.test.ts` — a created category is immediately visible for its
+owner, cross-profile isolation, reusing an existing base category by id never duplicates. New
+`home-planejamento-consistency.test.ts` — `Home.safeToSpendCents === Planning.availableCents` for the
+same real liquidity-aware profile, reproducing the exact reference arithmetic (R$28.059,56 − R$670,80 =
+R$27.388,76) from the bug report, plus the PLAN_BASED fallback case. Full monorepo typecheck/lint/test/
+build pass, including `check-client-bundle`. Not pushed. Not merged to main. Safe-to-Spend formula
+itself unchanged — only which of its already-computed fields Planning reads.
+
+### DEC-138
+
+**Date:** 2026-09-16
+**Context:** `confirmPlanningDraftHandler` (the AI-assisted "Criar com IA" planning flow) called
+`createCategory` on whatever free-text category the model guessed for a fixed-expense draft — an
+ordinary request like "Pago consulta médica todo mês" could silently create a personal "Health" category
+even though the canonical base "Saúde" already existed, risking taxonomy pollution
+(Saúde/Health/Healthcare/Saude/Medical as separate rows).
+**Decision:** `PlanningDraft` now carries `categoryId` (resolved against categories actually visible to
+the profile — base + personal) and `newCategoryName` (intended for explicit user creation requests)
+instead of a free-text `category` string. `requestPlanningDraftHandler` feeds the model the profile's
+real visible category list (id + name) so it can resolve by id instead of guessing a name, and accepts
+an injectable `AIProvider` (mirroring `runCopilotTurn`'s own DI pattern) so the whole pipeline is
+testable with `MockAIProvider`, no network call. New `resolveDraftCategory` (pure, exported) is the
+actual sanitization boundary: a `categoryId` is kept only if it matches a real visible category;
+anything else is discarded — never silently converted into a creation request. `confirmPlanningDraftHandler`
+calls `createCategory` only for `newCategoryName`; a draft with neither field set is rejected outright,
+requiring the user to pick one. `planejamento-ia.tsx`'s review card now uses the same `CategoryPicker`
+every other category-aware screen uses instead of a free-text input.
+**Tests added:** 6 scenarios matching the request exactly (Saúde-id resolution, hallucinated-id
+discarding, existing-personal-category reuse, cross-synonym non-pollution) plus 4 direct unit tests on
+`resolveDraftCategory`. Full monorepo typecheck/lint/test/build pass, including `check-client-bundle`.
+Not pushed. Not merged to main.
+
+### DEC-139
+
+**Date:** 2026-09-16
+**Context:** DEC-138's gate trusted the model's own claim that `newCategoryName` represented explicit
+user intent, with only a prompt instruction telling it not to fill that field otherwise. Prompt
+compliance is not an authorization boundary — a model that filled `newCategoryName` for an ordinary
+message like "Pago fisioterapia todo mês" would have sailed straight through.
+**Decision:** New `hasExplicitCategoryCreationIntent` added to the existing deterministic
+`mutation-guard.ts` module, following the exact same pattern as `hasExplicitMutationIntent`:
+independent of LLM judgment, re-checks the ORIGINAL user message text, biased toward `false` on
+ambiguous/hypothetical phrasing. Deliberately its own narrow pattern list ("crie/criar uma categoria,"
+"adicione uma categoria," "nova categoria," English equivalents) — never folded into the general
+mutation patterns, since "Gastei R$200 no médico" is explicit spending intent but must never authorize
+category creation on its own. `resolveDraftCategory` now takes `explicitCategoryCreationIntent` as an
+explicit parameter (computed once, from `data.message`, in `requestPlanningDraftHandler`) and forces
+`newCategoryName` to `null` whenever it's `false`, regardless of what the model returned. A valid
+`categoryId` still always wins regardless of intent; the DEC-136 `createCategory` dedup logic already
+reuses an existing category on a normalized-name match rather than duplicating it.
+**Tests added:** the 5 requested scenarios plus a companion (valid `categoryId` still resolves normally
+when present), 4 unit tests on the new `resolveDraftCategory` signature, and `hasExplicitCategoryCreationIntent`
+unit tests (true for the 3 given authorizing examples, false for the 4 given non-authorizing examples,
+false for hypothetical phrasing). Full monorepo typecheck/lint/test/build pass, including
+`check-client-bundle`. Not pushed. Not merged to main.
+
+### DEC-140
+
+**Date:** 2026-09-16
+**Context:** Planning's "Compromissos fixos"/"Gastos variáveis"/"Entradas previstas" cards were still
+sourced from DECLARED `FixedExpense`/`Income` records (DEC-137) — a real profile with genuine recurring
+bills (rent, condo fee, electricity) that were never explicitly declared showed R$0,00 for "Compromissos
+fixos," and "Entradas previstas" went to R$0,00 the moment a salary was realized instead of showing the
+normal expected amount. Core correction: **FIXED means PREDICTABLE/RECURRING, never "same amount every
+time"** — category name must never determine recurrence (a personal category like "Despesas de casa" can
+contain several independently-recurring identities — rent, condo, electricity — alongside genuine one-off
+purchases), and a monthly forecast must be conceptually separate from what actually feeds
+liquidity-aware Safe-to-Spend.
+**Audit findings:** `detectRecurringCandidates` (`domain/recurring.ts`, DEC-132's "Ritmo precisa
+confirmar" pipeline) groups by `(normalizedMerchant, amountBucket)` — a genuinely-recurring but
+varying-amount bill (electricity) fragments into multiple sub-`MIN_OCCURRENCES` groups there, so it's
+unsuitable for this decision's purpose and was left untouched (still correct for its own job: surfacing
+NEW candidates for explicit confirmation). `InstallmentPlan`/`isInstallmentCoveredByCardBalance`
+(`domain/installment.ts`) already existed but installment DETECTION relied entirely on Pluggy's own
+structured `creditCardMetadata` — no text-marker parser ("3/12," "PARCELA 03/12") existed anywhere.
+`Income.expectedDayOfMonth` + `snapshot.ts`'s `reconcilePlannedAmount` already implement exactly the
+"predicted amount vs. remaining-for-this-horizon" separation this decision needed conceptually — reused
+as the reference design, not modified. `buildFinancialSnapshot`/`computeLiquidityAwareSafeToSpend` were
+NOT touched at all — the new forecast is a fully independent, additive layer.
+**Decision:**
+1. **Recurrence identity, never category**: new `detectRecurringFixedCommitments`
+   (`domain/recurring-fixed.ts`) groups eligible CONSUMPTION/FEE transactions by normalized
+   merchant-or-description identity; a pattern qualifies when that SAME identity has at least one
+   transaction in EACH of the last 3 fully completed calendar months (`lastNCompletedMonthKeys`, new in
+   `date-utils.ts`) — amounts are averaged (`predictedAmount`), never required to match.
+2. **Installment exclusion**: new `parseInstallmentMarker` (`domain/installment.ts`) — a conservative,
+   word-boundary-anchored parser for "3/12," "01/12," "PARCELA 03/12," "3 DE 12" — excludes matching
+   transactions from recurring-fixed detection entirely (a finite installment is never an indefinite
+   recurring commitment; its forward obligation stays exclusively represented by the untouched
+   card-balance/`InstallmentPlan` machinery, never double-counted here). A card subscription with no
+   marker (Netflix) is evaluated normally.
+3. **Income forecast**: new `computeExpectedMonthlyIncome` (`reporting/forecasting.ts`) — for each of the
+   last 3 completed months, sums every genuine `financialEffect: "INCOME"` transaction (transfers,
+   refunds, investment redemptions, card payments are excluded by construction, never by branching on
+   employment type), THEN averages the three monthly totals — aggregate first, average second, so a
+   salary split across deposits or several clients in one month is one month's data point, not several.
+4. **Variable-spending residual**: new `computeExpectedMonthlyVariableSpending` — historical eligible
+   consumption minus the SAME evidence transactions `detectRecurringFixedCommitments` already identified
+   minus installment-marked transactions, averaged the same way (explicit event expenses already excluded
+   via the existing `excludedTransactionIds`, reused unchanged).
+5. **Forecast vs. Safe-to-Spend kept structurally separate — the actual mechanism, not a policy note**:
+   new `getPlanningForecast` (`app-services/queries.ts`) computes all three purely from transaction
+   history and is never fed into `getFinancialSnapshot`/liquidity at all; `buildPlanejamentoData` now
+   sources "Compromissos fixos"/"Gastos variáveis"/"Entradas previstas" from it while "Disponível até o
+   fim do mês"/"Dinheiro disponível agora"/"Saídas previstas" (DEC-137) are completely unchanged. A
+   realized current-month salary therefore still shows in "Entradas previstas" (the normal predicted
+   amount) without ever being added twice to Safe-to-Spend, since the two numbers share no data path.
+**Tests added:** `installment.test.ts` — `parseInstallmentMarker` (test D) across every example pattern
+plus rejection cases (implausible total, current > total, a date-shaped string). `recurring-fixed.test.ts`
+— tests A (rent, same amount), B (electricity, varying amount, averaged prediction), C (one-off, not
+fixed), D (installment excluded), E (Netflix recognized), J (independently-recurring identities inside
+one category, verified against the exact "Despesas de casa" example). `forecasting.test.ts` — tests F
+(salaried 8500/8500/8500), G (split income, aggregate-then-average), H (current-month realization doesn't
+change the forecast), I (transfer/refund/investment-redemption never inflate income), plus LOW-confidence/
+no-history and REVERSED-exclusion cases; variable-spending residual correctly excludes recognized
+recurring evidence and installments. New `planejamento-forecast.server.test.ts` (app layer, real PGlite +
+real session) — end-to-end wiring proof using the literal section-12 "Despesas de casa" example (ALUGUEL/
+CONDOMINIO/ENERGIA independently recognized, LOJA MOVEIS one-off excluded), Netflix-vs-installment
+end-to-end, and income-forecast-vs-availableCents independence (test H at the integration level). Full
+monorepo typecheck/lint/test/build pass, including `check-client-bundle`. Not pushed. Not merged to main.
+Safe-to-Spend formula (`computeLiquidityAwareSafeToSpend`/`buildFinancialSnapshot`) untouched — no wiring
+bug found, so none was "fixed"; the new forecast feeds nothing into it by design.

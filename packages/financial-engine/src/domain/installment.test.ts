@@ -4,6 +4,7 @@ import * as M from "../money/index";
 import type { InstallmentPlan } from "./installment";
 import {
   matchInstallmentPlans,
+  parseInstallmentMarker,
   remainingInstallments,
   summarizeFutureInstallmentCommitments,
   isInstallmentCoveredByCardBalance,
@@ -180,5 +181,40 @@ describe("isInstallmentCoveredByCardBalance (DEC-130 correction)", () => {
     // the caller is responsible for passing `true` only when the balance's
     // certainty is known, irrespective of its numeric value.
     expect(isInstallmentCoveredByCardBalance(p, new Set([cardId]), true)).toBe(true);
+  });
+});
+
+describe("parseInstallmentMarker (DEC-140)", () => {
+  it.each([
+    ["TV 3/12", { current: 3, total: 12 }],
+    ["LOJA X 1/12", { current: 1, total: 12 }],
+    ["LOJA X 01/12", { current: 1, total: 12 }],
+    ["COMPRA 2/10", { current: 2, total: 10 }],
+    ["PARCELA 03/12", { current: 3, total: 12 }],
+    ["COMPRA 3 DE 12", { current: 3, total: 12 }],
+    ["COMPRA 3 de 12", { current: 3, total: 12 }],
+  ])("(test D) parses %s as %o", (text, expected) => {
+    expect(parseInstallmentMarker(text)).toEqual(expected);
+  });
+
+  it.each([
+    "NETFLIX",
+    "SPOTIFY ASSINATURA",
+    "ALUGUEL APARTAMENTO",
+    "UBER TRIP",
+    // A plausible date-shaped string must never be misread as an
+    // installment marker — conservative on purpose (false negative is the
+    // safe failure mode, never a false positive).
+    "PAGAMENTO 15/2026",
+  ])("returns null for text with no installment marker: %s", (text) => {
+    expect(parseInstallmentMarker(text)).toBeNull();
+  });
+
+  it("rejects an implausible total (e.g. way too large to be a real installment count)", () => {
+    expect(parseInstallmentMarker("COMPRA 3/999")).toBeNull();
+  });
+
+  it("rejects current > total (not a valid installment ratio)", () => {
+    expect(parseInstallmentMarker("COMPRA 12/3")).toBeNull();
   });
 });

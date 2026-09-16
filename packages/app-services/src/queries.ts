@@ -13,7 +13,10 @@ import {
   breakdownEvent,
   categorySpendingTransactions,
   compareLifestyles,
+  computeExpectedMonthlyIncome,
+  computeExpectedMonthlyVariableSpending,
   detectRecurringCandidates,
+  detectRecurringFixedCommitments,
   getCategoryBudgetStatus,
   getGoalStatus,
   getSpendingEnvelope,
@@ -37,9 +40,11 @@ import {
   type FinancialEvent,
   type FinancialSnapshot,
   type FinancialPosition,
+  type ForecastConfidence,
   type GoalStatus,
   type LifestyleComparisonResult,
   type Money,
+  type RecurringFixedCommitment,
   type SafeToSpend,
   type SpendingEnvelope,
   type CategoryTotal,
@@ -757,6 +762,65 @@ export async function getRecentSpendingSummaryForProfile(
     transactionCount: relevant.length,
     total: relevant.length > 0 ? sum(relevant.map((t) => t.amount)) : ZERO,
     byCategory: await resolveCanonicalCategoryNames(db, financialProfileId, byCategory),
+  };
+}
+
+// ---------- Planning forecast (DEC-140) ----------
+
+export interface PlanningForecast {
+  /** "Entradas previstas" — see `computeExpectedMonthlyIncome`'s own doc comment for what this does and does not mean (never fed into Safe-to-Spend). */
+  readonly expectedMonthlyIncome: Money;
+  readonly incomeEvidenceMonths: readonly string[];
+  readonly incomeConfidence: ForecastConfidence;
+  /** "Compromissos fixos" evidence — kept in full (never just the total) so a future drill-down can show which merchants/identities make it up. */
+  readonly recurringFixedCommitments: readonly RecurringFixedCommitment[];
+  readonly recurringFixedTotal: Money;
+  /** "Gastos variáveis". */
+  readonly expectedMonthlyVariableSpending: Money;
+}
+
+/**
+ * DEC-140: Planning's predictive forecast — "Compromissos fixos," "Gastos
+ * variáveis," and "Entradas previstas" are now built from real transaction
+ * BEHAVIOR (recurrence/history), never from `Category.name` and never
+ * requiring a declared `FixedExpense`/`Income` row to exist. Deliberately
+ * independent of `getFinancialSnapshot`/Safe-to-Spend — nothing computed
+ * here is fed back into the liquidity-aware Available figure, which stays
+ * wired to declared records exactly as before (see
+ * `packages/financial-engine/src/reporting/forecasting.ts`'s own doc
+ * comment for why, and `home-planejamento-consistency.test.ts` for the
+ * regression proof).
+ */
+export async function getPlanningForecast(
+  db: Database,
+  financialProfileId: string,
+  asOfDate: string,
+): Promise<PlanningForecast> {
+  const input = await repo.loadFinancialSnapshotInput(db, financialProfileId, asOfDate);
+
+  const income = computeExpectedMonthlyIncome(input.transactions, asOfDate);
+  const recurringFixedCommitments = detectRecurringFixedCommitments(
+    input.transactions,
+    input.reconciliationLinks,
+    asOfDate,
+  );
+  const recurringFixedTransactionIds = new Set(
+    recurringFixedCommitments.flatMap((c) => c.transactionIds),
+  );
+  const expectedMonthlyVariableSpending = computeExpectedMonthlyVariableSpending(
+    input.transactions,
+    input.reconciliationLinks,
+    asOfDate,
+    recurringFixedTransactionIds,
+  );
+
+  return {
+    expectedMonthlyIncome: income.expectedMonthlyIncome,
+    incomeEvidenceMonths: income.evidenceMonths,
+    incomeConfidence: income.confidence,
+    recurringFixedCommitments,
+    recurringFixedTotal: sum(recurringFixedCommitments.map((c) => c.predictedAmount)),
+    expectedMonthlyVariableSpending,
   };
 }
 

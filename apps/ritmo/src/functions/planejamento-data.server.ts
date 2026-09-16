@@ -11,6 +11,7 @@ import {
   getFixedExpensesForProfile,
   getIncomesForProfile,
   getPendingConfirmations,
+  getPlanningForecast,
   getUpcomingFinancialEventsForProfile,
 } from "@money-copilot/app-services";
 import { resolveSpendingAsOfDate, type SpendingPeriod } from "./planejamento-period";
@@ -76,6 +77,7 @@ export async function buildPlanejamentoData(
     pendingConfirmations,
     categories,
     categoryTotals,
+    forecast,
   ] = await Promise.all([
     getFinancialSnapshot(db, financialProfileId, asOfDate),
     getFixedExpensesForProfile(db, financialProfileId, asOfDate),
@@ -85,6 +87,7 @@ export async function buildPlanejamentoData(
     getPendingConfirmations(db, financialProfileId, asOfDate),
     getCategoriesForProfile(db, financialProfileId),
     getCategoryTotals(db, financialProfileId, spendingAsOfDate),
+    getPlanningForecast(db, financialProfileId, asOfDate),
   ]);
 
   const isLiquidityAware = snapshot.liquidity.basis === "LIQUIDITY_AWARE";
@@ -100,25 +103,27 @@ export async function buildPlanejamentoData(
     availableBasis: snapshot.liquidity.basis,
     // "Dinheiro disponível agora" — real current usable cash, when known.
     currentUsableCashCents: liquidityComponentCents(snapshot, "CURRENT_AVAILABLE_CASH") ?? null,
-    // "Entradas previstas" — future, NOT-YET-REALIZED income only (never
-    // the already-realized-into-the-balance kind — see DEC-127/DEC-130).
-    // Plan-based fallback keeps the prior (declared-income) behavior when
-    // real liquidity is unknown.
-    futureIncomeCents: isLiquidityAware
-      ? (liquidityComponentCents(snapshot, "FUTURE_CONFIRMED_INCOME") ?? 0)
-      : snapshot.income.gross.cents,
-    // "Compromissos fixos" — UNPAID fixed commitments only when liquidity
-    // is known (DEC-130's reconciled figure); the full monthly plan
-    // otherwise (unchanged prior behavior).
-    fixedCommitmentsCents: isLiquidityAware
-      ? (liquidityComponentCents(snapshot, "UPCOMING_FIXED_COMMITMENTS") ?? 0)
-      : snapshot.commitments.fixed.cents,
-    // "Gastos variáveis" — the real forward variable-budget target
-    // contributing to `recommendedTotal`, never a fabricated figure; the
-    // plan-based total otherwise (unchanged prior behavior).
-    variableBudgetsCents: isLiquidityAware
-      ? (liquidityComponentCents(snapshot, "VARIABLE_BUDGETS") ?? 0)
-      : snapshot.commitments.variableBudgets.cents,
+    // DEC-140: "Entradas previstas" is now the PREDICTED normal monthly
+    // income — the average of the last 3 completed months' real INCOME-effect
+    // totals (`computeExpectedMonthlyIncome`), the SAME model for a salaried
+    // or self-employed profile. Deliberately shown REGARDLESS of whether
+    // this month's income has already been realized — that's a completely
+    // separate concern this figure never touches (Safe-to-Spend's own
+    // FUTURE_CONFIRMED_INCOME reconciliation, unchanged, is what actually
+    // prevents double-counting — see `home-planejamento-consistency.test.ts`).
+    futureIncomeCents: forecast.expectedMonthlyIncome.cents,
+    // DEC-140: "Compromissos fixos" is now the predicted monthly total of
+    // DETECTED recurring commitments (`detectRecurringFixedCommitments`) —
+    // built from transaction BEHAVIOR (identity + monthly cadence over 3+
+    // consecutive completed months), never from `Category.name` and never
+    // requiring a declared `FixedExpense` row. Amounts are averaged, never
+    // required to be identical (rent vs. a varying electricity bill are
+    // both "fixed" in this sense).
+    fixedCommitmentsCents: forecast.recurringFixedTotal.cents,
+    // DEC-140: "Gastos variáveis" is the residual predicted monthly
+    // spending — eligible consumption minus the same recognized recurring
+    // patterns above minus finite installments (`computeExpectedMonthlyVariableSpending`).
+    variableBudgetsCents: forecast.expectedMonthlyVariableSpending.cents,
     // "Reservado para eventos" — unpaid/future-only event reservations.
     eventsFutureConfirmedCents: isLiquidityAware
       ? (liquidityComponentCents(snapshot, "UPCOMING_EVENT_RESERVATIONS") ?? 0)

@@ -18,6 +18,7 @@ export * from "./reconciliation";
 export * from "./merchant";
 export * from "./category";
 export * from "./recurring";
+export * from "./recurring-fixed";
 export * from "./installment";
 export * from "./position";
 export * from "./external-transaction";

@@ -6,6 +6,59 @@ import type { MatchConfidence, ReconciliationStatus } from "./reconciliation";
 
 export type InstallmentPlanStatus = "ACTIVE" | "COMPLETED" | "CANCELLED";
 
+export interface InstallmentMarker {
+  /** e.g. 3 in "3/12". */
+  readonly current: number;
+  /** e.g. 12 in "3/12". */
+  readonly total: number;
+}
+
+// DEC-140: conservative on purpose — every pattern requires an explicit
+// separator ("/" or the word "de") between two small integers, and the
+// bounds below reject anything that reads more like a date or an
+// unrelated ratio than an installment count. False negatives (a real
+// installment marker missed) are the safe failure mode here — the
+// transaction then just falls through to ordinary recurrence detection —
+// never a false positive (an ordinary transaction wrongly read as a
+// finite installment and excluded from recurrence evidence).
+const INSTALLMENT_PATTERNS: readonly RegExp[] = [
+  // "3/12", "01/12", "PARCELA 03/12", "2 / 10" — the leading word (if any)
+  // is irrelevant; only the two numbers either side of "/" matter. `\b` on
+  // both ends is required — without it, "15/2026" would misread as a
+  // partial "15/20" match inside the longer year-like number.
+  /\b(\d{1,2})\s*\/\s*(\d{1,2})\b/,
+  // "3 DE 12" (PT-BR "3 of 12").
+  /\b(\d{1,2})\s+DE\s+(\d{1,2})\b/i,
+];
+
+const MIN_TOTAL_INSTALLMENTS = 2;
+const MAX_TOTAL_INSTALLMENTS = 60;
+
+/**
+ * DEC-140: parses a finite installment marker out of a transaction's raw
+ * text (description or merchant) — e.g. "TV 3/12" -> `{current: 3, total:
+ * 12}`. An installment is a FINITE forward obligation, never an
+ * indefinitely-repeating one — see `domain/recurring-fixed.ts`'s own doc
+ * comment for why a transaction matching this must be excluded from
+ * recurring-fixed-commitment detection (its forward obligation is already
+ * represented by the canonical card-balance/`InstallmentPlan` machinery,
+ * never re-derived or double-counted here). Returns `null` when no
+ * plausible marker is found — never guesses.
+ */
+export function parseInstallmentMarker(text: string): InstallmentMarker | null {
+  for (const pattern of INSTALLMENT_PATTERNS) {
+    const match = pattern.exec(text);
+    if (!match) continue;
+    const current = Number(match[1]);
+    const total = Number(match[2]);
+    if (!Number.isInteger(current) || !Number.isInteger(total)) continue;
+    if (current < 1 || total < MIN_TOTAL_INSTALLMENTS || total > MAX_TOTAL_INSTALLMENTS) continue;
+    if (current > total) continue;
+    return { current, total };
+  }
+  return null;
+}
+
 /**
  * An installment plan settles a liability (a past purchase paid over time,
  * or an existing debt) — it is DEBT_PAYMENT, never fresh consumption (see
