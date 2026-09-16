@@ -4779,3 +4779,65 @@ end-to-end, and income-forecast-vs-availableCents independence (test H at the in
 monorepo typecheck/lint/test/build pass, including `check-client-bundle`. Not pushed. Not merged to main.
 Safe-to-Spend formula (`computeLiquidityAwareSafeToSpend`/`buildFinancialSnapshot`) untouched — no wiring
 bug found, so none was "fixed"; the new forecast feeds nothing into it by design.
+
+### DEC-141
+
+**Date:** 2026-09-16
+**Context:** DEC-140's forecast fed nothing into liquidity at all — but a recurring bill Ritmo has
+correctly detected and knows is still unpaid this month IS a real forward obligation; leaving it out
+made "Disponível até o fim do mês" too optimistic. The fix could not be "add the whole monthly forecast
+to Safe-to-Spend" (that would double-count anything already realized, already declared, or already
+inside a card's own balance) — a genuine CURRENT-HORIZON REALIZATION layer was needed, reconciling each
+detected pattern individually before any of it touches liquidity.
+**Decision:**
+1. **Monthly forecast vs. remaining obligation, kept as two different values everywhere**:
+   `RecurringFixedCommitment.predictedAmount` (Planning's "Compromissos fixos," DEC-140, completely
+   unchanged) vs. a NEW `reconcileRecurringFixedCommitments` (`domain/recurring-fixed.ts`) producing
+   `remainingAmount` per pattern — the only number that may ever reduce liquidity.
+2. **Reconciliation, in this order, per pattern**: (a) **precedence over declared knowledge** — a
+   declared `FixedExpense` whose `label` plausibly names the same real-world obligation
+   (`matchesDeclaredLabel`, conservative bidirectional containment, case/whitespace-insensitive, never
+   `Category.name`) means the declared record already represents it via its OWN pre-existing DEC-130
+   reconciliation — the inferred pattern contributes ZERO, never a second obligation; (b) **card
+   coverage** — a pattern whose evidence was charged to a card with a KNOWN current balance already
+   lives inside `CARD_OBLIGATIONS`; new `isPaymentSourceCoveredByCardBalance` extracted (pure refactor,
+   zero behavior change) from `isInstallmentCoveredByCardBalance` so BOTH installments and recurring-fixed
+   commitments share the exact same coverage rule, never a duplicate one; (c) **realized this month** —
+   reusing the SAME `recurrenceIdentity` the detector itself groups by (never `Category.name`, never a
+   separate heuristic): if that identity has already posted a transaction in `asOfDate`'s own calendar
+   month, the money is already in the current balance and contributes ZERO.
+3. **Expected occurrence day** (section 3): `RecurringFixedCommitment.expectedDayOfMonth` — the median
+   day-of-month across evidence occurrences (rent on the 10th/10th/11th -> 10; electricity on the
+   18th/20th/19th -> 19). Informational/drill-down only for V1 — reconciliation itself decides "realized
+   or not" purely from current-month identity presence, never by comparing today's date against this
+   expected day.
+4. **Fed into the EXISTING canonical input, not a second formula**: ONE new optional field on
+   `FinancialSnapshotInput`, `inferredUpcomingFixedCommitments?: Money` — purely additive to the
+   already-existing `upcomingFixedCommitments` computation in `snapshot.ts` (`M.add(unrealizedFixed sum,
+   input.inferredUpcomingFixedCommitments ?? ZERO)`), defaults to `undefined`/zero so every existing
+   caller that doesn't supply it is completely unaffected (confirmed: all 298 financial-engine + 451
+   app-services tests passed unchanged before this value was ever wired in anywhere). `queries.ts`'s
+   `getFinancialSnapshot` computes the reconciled total (via `detectRecurringFixedCommitments` +
+   `reconcileRecurringFixedCommitments`, deriving `cardPaymentSourceIds`/`cardBalanceKnown` the same way
+   `snapshot.ts` itself does internally) and passes it in — the reconciliation ALGORITHM lives entirely
+   in financial-engine; `snapshot.ts`'s own arithmetic changed by exactly one `M.add`.
+5. **Variable spending and income deliberately NOT wired into liquidity** (sections 7-8): confirmed by
+   two new regression tests that `expectedMonthlyVariableSpending`/`expectedMonthlyIncome` (DEC-140,
+   unchanged) never produce a `VARIABLE_BUDGETS`/`FUTURE_CONFIRMED_INCOME` liquidity component on their
+   own — only a REAL declared `VariableBudget`/`Income` record can ever do that, exactly as before this
+   decision. The historical averages remain correct, honest Planning display values; they are never
+   promoted to committed liabilities or reliable future income on their own.
+**Resulting arithmetic** (reproduced by test, never hardcoded): current usable cash R$28.059,56, card
+obligations R$670,80, rent R$1.500 (already paid this month, excluded), condominium R$450 + electricity
+R$207,33 (both still unpaid) = R$657,33 remaining recurring commitments → R$28.059,56 − R$670,80 −
+R$657,33 = **R$26.731,43**, matching the request's own worked example exactly.
+**Tests added:** `installment.test.ts` unaffected (pure extraction). `recurring-fixed.test.ts` — median
+`expectedDayOfMonth` derivation, and 6 new `reconcileRecurringFixedCommitments` tests: A (unrealized,
+included), B (realized this month, forecast unaffected but remaining zero), C (rent/condo/electricity
+reconciled independently by identity), D (declared FixedExpense takes precedence, zero double-obligation),
+E (card-covered Netflix never subtracted twice) plus its unknown-balance control case. `queries.test.ts`
+— the full section-9 worked example end to end (real liquidity + real recurring transactions →
+R$26.731,43), the declared-vs-inferred dedup case, and F/G (variable-spending average and autonomous
+income average both correctly absent from any liquidity component). Full monorepo typecheck/lint/test/
+build pass, including `check-client-bundle`. Not pushed. Not merged to main. `computeLiquidityAwareSafeToSpend`'s
+own formula/arithmetic untouched beyond the one new additive input term in `snapshot.ts`.

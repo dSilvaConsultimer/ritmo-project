@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  actual,
   fixtureProfile,
   categoryRules as fixtureCategoryRules,
   fromReais,
@@ -16,6 +17,7 @@ import {
   getConnections,
   getReconciliationCandidates,
   getLifestyleComparison,
+  getPlanningForecast,
   getRecurringCandidates,
   getRecurringIncomeCandidates,
   getRecurringFixedExpenseCandidates,
@@ -124,6 +126,204 @@ describe("getFinancialSnapshot — liquidity-aware wiring end-to-end (DEC-130)",
     expect(snapshot.income.gross.cents).toBe(0);
     expect(snapshot.liquidity.basis).toBe("LIQUIDITY_AWARE");
     expect(snapshot.liquidity.recommendedTotal.cents).toBe(3_503_380); // 3,599,575 - 96,195
+  });
+});
+
+describe("getFinancialSnapshot — reconciled recurring-fixed commitments reduce liquidity (DEC-141)", () => {
+  function tx(
+    financialProfileId: string,
+    source: PaymentSource,
+    overrides: Partial<FinancialTransaction>,
+  ): FinancialTransaction {
+    return {
+      id: createId("transaction"),
+      financialProfileId: financialProfileId as never,
+      paymentSource: source,
+      date: "2026-08-05",
+      amount: fromReais(100),
+      direction: "DEBIT",
+      rawDescription: "GENERIC",
+      normalizedDescription: "GENERIC",
+      status: "POSTED",
+      certainty: "ACTUAL",
+      financialEffect: "CONSUMPTION",
+      category: null,
+      origin: "IMPORTED",
+      createdAt: "2026-08-05",
+      updatedAt: "2026-08-05",
+      ...overrides,
+    };
+  }
+
+  it("(section 9) reconciles rent (already paid), condominium and electricity (unpaid) — only the unpaid remainder reduces Disponível, reproducing the exact reference arithmetic", async () => {
+    const db = await freshSeededDb();
+    const profileId = await seedSecondProfile(db);
+
+    const checking: PaymentSource = {
+      id: createId("payment-source"),
+      label: "Conta Corrente",
+      type: "DEBIT",
+      subtype: "CHECKING_ACCOUNT",
+      provider: "pluggy",
+      externalAccountId: "acc-checking-dec141",
+      balance: actual(fromReais(28_059.56)),
+      availableBalance: actual(fromReais(28_059.56)),
+    };
+    const card: PaymentSource = {
+      id: createId("payment-source"),
+      label: "Cartão",
+      type: "CREDIT_CARD",
+      subtype: "CREDIT_CARD",
+      provider: "pluggy",
+      externalAccountId: "acc-card-dec141",
+      balance: actual(fromReais(670.8)),
+    };
+    await repo.upsertPaymentSource(db, checking, profileId);
+    await repo.upsertPaymentSource(db, card, profileId);
+
+    const rows: FinancialTransaction[] = [
+      // Rent — recurring, and ALREADY paid this month (September).
+      tx(profileId, checking, { normalizedMerchant: "ALUGUEL", date: "2026-06-01", amount: fromReais(1500) }),
+      tx(profileId, checking, { normalizedMerchant: "ALUGUEL", date: "2026-07-01", amount: fromReais(1500) }),
+      tx(profileId, checking, { normalizedMerchant: "ALUGUEL", date: "2026-08-01", amount: fromReais(1500) }),
+      tx(profileId, checking, { normalizedMerchant: "ALUGUEL", date: "2026-09-01", amount: fromReais(1500) }),
+      // Condominium — recurring, NOT yet paid this month.
+      tx(profileId, checking, { normalizedMerchant: "CONDOMINIO", date: "2026-06-05", amount: fromReais(450) }),
+      tx(profileId, checking, { normalizedMerchant: "CONDOMINIO", date: "2026-07-05", amount: fromReais(450) }),
+      tx(profileId, checking, { normalizedMerchant: "CONDOMINIO", date: "2026-08-05", amount: fromReais(450) }),
+      // Electricity — recurring, VARYING amount, NOT yet paid this month.
+      tx(profileId, checking, { normalizedMerchant: "ENERGIA", date: "2026-06-10", amount: fromReais(180) }),
+      tx(profileId, checking, { normalizedMerchant: "ENERGIA", date: "2026-07-10", amount: fromReais(235) }),
+      tx(profileId, checking, { normalizedMerchant: "ENERGIA", date: "2026-08-10", amount: fromReais(207) }),
+    ];
+    for (const row of rows) await repo.upsertTransaction(db, row);
+
+    const snapshot = await getFinancialSnapshot(db, profileId, ASOF);
+
+    expect(snapshot.liquidity.basis).toBe("LIQUIDITY_AWARE");
+    // 28,059.56 - 670.80 (card) - (450 + 207.33 condo+electricity remaining,
+    // rent excluded — already realized this month) = 26,731.43.
+    expect(snapshot.liquidity.recommendedTotal.cents).toBe(2_673_143);
+
+    const upcomingFixed = snapshot.liquidity.components.find((c) => c.type === "UPCOMING_FIXED_COMMITMENTS");
+    expect(Math.abs(upcomingFixed?.amount.cents ?? 0)).toBe(45_000 + 20_733);
+  });
+
+  it("never double-counts a declared FixedExpense that already represents the same identity", async () => {
+    const db = await freshSeededDb();
+    const profileId = await seedSecondProfile(db);
+
+    const checking: PaymentSource = {
+      id: createId("payment-source"),
+      label: "Conta Corrente",
+      type: "DEBIT",
+      subtype: "CHECKING_ACCOUNT",
+      provider: "pluggy",
+      externalAccountId: "acc-checking-dec141-dedup",
+      balance: actual(fromReais(10_000)),
+      availableBalance: actual(fromReais(10_000)),
+    };
+    await repo.upsertPaymentSource(db, checking, profileId);
+
+    const rows: FinancialTransaction[] = [
+      tx(profileId, checking, { normalizedMerchant: "ALUGUEL", date: "2026-06-01", amount: fromReais(1500) }),
+      tx(profileId, checking, { normalizedMerchant: "ALUGUEL", date: "2026-07-01", amount: fromReais(1500) }),
+      tx(profileId, checking, { normalizedMerchant: "ALUGUEL", date: "2026-08-01", amount: fromReais(1500) }),
+    ];
+    for (const row of rows) await repo.upsertTransaction(db, row);
+    await repo.upsertFixedExpense(
+      db,
+      {
+        id: createId("fixed-expense"),
+        label: "Aluguel",
+        category: "Moradia",
+        amount: fromReais(1500),
+        certainty: "CONFIRMED",
+        protected: false,
+        source: "USER_DECLARED",
+      },
+      profileId,
+    );
+
+    const snapshot = await getFinancialSnapshot(db, profileId, ASOF);
+    // The DECLARED FixedExpense already contributes 1500 to
+    // `unrealizedFixed` (unpaid this month) via the pre-existing DEC-130
+    // reconciliation — the HISTORY_INFERRED "ALUGUEL" pattern must add
+    // NOTHING on top of that (never a second obligation for the same rent).
+    // 10,000 - 1,500 = 8,500.
+    expect(snapshot.liquidity.recommendedTotal.cents).toBe(fromReais(8_500).cents);
+  });
+
+  it("(test F) historical variable-spending average is displayed by Planning's forecast but never automatically treated as a committed liability", async () => {
+    const db = await freshSeededDb();
+    const profileId = await seedSecondProfile(db);
+    const checking: PaymentSource = {
+      id: createId("payment-source"),
+      label: "Conta Corrente",
+      type: "DEBIT",
+      subtype: "CHECKING_ACCOUNT",
+      provider: "pluggy",
+      externalAccountId: "acc-checking-dec141-variable",
+      balance: actual(fromReais(10_000)),
+      availableBalance: actual(fromReais(10_000)),
+    };
+    await repo.upsertPaymentSource(db, checking, profileId);
+
+    const rows: FinancialTransaction[] = [
+      tx(profileId, checking, { normalizedMerchant: "MERCADO A", date: "2026-06-10", amount: fromReais(600) }),
+      tx(profileId, checking, { normalizedMerchant: "PADARIA", date: "2026-07-10", amount: fromReais(700) }),
+      tx(profileId, checking, { normalizedMerchant: "FARMACIA", date: "2026-08-10", amount: fromReais(500) }),
+    ];
+    for (const row of rows) await repo.upsertTransaction(db, row);
+
+    const forecast = await getPlanningForecast(db, profileId, ASOF);
+    expect(forecast.expectedMonthlyVariableSpending.cents).toBeGreaterThan(0);
+
+    const withHistory = await getFinancialSnapshot(db, profileId, ASOF);
+    const withoutHistoryDb = await freshSeededDb();
+    const withoutHistoryProfile = await seedSecondProfile(withoutHistoryDb);
+    await repo.upsertPaymentSource(withoutHistoryDb, checking, withoutHistoryProfile);
+    const withoutHistory = await getFinancialSnapshot(withoutHistoryDb, withoutHistoryProfile, ASOF);
+
+    // Same starting cash, no declared VariableBudget in either case — the
+    // historical variable-spending average must never silently become a
+    // liquidity deduction.
+    expect(withHistory.liquidity.recommendedTotal.cents).toBe(withoutHistory.liquidity.recommendedTotal.cents);
+    expect(withHistory.liquidity.components.some((c) => c.type === "VARIABLE_BUDGETS")).toBe(false);
+  });
+
+  it("(test G) an autonomous worker's historical income average is displayed by Planning's forecast but never automatically added to Safe-to-Spend", async () => {
+    const db = await freshSeededDb();
+    const profileId = await seedSecondProfile(db);
+    const checking: PaymentSource = {
+      id: createId("payment-source"),
+      label: "Conta Corrente",
+      type: "DEBIT",
+      subtype: "CHECKING_ACCOUNT",
+      provider: "pluggy",
+      externalAccountId: "acc-checking-dec141-income",
+      balance: actual(fromReais(10_000)),
+      availableBalance: actual(fromReais(10_000)),
+    };
+    await repo.upsertPaymentSource(db, checking, profileId);
+
+    const rows: FinancialTransaction[] = [
+      tx(profileId, checking, { direction: "CREDIT", financialEffect: "INCOME", date: "2026-06-10", amount: fromReais(3000), rawDescription: "CLIENT A" }),
+      tx(profileId, checking, { direction: "CREDIT", financialEffect: "INCOME", date: "2026-06-20", amount: fromReais(2000), rawDescription: "CLIENT B" }),
+      tx(profileId, checking, { direction: "CREDIT", financialEffect: "INCOME", date: "2026-07-10", amount: fromReais(4000), rawDescription: "CLIENT C" }),
+      tx(profileId, checking, { direction: "CREDIT", financialEffect: "INCOME", date: "2026-08-10", amount: fromReais(4500), rawDescription: "CLIENT A" }),
+    ];
+    for (const row of rows) await repo.upsertTransaction(db, row);
+    // No declared Income record at all — this is the whole point of the test.
+
+    const forecast = await getPlanningForecast(db, profileId, ASOF);
+    expect(forecast.expectedMonthlyIncome.cents).toBeGreaterThan(0);
+
+    const snapshot = await getFinancialSnapshot(db, profileId, ASOF);
+    // No declared Income -> FUTURE_CONFIRMED_INCOME never fires — the
+    // historical average must never silently enter liquidity.
+    expect(snapshot.liquidity.recommendedTotal.cents).toBe(fromReais(10_000).cents);
+    expect(snapshot.liquidity.components.some((c) => c.type === "FUTURE_CONFIRMED_INCOME")).toBe(false);
   });
 });
 

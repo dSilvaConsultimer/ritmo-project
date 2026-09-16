@@ -17,6 +17,7 @@ import {
   computeExpectedMonthlyVariableSpending,
   detectRecurringCandidates,
   detectRecurringFixedCommitments,
+  reconcileRecurringFixedCommitments,
   getCategoryBudgetStatus,
   getGoalStatus,
   getSpendingEnvelope,
@@ -94,6 +95,39 @@ async function resolvePosition(
   );
 }
 
+/**
+ * DEC-141: the RECONCILED remaining amount of detected (HISTORY_INFERRED)
+ * recurring-fixed commitments — the ONLY number this decision ever feeds
+ * into `buildFinancialSnapshot` (via `FinancialSnapshotInput
+ * .inferredUpcomingFixedCommitments`, purely additive — see that field's
+ * own doc comment). `cardPaymentSourceIds`/`cardBalanceKnown` mirror
+ * exactly what `snapshot.ts` itself derives internally for the analogous
+ * installment-coverage check — recomputed here (not exported/shared)
+ * because `buildFinancialSnapshot` doesn't expose its own internal
+ * derivation, and this is a tiny, non-algorithmic filter (never the
+ * card-coverage RULE itself, which IS reused via
+ * `reconcileRecurringFixedCommitments` → `isPaymentSourceCoveredByCardBalance`).
+ */
+function inferUpcomingFixedCommitments(
+  input: Awaited<ReturnType<typeof repo.loadFinancialSnapshotInput>>,
+  position: FinancialPosition,
+  asOfDate: string,
+): Money {
+  const commitments = detectRecurringFixedCommitments(input.transactions, input.reconciliationLinks, asOfDate);
+  const cardPaymentSourceIds = new Set(
+    input.transactions.filter((t) => t.paymentSource.type === "CREDIT_CARD").map((t) => t.paymentSource.id),
+  );
+  const cardBalanceKnown = position.cardOutstandingBalance.certainty !== "UNKNOWN";
+  return reconcileRecurringFixedCommitments(
+    commitments,
+    input.fixedExpenses,
+    input.transactions,
+    asOfDate,
+    cardPaymentSourceIds,
+    cardBalanceKnown,
+  ).total;
+}
+
 export async function getFinancialSnapshot(
   db: Database,
   financialProfileId: string,
@@ -101,7 +135,8 @@ export async function getFinancialSnapshot(
 ): Promise<FinancialSnapshot> {
   const input = await repo.loadFinancialSnapshotInput(db, financialProfileId, asOfDate);
   const position = input.position ?? (await resolvePosition(db, financialProfileId, asOfDate));
-  return buildFinancialSnapshot({ ...input, position });
+  const inferredUpcomingFixedCommitments = inferUpcomingFixedCommitments(input, position, asOfDate);
+  return buildFinancialSnapshot({ ...input, position, inferredUpcomingFixedCommitments });
 }
 
 /**

@@ -276,9 +276,25 @@ export function isInstallmentCoveredByCardBalance(
   cardPaymentSourceIds: ReadonlySet<Id<"payment-source">>,
   cardBalanceKnown: boolean,
 ): boolean {
-  return (
-    plan.paymentSourceId !== undefined &&
-    cardPaymentSourceIds.has(plan.paymentSourceId) &&
-    cardBalanceKnown
-  );
+  return isPaymentSourceCoveredByCardBalance(plan.paymentSourceId, cardPaymentSourceIds, cardBalanceKnown);
+}
+
+/**
+ * DEC-141: the actual rule `isInstallmentCoveredByCardBalance` applies,
+ * extracted so it can be reused for anything else that may already live
+ * inside a card's own real-time balance — e.g. a `RecurringFixedCommitment`
+ * (`domain/recurring-fixed.ts`) whose evidence transactions were all
+ * charged to a card with a known balance (a Netflix subscription is
+ * "visible recurring behavior" for Planning's forecast, but its actual
+ * forward obligation already lives inside `CARD_OBLIGATIONS` — subtracting
+ * it again from liquidity would double-count it). Same three conditions,
+ * same conservative default (an unknown payment source, or an unknown card
+ * balance, is never treated as covered).
+ */
+export function isPaymentSourceCoveredByCardBalance(
+  paymentSourceId: Id<"payment-source"> | undefined,
+  cardPaymentSourceIds: ReadonlySet<Id<"payment-source">>,
+  cardBalanceKnown: boolean,
+): boolean {
+  return paymentSourceId !== undefined && cardPaymentSourceIds.has(paymentSourceId) && cardBalanceKnown;
 }

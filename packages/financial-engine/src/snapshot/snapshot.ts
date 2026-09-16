@@ -70,6 +70,21 @@ export interface FinancialSnapshotInput {
   readonly protectedPreferences: readonly ProtectedPreference[];
   /** Optional real liquidity data. Omit to get an honest "unknown" liquidity read. */
   readonly position?: FinancialPosition;
+  /**
+   * DEC-141: the RECONCILED remaining amount of detected (HISTORY_INFERRED)
+   * recurring-fixed commitments still unpaid for the current planning
+   * horizon — see `domain/recurring-fixed.ts`'s `reconcileRecurringFixedCommitments`,
+   * which already excludes anything deduped against a declared
+   * `FixedExpense`, covered by a known card balance, or already realized
+   * this month. This is purely ADDITIVE to the LIQUIDITY-AWARE forward
+   * total (`upcomingFixedCommitments`, which otherwise comes entirely from
+   * `fixedExpenses` exactly as before) — it never touches the plan-based
+   * `commitments.fixed`/`safeToSpend.total`, and defaults to `undefined`
+   * (treated as zero), so every existing caller that doesn't supply it is
+   * completely unaffected. The reconciliation itself never happens here —
+   * this function only adds a number it's given.
+   */
+  readonly inferredUpcomingFixedCommitments?: Money;
 }
 
 export type FinancialConfidence = "HIGH" | "MEDIUM" | "LOW";
@@ -270,7 +285,15 @@ export function buildFinancialSnapshot(input: FinancialSnapshotInput): Financial
   const unrealizedFixed = nonTaxFixed.filter(
     (e) => !reconcilePlannedAmount(e.amount, "DEBIT", consumptionTransactionPool),
   );
-  const upcomingFixedCommitments = M.sum(unrealizedFixed.map((e) => e.amount));
+  // DEC-141: adds the ALREADY-RECONCILED remaining amount of detected
+  // recurring-fixed commitments (see `FinancialSnapshotInput
+  // .inferredUpcomingFixedCommitments`'s own doc comment) — purely
+  // additive, defaults to ZERO, never touches `fixed`/the plan-based total
+  // above.
+  const upcomingFixedCommitments = M.add(
+    M.sum(unrealizedFixed.map((e) => e.amount)),
+    input.inferredUpcomingFixedCommitments ?? M.ZERO,
+  );
 
   // --- Planned events: already-paid, future-confirmed, future-estimated, unknown ---
   let eventAlreadyPaid = M.ZERO;
