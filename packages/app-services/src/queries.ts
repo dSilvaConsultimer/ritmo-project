@@ -346,13 +346,40 @@ export async function getTransactionHistory(
   );
 }
 
+/**
+ * DEC-136: `monthlyCategoryTotals` (financial-engine, DB-agnostic) can only
+ * ever build `categoryName` from each transaction's own denormalized
+ * `category` string — it has no way to look up a `Category` row. That
+ * string is written at categorization time and never updated again, so a
+ * category renamed AFTER a transaction was categorized would otherwise
+ * still display its old name here. This resolves the canonical, CURRENT
+ * `Category.name` for every bucket that has a real `categoryId`, and
+ * leaves the denormalized name as-is only for the two cases with no
+ * backing `Category` row: the `UNCATEGORIZED` bucket, and a `legacy:<name>`
+ * bucket for a transaction categorized before `categoryId` existed and not
+ * yet backfilled (see `categoryGroupId`'s own doc comment).
+ */
+async function resolveCanonicalCategoryNames(
+  db: Database,
+  financialProfileId: string,
+  totals: readonly CategoryTotal[],
+): Promise<readonly CategoryTotal[]> {
+  const visible = await repo.listCategoriesForProfile(db, financialProfileId);
+  const byId = new Map(visible.map((c) => [c.id, c.name]));
+  return totals.map((t) => {
+    const canonicalName = byId.get(t.categoryId as Id<"category">);
+    return canonicalName === undefined ? t : { ...t, categoryName: canonicalName };
+  });
+}
+
 export async function getCategoryTotals(
   db: Database,
   financialProfileId: string,
   asOfDate: string,
 ): Promise<readonly CategoryTotal[]> {
   const input = await repo.loadFinancialSnapshotInput(db, financialProfileId, asOfDate);
-  return monthlyCategoryTotals(input.transactions, input.reconciliationLinks, asOfDate);
+  const totals = monthlyCategoryTotals(input.transactions, input.reconciliationLinks, asOfDate);
+  return resolveCanonicalCategoryNames(db, financialProfileId, totals);
 }
 
 /**
@@ -537,12 +564,28 @@ export async function getCategoryRuleCount(db: Database, financialProfileId: str
  * uses (see `packages/financial-engine/src/domain/category.ts`) — personal
  * vs. global ordering itself is a UI concern, not encoded in this sort.
  */
+/**
+ * DEC-136: `CategoryRule.category` is legacy/denormalized text captured at
+ * rule-creation time — resolve it against the CURRENT canonical
+ * `Category.name` here (never override the stored row, only what this read
+ * returns) so a category rename is reflected immediately, without needing
+ * to rewrite every rule that references it. Falls back to the stored
+ * string only for a rule with no `categoryId` yet (see
+ * `CategoryRule.categoryId`'s own doc comment).
+ */
 export async function getCategoryRulesList(
   db: Database,
   financialProfileId: string,
 ): Promise<readonly CategoryRule[]> {
   const { categoryRules } = await repo.loadRules(db, financialProfileId);
-  return categoryRules.slice().sort((a, b) => b.priority - a.priority);
+  const visible = await repo.listCategoriesForProfile(db, financialProfileId);
+  const byId = new Map(visible.map((c) => [c.id, c.name]));
+  return categoryRules
+    .map((r) => {
+      const canonicalName = r.categoryId !== undefined ? byId.get(r.categoryId) : undefined;
+      return canonicalName === undefined ? r : { ...r, category: canonicalName };
+    })
+    .sort((a, b) => b.priority - a.priority);
 }
 
 export async function getRecurringCandidates(
@@ -707,12 +750,13 @@ export async function getRecentSpendingSummaryForProfile(
     (t) => t.date >= fromDate && t.date <= asOfDate && isConsumptionLike(t.financialEffect),
   );
 
+  const byCategory = monthlyCategoryTotals(relevant, input.reconciliationLinks, asOfDate);
   return {
     fromDate,
     toDate: asOfDate,
     transactionCount: relevant.length,
     total: relevant.length > 0 ? sum(relevant.map((t) => t.amount)) : ZERO,
-    byCategory: monthlyCategoryTotals(relevant, input.reconciliationLinks, asOfDate),
+    byCategory: await resolveCanonicalCategoryNames(db, financialProfileId, byCategory),
   };
 }
 

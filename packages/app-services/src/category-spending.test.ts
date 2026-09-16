@@ -364,3 +364,24 @@ describe("backfillTransactionCategoryIds (DEC-136: legacy free-text transaction 
     expect(result.unresolvedCategoryNames).toContain("Trabalho");
   });
 });
+
+describe("DEC-136: rename-safety at the canonical-read level (test 2)", () => {
+  it("a category rename is reflected in getCategoryTotals immediately, never the stale write-time string", async () => {
+    const db = await freshSeededDb();
+    const s = await source(db);
+    const transporte = await baseCategory(db, "Transporte");
+    // Written at categorize-time with the OLD name, exactly as production
+    // code does — `category` is a point-in-time denormalized snapshot.
+    await tx(db, s, { category: transporte.name, categoryId: transporte.id, amount: fromReais(50) });
+
+    // The category is renamed afterward (same id — the only kind of
+    // "rename" this codebase can express today, since no rename mutation
+    // is exposed anywhere in the product).
+    await repo.upsertCategory(db, { id: transporte.id, name: "Transportes" });
+
+    const totals = await getCategoryTotals(db, fixtureProfile.id, ASOF);
+    const bucket = totals.find((t) => t.categoryId === transporte.id);
+    expect(bucket?.categoryName).toBe("Transportes");
+    expect(bucket?.categoryName).not.toBe("Transporte");
+  });
+});

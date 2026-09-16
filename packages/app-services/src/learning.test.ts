@@ -14,6 +14,7 @@ import {
   rejectRecurringCandidate,
 } from "./mutations";
 import {
+  getCategoryRulesList,
   getPendingConfirmations,
   getRecurringFixedExpenseCandidates,
   getRecurringIncomeCandidates,
@@ -709,5 +710,40 @@ describe("DEC-136: categoryId is authoritative", () => {
       categoryId,
     });
     expect(rule.categoryId).toBe(categoryId);
+  });
+
+  it("(test 2) renaming a Category does not break an existing rule — it still matches, and its displayed name resolves canonically", async () => {
+    const db = await freshSeededDb();
+    const category = await createCategory(db, fixtureProfile.id, { name: "Trabalho" });
+    const rule = await createCategoryRule(db, fixtureProfile.id, {
+      matchType: "CONTAINS_MERCHANT",
+      pattern: "UBER",
+      categoryId: category.id,
+    });
+
+    // Rename (same id) — the only kind of "rename" this codebase can
+    // express today, since no rename mutation is exposed anywhere yet.
+    // `upsertCategory` is id-keyed (unlike `upsertPersonalCategory`, which
+    // is keyed on the natural `(financialProfileId, name)` identity and
+    // would try to INSERT a new row for the new name instead of updating
+    // this one) — exactly what an in-place rename needs, regardless of tier.
+    await repo.upsertCategory(db, { ...category, name: "Trampo" });
+
+    // 1. Matching is untouched — it only ever reads pattern/matchType.
+    const source: PaymentSource = { id: createId("payment-source"), label: "Conta", type: "DEBIT" };
+    await repo.upsertPaymentSource(db, source, fixtureProfile.id);
+    const t = await insertTransaction(db, source, {
+      normalizedMerchant: "UBER",
+      rawMerchant: "UBER",
+      category: null,
+    });
+    expect(categorize(t, [rule]).categoryId).toBe(category.id);
+
+    // 2. The displayed name resolves canonically to the NEW name, never the
+    // stale one captured when the rule was created.
+    const rules = await getCategoryRulesList(db, fixtureProfile.id);
+    const reread = rules.find((r) => r.id === rule.id);
+    expect(reread?.category).toBe("Trampo");
+    expect(reread?.category).not.toBe("Trabalho");
   });
 });
